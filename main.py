@@ -8,5 +8,8 @@ async def lifespan(app:FastAPI):
     yield
     print("ending the app.................")
 
-
+#app = FastAPI(title="Corporate Shuttle Backend")
 app = FastAPI(title="KBSA Project", lifespan=lifespan)
+@app.get("/")
+def root():
+    return {"message": "Backend Running 🚀"}
