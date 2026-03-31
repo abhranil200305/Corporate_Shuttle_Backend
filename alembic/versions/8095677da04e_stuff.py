@@ -1,8 +1,8 @@
-"""initial_migration
+"""Stuff
 
-Revision ID: 4b502a823eae
+Revision ID: 8095677da04e
 Revises: 
-Create Date: 2026-03-31 14:58:46.198269
+Create Date: 2026-03-31 16:33:01.788393
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '4b502a823eae'
+revision: str = '8095677da04e'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -24,7 +24,7 @@ def upgrade() -> None:
     op.create_table('otp_requests',
     sa.Column('email', sa.String(length=255), nullable=False),
     sa.Column('otp_code_hash', sa.String(length=255), nullable=False),
-    sa.Column('purpose', sa.Enum('LOGIN', name='otp_purpose', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('purpose', sa.Enum('login', 'signup', name='otp_purpose', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('used_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
@@ -72,7 +72,7 @@ def upgrade() -> None:
     )
     op.create_table('users',
     sa.Column('email', sa.String(length=255), nullable=False),
-    sa.Column('role', sa.Enum('ADMIN', 'DRIVER', 'PASSENGER', name='user_role', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('role', sa.Enum('admin', 'driver', 'passenger', name='user_role', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('is_active', sa.Boolean(), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -88,7 +88,7 @@ def upgrade() -> None:
     sa.Column('ifsc_code', sa.String(length=20), nullable=False),
     sa.Column('phone_number', sa.String(length=20), nullable=False),
     sa.Column('razorpay_linked_account_id', sa.String(length=64), nullable=True),
-    sa.Column('linked_account_status', sa.Enum('NOT_CREATED', 'ACTIVE', 'BLOCKED', 'DELETED', name='linked_account_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('linked_account_status', sa.Enum('not_created', 'active', 'blocked', 'deleted', name='linked_account_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('is_payout_eligible', sa.Boolean(), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
@@ -108,8 +108,8 @@ def upgrade() -> None:
     sa.Column('phone', sa.String(length=20), nullable=False),
     sa.Column('aadhaar_file_path', sa.String(length=255), nullable=False),
     sa.Column('pan_file_path', sa.String(length=255), nullable=False),
-    sa.Column('verification_status', sa.Enum('DRAFT', 'PENDING', 'VERIFIED', 'REJECTED', name='driver_verification_status', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('lifecycle_status', sa.Enum('ACTIVE', 'BANNED', 'DELETED', name='driver_lifecycle_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('verification_status', sa.Enum('draft', 'pending', 'verified', 'rejected', name='driver_verification_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('lifecycle_status', sa.Enum('active', 'banned', 'deleted', name='driver_lifecycle_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('verification_requested_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('reviewed_by_admin_id', sa.String(length=36), nullable=True),
     sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True),
@@ -180,7 +180,7 @@ def upgrade() -> None:
     sa.Column('has_ac', sa.Boolean(), nullable=False),
     sa.Column('rc_file_path', sa.String(length=255), nullable=False),
     sa.Column('rear_photo_file_path', sa.String(length=255), nullable=False),
-    sa.Column('verification_status', sa.Enum('DRAFT', 'PENDING', 'VERIFIED', 'REJECTED', name='vehicle_verification_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('verification_status', sa.Enum('draft', 'pending', 'verified', 'rejected', name='vehicle_verification_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('verification_requested_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('reviewed_by_admin_id', sa.String(length=36), nullable=True),
     sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True),
@@ -206,7 +206,7 @@ def upgrade() -> None:
     sa.Column('vehicle_id', sa.String(length=36), nullable=False),
     sa.Column('planned_start_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('planned_end_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('status', sa.Enum('SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED', name='scheduled_trip_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('status', sa.Enum('scheduled', 'in_progress', 'completed', 'cancelled', name='scheduled_trip_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('actual_start_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('actual_end_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('started_near_stop_id', sa.String(length=36), nullable=True),
@@ -232,12 +232,12 @@ def upgrade() -> None:
     sa.Column('route_id', sa.String(length=36), nullable=False),
     sa.Column('pickup_stop_id', sa.String(length=36), nullable=False),
     sa.Column('dropoff_stop_id', sa.String(length=36), nullable=False),
-    sa.Column('booking_status', sa.Enum('PENDING_PAYMENT', 'BOOKED', 'BOARDED', 'COMPLETED', 'CANCELLED', 'MISSED', name='booking_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('booking_status', sa.Enum('pending_payment', 'booked', 'boarded', 'completed', 'cancelled', 'missed', name='booking_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('fare_amount', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('commission_percent_snapshot', sa.Numeric(precision=5, scale=2), nullable=False),
     sa.Column('commission_amount', sa.Numeric(precision=10, scale=2), nullable=False),
     sa.Column('driver_payout_amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('transfer_status', sa.Enum('NOT_READY', 'READY', 'TRANSFERRED', 'REVERSED', 'FAILED', name='transfer_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('transfer_status', sa.Enum('not_ready', 'ready', 'transferred', 'reversed', 'failed', name='transfer_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('transfer_ready_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('transfer_processed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('boarded_at', sa.DateTime(timezone=True), nullable=True),
@@ -270,7 +270,7 @@ def upgrade() -> None:
     sa.Column('razorpay_payment_id', sa.String(length=64), nullable=True),
     sa.Column('razorpay_signature', sa.String(length=255), nullable=True),
     sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('status', sa.Enum('CREATED', 'PAID', 'FAILED', 'REFUNDED', name='booking_payment_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('status', sa.Enum('created', 'paid', 'failed', 'refunded', name='booking_payment_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -305,7 +305,7 @@ def upgrade() -> None:
     sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
     sa.Column('booking_id', sa.String(length=36), nullable=False),
     sa.Column('driver_user_id', sa.String(length=36), nullable=False),
-    sa.Column('scan_type', sa.Enum('BOARD', 'DROP', name='scan_type', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('scan_type', sa.Enum('board', 'drop', name='scan_type', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('scan_lat', sa.Numeric(precision=9, scale=6), nullable=False),
     sa.Column('scan_lng', sa.Numeric(precision=9, scale=6), nullable=False),
     sa.Column('matched_stop_id', sa.String(length=36), nullable=True),
@@ -330,7 +330,7 @@ def upgrade() -> None:
     sa.Column('linked_account_id', sa.String(length=64), nullable=False),
     sa.Column('razorpay_transfer_id', sa.String(length=64), nullable=True),
     sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('status', sa.Enum('CREATED', 'PROCESSED', 'FAILED', 'REVERSED', name='booking_transfer_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('status', sa.Enum('created', 'processed', 'failed', 'reversed', name='booking_transfer_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('failure_reason', sa.Text(), nullable=True),
     sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('reversed_at', sa.DateTime(timezone=True), nullable=True),
