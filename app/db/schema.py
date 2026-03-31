@@ -52,6 +52,7 @@ def enum_type(enum_cls: type[enum.Enum], name: str) -> Enum:
         native_enum=False,
         create_constraint=True,
         validate_strings=True,
+        values_callable=lambda members: [member.value for member in members],
     )
 
 
