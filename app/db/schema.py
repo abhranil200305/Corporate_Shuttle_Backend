@@ -5,6 +5,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
+from app.db.database import Base
 
 from sqlalchemy import (
     Boolean,
@@ -19,7 +20,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
 )
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 
 # ============================================================
@@ -42,10 +43,6 @@ def enum_type(enum_cls: type[enum.Enum], name: str) -> Enum:
         create_constraint=True,
         validate_strings=True,
     )
-
-
-class Base(DeclarativeBase):
-    pass
 
 
 class UUIDPKMixin:
