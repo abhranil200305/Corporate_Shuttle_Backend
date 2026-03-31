@@ -75,6 +75,7 @@ class UserRole(str, enum.Enum):
 
 class OTPPurpose(str, enum.Enum):
     LOGIN = "login"
+    SIGNUP = "signup"
 
 
 class DriverVerificationStatus(str, enum.Enum):
