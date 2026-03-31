@@ -1,0 +1,12 @@
+Hello,
+
+Your login OTP for {{app_name}} is:
+
+{{otp}}
+
+This OTP will expire in {{expiry_minutes}} minutes.
+
+If you did not request this, you can ignore this email.
+
+Regards,
+{{app_name}}

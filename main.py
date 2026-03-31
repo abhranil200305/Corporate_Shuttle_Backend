@@ -2,9 +2,7 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-# Import the driver signup router
-from app.controllers.driverauth.signup import router as driverauth_router
+from app.auth import router as auth_router
 
 # Create FastAPI app
 app = FastAPI(title="Kolkata Corporate Shuttle - Driver API")
@@ -23,7 +21,6 @@ app.add_middleware(
 # ---------------------------
 # Include driver signup router
 # ---------------------------
-app.include_router(driverauth_router)
 
 # ---------------------------
 # Healthcheck endpoint
@@ -31,3 +28,7 @@ app.include_router(driverauth_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+@app.get("/")
+def root():
+    return {"message": "Backend Running 🚀"}
+app.include_router(auth_router)
