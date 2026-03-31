@@ -9,7 +9,7 @@ from app.auth.exceptions import AuthError
 from app.auth.service import AuthService
 from app.auth.session_utils import extract_bearer_token
 from app.db.database import SessionLocal
-from app.db.schema import User
+from app.db.schema import User, UserRole
 
 
 def get_db() -> Generator[Session, None, None]:
@@ -61,4 +61,18 @@ def get_current_user(
 def get_current_active_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
+    return current_user
+
+
+def get_current_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    if current_user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "insufficient_permissions",
+                "message": "Access denied. Admin privileges required.",
+            },
+        )
     return current_user
