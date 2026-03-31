@@ -1,6 +1,7 @@
-
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
 
 # Create FastAPI app
@@ -20,6 +21,9 @@ app.add_middleware(
 # ---------------------------
 # Include driver signup router
 # ---------------------------
+app.include_router(auth_router)
+app.include_router(admin_router)
+
 
 # ---------------------------
 # Healthcheck endpoint
@@ -27,7 +31,11 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
 @app.get("/")
 def root():
     return {"message": "Backend Running 🚀"}
+
+
 app.include_router(auth_router)

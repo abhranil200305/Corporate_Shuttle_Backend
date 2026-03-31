@@ -52,6 +52,7 @@ def enum_type(enum_cls: type[enum.Enum], name: str) -> Enum:
         native_enum=False,
         create_constraint=True,
         validate_strings=True,
+        values_callable=lambda members: [member.value for member in members],
     )
 
 
@@ -178,6 +179,14 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
+    passenger_profile: Mapped["PassengerProfile | None"] = relationship(
+        back_populates="user",
+        foreign_keys="PassengerProfile.user_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
+    )
+
     driver_profile: Mapped["DriverProfile | None"] = relationship(
         back_populates="user",
         foreign_keys="DriverProfile.user_id",
@@ -298,6 +307,26 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
 # ============================================================
 # driver / payout / vehicle
 # ============================================================
+class PassengerProfile(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "passenger_profiles"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    user: Mapped["User"] = relationship(
+        back_populates="passenger_profile",
+        foreign_keys=[user_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint("full_name <> ''", name="ck_passenger_profiles_full_name_nonempty"),
+    )
 
 class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "driver_profiles"
@@ -310,6 +339,7 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     )
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     aadhaar_file_path: Mapped[str] = mapped_column(String(255), nullable=False)
     pan_file_path: Mapped[str] = mapped_column(String(255), nullable=False)

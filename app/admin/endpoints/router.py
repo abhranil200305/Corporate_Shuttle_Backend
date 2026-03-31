@@ -4,16 +4,15 @@ from app.admin.logic.service import AdminService
 from app.auth.dependencies import get_current_admin
 from app.db.database import get_db
 
-router = APIRouter(prefix="/admin", tags=["Admin - Route Management"])
+# Create ONE router for all admin tasks
 router = APIRouter(
-    prefix="/admin/view",
-    tags=["Admin - User Management"],
-    dependencies=[Depends(get_current_admin)] # Secure lockdown
+    prefix="/admin", 
+    tags=["Admin Management"],
+    dependencies=[Depends(get_current_admin)] # Protects everything in this file
 )
 
-@router.get("/all-drivers")
+@router.get("/view/all-drivers")
 def get_all_drivers_info(db: Session = Depends(get_db)):
-    """Comprehensive list for the Admin to review Bus Owners."""
     service = AdminService(db)
     drivers = service.fetch_detailed_drivers()
     
@@ -48,9 +47,8 @@ def get_all_drivers_info(db: Session = Depends(get_db)):
         })
     return results
 
-@router.get("/all-passengers")
+@router.get("/view/all-passengers")
 def get_all_passengers_info(db: Session = Depends(get_db)):
-    """List of corporate employees registered on the platform."""
     service = AdminService(db)
     passengers = service.fetch_detailed_passengers()
     
