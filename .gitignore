@@ -14,3 +14,11 @@ venv/
 
 # OS
 .DS_Store
+
+# Dev Artifacts
+forUpload/
+tree.txt
+
+Static and Resources
+uploads/
+static/
