@@ -5,7 +5,17 @@ import enum
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-from app.db.database import Base
+#from app.db.database import Base
+# app/db/schema.py
+
+from sqlalchemy.orm import DeclarativeBase
+
+# ---------------------------
+# Base for SQLAlchemy models
+# ---------------------------
+class Base(DeclarativeBase):
+    """All SQLAlchemy models inherit from this Base"""
+    pass
 
 from sqlalchemy import (
     Boolean,
@@ -75,6 +85,7 @@ class UserRole(str, enum.Enum):
 
 class OTPPurpose(str, enum.Enum):
     LOGIN = "login"
+    SIGNUP = "signup"
 
 
 class DriverVerificationStatus(str, enum.Enum):
