@@ -1,5 +1,7 @@
 from sqlalchemy.orm import Session, joinedload
+
 from app.db import schema
+
 
 class AdminService:
     def __init__(self, db: Session):
@@ -13,22 +15,52 @@ class AdminService:
             .options(
                 joinedload(schema.User.driver_profile),
                 joinedload(schema.User.vehicle),
-                joinedload(schema.User.payout_details)
+                joinedload(schema.User.payout_details),
             )
             .all()
         )
 
     def fetch_detailed_passengers(self):
-        """Fetches all corporate passengers and their booking counts."""
         return (
             self.db.query(schema.User)
             .filter(schema.User.role == schema.UserRole.PASSENGER)
-            .options(joinedload(schema.User.passenger_bookings))
+            .options(
+                joinedload(schema.User.passenger_profile),  # Load the name and picture
+                joinedload(
+                    schema.User.passenger_bookings
+                ),  # Load history for trip counts
+            )
             .all()
         )
-    
 
-    
+    def fetch_driver_by_id(self, user_id: str):
+        return (
+            self.db.query(schema.User)
+            .filter(
+                schema.User.id == user_id, schema.User.role == schema.UserRole.DRIVER
+            )
+            .options(
+                joinedload(schema.User.driver_profile),
+                joinedload(schema.User.vehicle),
+                joinedload(schema.User.payout_details),
+            )
+            .first()
+        )
+
+    def fetch_passenger_by_id(self, user_id: str):
+        return (
+            self.db.query(schema.User)
+            .filter(
+                schema.User.id == user_id, schema.User.role == schema.UserRole.PASSENGER
+            )
+            .options(
+                joinedload(schema.User.passenger_profile),
+                joinedload(schema.User.passenger_bookings),
+            )
+            .first()
+        )
+
+
 # @router.post("/stops",response_model=None)
 # def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):
 #     new_stop=schema.Stop(
@@ -75,7 +107,7 @@ class AdminService:
 #     route = db.query(schema.Route).filter(schema.Route.id == route_id).first()
 #     if not route:
 #         raise HTTPException(status_code=404, detail="Route not found")
-    
+
 #     return {
 #         "route_name": route.name,
 #         "code": route.code,
@@ -88,5 +120,3 @@ class AdminService:
 #             } for rs in route.route_stops
 #         ]
 #     }
-
-
