@@ -12,5 +12,6 @@ venv/
 # VS Code
 .vscode/
 
-# OS
-
+# Developments and Resources
+forUpload/
+tree.txt
