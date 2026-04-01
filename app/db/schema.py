@@ -1,21 +1,24 @@
-#app/db/schema.py
+# app/db/schema.py
 from __future__ import annotations
 
 import enum
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
-#from app.db.database import Base
-# app/db/schema.py
 
+# from app.db.database import Base
+# app/db/schema.py
 from sqlalchemy.orm import DeclarativeBase
+
 
 # ---------------------------
 # Base for SQLAlchemy models
 # ---------------------------
 class Base(DeclarativeBase):
     """All SQLAlchemy models inherit from this Base"""
+
     pass
+
 
 from sqlalchemy import (
     Boolean,
@@ -32,10 +35,10 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-
 # ============================================================
 # base / helpers
 # ============================================================
+
 
 def new_id() -> str:
     return str(uuid.uuid4())
@@ -77,6 +80,7 @@ class TimestampMixin:
 # ============================================================
 # enums
 # ============================================================
+
 
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
@@ -162,6 +166,7 @@ class ScanType(str, enum.Enum):
 # ============================================================
 # auth / users
 # ============================================================
+
 
 class User(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "users"
@@ -259,9 +264,7 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
-    __table_args__ = (
-        CheckConstraint("email <> ''", name="ck_users_email_nonempty"),
-    )
+    __table_args__ = (CheckConstraint("email <> ''", name="ck_users_email_nonempty"),)
 
 
 class OTPRequest(UUIDPKMixin, TimestampMixin, Base):
@@ -274,12 +277,14 @@ class OTPRequest(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default=OTPPurpose.LOGIN,
     )
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-
-    __table_args__ = (
-        Index("ix_otp_requests_email_expires_at", "email", "expires_at"),
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
     )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (Index("ix_otp_requests_email_expires_at", "email", "expires_at"),)
 
 
 class UserSession(UUIDPKMixin, TimestampMixin, Base):
@@ -291,8 +296,12 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     user: Mapped["User"] = relationship(
         back_populates="sessions",
@@ -325,8 +334,11 @@ class PassengerProfile(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("full_name <> ''", name="ck_passenger_profiles_full_name_nonempty"),
+        CheckConstraint(
+            "full_name <> ''", name="ck_passenger_profiles_full_name_nonempty"
+        ),
     )
+
 
 class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "driver_profiles"
@@ -340,16 +352,17 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
     profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    aadhaar_number: Mapped[str | None] = mapped_column(String(12), nullable=True)  
-    pan_number: Mapped[str | None] = mapped_column(String(10), nullable=True)       
-    driving_license_number: Mapped[str | None] = mapped_column(String(20), nullable=True)  
+    aadhaar_number: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    pan_number: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    driving_license_number: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
     aadhaar_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
     pan_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
     driving_license_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
     bank_account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ifsc_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     passbook_file_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-
 
     verification_status: Mapped[DriverVerificationStatus] = mapped_column(
         enum_type(DriverVerificationStatus, "driver_verification_status"),
@@ -387,7 +400,9 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("full_name <> ''", name="ck_driver_profiles_full_name_nonempty"),
+        CheckConstraint(
+            "full_name <> ''", name="ck_driver_profiles_full_name_nonempty"
+        ),
         CheckConstraint("phone <> ''", name="ck_driver_profiles_phone_nonempty"),
     )
 
@@ -417,7 +432,9 @@ class DriverPayoutDetails(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default=LinkedAccountStatus.NOT_CREATED,
     )
-    is_payout_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    is_payout_eligible: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
     driver: Mapped["User"] = relationship(
         back_populates="payout_details",
@@ -448,7 +465,9 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    registration_number: Mapped[str] = mapped_column(String(32), unique=True, nullable=False)
+    registration_number: Mapped[str] = mapped_column(
+        String(32), unique=True, nullable=False
+    )
     vehicle_name: Mapped[str] = mapped_column(String(80), nullable=False)
     vehicle_model: Mapped[str] = mapped_column(String(80), nullable=False)
     color: Mapped[str] = mapped_column(String(40), nullable=False)
@@ -501,7 +520,9 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
             name="ck_vehicles_registration_number_nonempty",
         ),
         CheckConstraint("vehicle_name <> ''", name="ck_vehicles_vehicle_name_nonempty"),
-        CheckConstraint("vehicle_model <> ''", name="ck_vehicles_vehicle_model_nonempty"),
+        CheckConstraint(
+            "vehicle_model <> ''", name="ck_vehicles_vehicle_model_nonempty"
+        ),
         CheckConstraint("color <> ''", name="ck_vehicles_color_nonempty"),
     )
 
@@ -509,6 +530,7 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
 # ============================================================
 # stops / routes / fares
 # ============================================================
+
 
 class Stop(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "stops"
@@ -628,8 +650,12 @@ class RouteStop(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    boarding_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    deboarding_allowed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    boarding_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
+    deboarding_allowed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True
+    )
 
     route: Mapped["Route"] = relationship(
         back_populates="route_stops",
@@ -641,7 +667,9 @@ class RouteStop(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        UniqueConstraint("route_id", "sequence_no", name="uq_route_stops_route_sequence"),
+        UniqueConstraint(
+            "route_id", "sequence_no", name="uq_route_stops_route_sequence"
+        ),
         CheckConstraint("sequence_no > 0", name="ck_route_stops_sequence_positive"),
         Index("ix_route_stops_route_id_stop_id", "route_id", "stop_id"),
     )
@@ -723,6 +751,7 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
 # trips / bookings
 # ============================================================
 
+
 class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "scheduled_trips"
 
@@ -742,8 +771,12 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    planned_start_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    planned_end_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    planned_start_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    planned_end_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
 
     status: Mapped[ScheduledTripStatus] = mapped_column(
         enum_type(ScheduledTripStatus, "scheduled_trip_status"),
@@ -751,8 +784,12 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         default=ScheduledTripStatus.SCHEDULED,
     )
 
-    actual_start_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    actual_end_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    actual_start_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    actual_end_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     started_near_stop_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -872,12 +909,22 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default=TransferStatus.NOT_READY,
     )
-    transfer_ready_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    transfer_processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    transfer_ready_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    transfer_processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
-    boarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    boarded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     boarded_near_stop_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -973,6 +1020,7 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
 # payments / transfers
 # ============================================================
 
+
 class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "booking_payments"
 
@@ -982,8 +1030,12 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    razorpay_order_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
-    razorpay_payment_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    razorpay_order_id: Mapped[str] = mapped_column(
+        String(64), unique=True, nullable=False
+    )
+    razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
     razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
@@ -1031,7 +1083,9 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
     )
 
     linked_account_id: Mapped[str] = mapped_column(String(64), nullable=False)
-    razorpay_transfer_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
+    razorpay_transfer_id: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True
+    )
 
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     status: Mapped[BookingTransferStatus] = mapped_column(
@@ -1041,8 +1095,12 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
     )
 
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
-    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    reversed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     booking: Mapped["TripBooking"] = relationship(
         back_populates="transfer",
@@ -1065,6 +1123,7 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
 # ============================================================
 # scans / ratings
 # ============================================================
+
 
 class TripScanEvent(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "trip_scan_events"
@@ -1119,8 +1178,12 @@ class TripScanEvent(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("scan_lat >= -90 AND scan_lat <= 90", name="ck_trip_scan_events_lat_range"),
-        CheckConstraint("scan_lng >= -180 AND scan_lng <= 180", name="ck_trip_scan_events_lng_range"),
+        CheckConstraint(
+            "scan_lat >= -90 AND scan_lat <= 90", name="ck_trip_scan_events_lat_range"
+        ),
+        CheckConstraint(
+            "scan_lng >= -180 AND scan_lng <= 180", name="ck_trip_scan_events_lng_range"
+        ),
         Index("ix_trip_scan_events_trip_booking", "scheduled_trip_id", "booking_id"),
     )
 
@@ -1172,6 +1235,12 @@ class BookingRating(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("trip_rating >= 1 AND trip_rating <= 5", name="ck_booking_ratings_trip_range"),
-        CheckConstraint("driver_rating >= 1 AND driver_rating <= 5", name="ck_booking_ratings_driver_range"),
+        CheckConstraint(
+            "trip_rating >= 1 AND trip_rating <= 5",
+            name="ck_booking_ratings_trip_range",
+        ),
+        CheckConstraint(
+            "driver_rating >= 1 AND driver_rating <= 5",
+            name="ck_booking_ratings_driver_range",
+        ),
     )
