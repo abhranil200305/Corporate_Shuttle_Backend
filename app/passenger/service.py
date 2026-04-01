@@ -82,8 +82,16 @@ class PassengerService:
     
     @staticmethod
     def _get_profile_picture_upload_dir() -> Path:
-        upload_dir = Path("/uploads/passenger/profilepictures")
+        base_upload_dir = Path(
+            os.getenv("UPLOADS_BASE_DIR", str(Path.cwd() / "uploads"))
+        ).resolve()
+
+        upload_dir = base_upload_dir / "passenger" / "profilepictures"
         upload_dir.mkdir(parents=True, exist_ok=True)
+
+        if not upload_dir.exists() or not upload_dir.is_dir():
+            raise RuntimeError(f"Failed to prepare upload directory: {upload_dir}")
+
         return upload_dir
 
     @staticmethod
