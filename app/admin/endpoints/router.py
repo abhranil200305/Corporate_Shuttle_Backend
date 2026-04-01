@@ -1,21 +1,24 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.admin.logic.service import AdminService
 from app.auth.dependencies import get_current_admin
-from app.db.database import get_db
+from app.db.database import get_async_session
 
 # Create ONE router for all admin tasks
 router = APIRouter(
-    prefix="/admin", 
+    prefix="/admin",
     tags=["Admin Management"],
-    dependencies=[Depends(get_current_admin)] # Protects everything in this file
+    dependencies=[Depends(get_current_admin)]  # Protects all routes
 )
 
+# -----------------------------
+# Admin: All Drivers
+# -----------------------------
 @router.get("/view/all-drivers")
-def get_all_drivers_info(db: Session = Depends(get_db)):
+async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
-    drivers = service.fetch_detailed_drivers()
-    
+    drivers = await service.fetch_detailed_drivers()
+
     results = []
     for d in drivers:
         results.append({
@@ -47,11 +50,14 @@ def get_all_drivers_info(db: Session = Depends(get_db)):
         })
     return results
 
+# -----------------------------
+# Admin: All Passengers
+# -----------------------------
 @router.get("/view/all-passengers")
-def get_all_passengers_info(db: Session = Depends(get_db)):
+async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
-    passengers = service.fetch_detailed_passengers()
-    
+    passengers = await service.fetch_detailed_passengers()
+
     return [
         {
             "user_id": p.id,

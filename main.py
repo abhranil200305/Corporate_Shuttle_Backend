@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
+from app.driver.driverprofile import router as driverprofile_router
 
 # Create FastAPI app
 app = FastAPI(title="Kolkata Corporate Shuttle - Driver API")
@@ -23,6 +24,7 @@ app.add_middleware(
 # ---------------------------
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(driverprofile_router)
 
 
 # ---------------------------
