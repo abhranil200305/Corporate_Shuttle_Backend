@@ -14,7 +14,14 @@ load_dotenv()
 config = context.config
 
 # Set DATABASE_URL from .env
+#DATABASE_URL = os.getenv("DATABASE_URL")
+#config.set_main_option("sqlalchemy.url", DATABASE_URL)
 DATABASE_URL = os.getenv("DATABASE_URL")
+
+# 🔥 Convert async → sync for Alembic
+if DATABASE_URL.startswith("postgresql+asyncpg"):
+    DATABASE_URL = DATABASE_URL.replace("postgresql+asyncpg", "postgresql")
+
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 # Logging

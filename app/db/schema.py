@@ -341,8 +341,8 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
     profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    aadhaar_file_path: Mapped[str] = mapped_column(String(255), nullable=False)
-    pan_file_path: Mapped[str] = mapped_column(String(255), nullable=False)
+    aadhaar_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
+    pan_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
 
     verification_status: Mapped[DriverVerificationStatus] = mapped_column(
         enum_type(DriverVerificationStatus, "driver_verification_status"),

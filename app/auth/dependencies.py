@@ -1,31 +1,52 @@
-#app/auth/dependencies.py
+# app/auth/dependencies.py
 from __future__ import annotations
-
-from collections.abc import Generator
+from typing import AsyncGenerator
 
 from fastapi import Depends, HTTPException, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.exceptions import AuthError
 from app.auth.service import AuthService
 from app.auth.session_utils import extract_bearer_token
-from app.db.database import SessionLocal
+from app.db.database import get_async_session
 from app.db.schema import User, UserRole
 
 
-def get_db() -> Generator[Session, None, None]:
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# ---------------------------
+# Database session dependency
+# ---------------------------
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """
+    Async FastAPI dependency to provide a database session.
+    
+    Usage:
+        @app.get("/endpoint")
+        async def route(db: AsyncSession = Depends(get_db)):
+            ...
+    """
+    async for session in get_async_session():
+        yield session
 
 
-def get_auth_service(db: Session = Depends(get_db)) -> AuthService:
+# ---------------------------
+# AuthService dependency
+# ---------------------------
+async def get_auth_service(
+    db: AsyncSession = Depends(get_db),
+) -> AuthService:
+    """
+    Returns an instance of AuthService using the async session.
+    """
     return AuthService(db)
 
 
+# ---------------------------
+# HTTP exception converter
+# ---------------------------
 def to_http_exception(exc: AuthError) -> HTTPException:
+    """
+    Converts a custom AuthError into a FastAPI HTTPException.
+    """
     return HTTPException(
         status_code=exc.status_code,
         detail={
@@ -35,7 +56,13 @@ def to_http_exception(exc: AuthError) -> HTTPException:
     )
 
 
+# ---------------------------
+# Bearer token extractor
+# ---------------------------
 def get_bearer_token_from_request(request: Request) -> str:
+    """
+    Extracts the Bearer token from the Authorization header.
+    """
     authorization = request.headers.get("Authorization")
     token = extract_bearer_token(authorization)
     if not token:
@@ -49,25 +76,37 @@ def get_bearer_token_from_request(request: Request) -> str:
     return token
 
 
-def get_current_user(
+# ---------------------------
+# Current user dependencies
+# ---------------------------
+async def get_current_user(
     token: str = Depends(get_bearer_token_from_request),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> User:
+    """
+    Resolves the current user from the provided token using AuthService.
+    """
     try:
-        return auth_service.authenticate_token(token)
+        return await auth_service.authenticate_token(token)
     except AuthError as exc:
         raise to_http_exception(exc) from exc
 
 
-def get_current_active_user(
+async def get_current_active_user(
     current_user: User = Depends(get_current_user),
 ) -> User:
+    """
+    Returns the current active user (no additional checks here).
+    """
     return current_user
 
 
-def get_current_admin(
+async def get_current_admin(
     current_user: User = Depends(get_current_user),
 ) -> User:
+    """
+    Ensures the current user is an admin.
+    """
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(
             status_code=403,

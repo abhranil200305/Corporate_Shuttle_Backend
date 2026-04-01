@@ -1,10 +1,10 @@
-##app/auth/repository.py
+# app/auth/repository.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.schema import OTPPurpose, OTPRequest, User, UserRole, UserSession
 
@@ -18,23 +18,25 @@ def normalize_email(email: str) -> str:
 
 
 class AuthRepository:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: AsyncSession) -> None:
         self.db = db
 
     # ============================================================
     # users
     # ============================================================
 
-    def get_user_by_email(self, email: str) -> User | None:
+    async def get_user_by_email(self, email: str) -> User | None:
         normalized_email = normalize_email(email)
         stmt = select(User).where(User.email == normalized_email)
-        return self.db.execute(stmt).scalar_one_or_none()
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def get_user_by_id(self, user_id: str) -> User | None:
+    async def get_user_by_id(self, user_id: str) -> User | None:
         stmt = select(User).where(User.id == user_id)
-        return self.db.execute(stmt).scalar_one_or_none()
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def create_user(
+    async def create_user(
         self,
         *,
         email: str,
@@ -47,14 +49,14 @@ class AuthRepository:
             is_active=is_active,
         )
         self.db.add(user)
-        self.db.flush()
+        await self.db.flush()
         return user
 
     # ============================================================
     # otp
     # ============================================================
 
-    def create_otp_request(
+    async def create_otp_request(
         self,
         *,
         email: str,
@@ -69,10 +71,10 @@ class AuthRepository:
             expires_at=expires_at,
         )
         self.db.add(otp_request)
-        self.db.flush()
+        await self.db.flush()
         return otp_request
 
-    def get_latest_otp_request(
+    async def get_latest_otp_request(
         self,
         *,
         email: str,
@@ -88,9 +90,10 @@ class AuthRepository:
             .order_by(OTPRequest.created_at.desc())
             .limit(1)
         )
-        return self.db.execute(stmt).scalars().first()
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
-    def get_latest_active_otp_request(
+    async def get_latest_active_otp_request(
         self,
         *,
         email: str,
@@ -99,7 +102,6 @@ class AuthRepository:
     ) -> OTPRequest | None:
         current_time = now or utcnow()
         normalized_email = normalize_email(email)
-
         stmt = (
             select(OTPRequest)
             .where(
@@ -111,9 +113,10 @@ class AuthRepository:
             .order_by(OTPRequest.created_at.desc())
             .limit(1)
         )
-        return self.db.execute(stmt).scalars().first()
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
-    def count_active_otp_requests(
+    async def count_active_otp_requests(
         self,
         *,
         email: str,
@@ -122,7 +125,6 @@ class AuthRepository:
     ) -> int:
         current_time = now or utcnow()
         normalized_email = normalize_email(email)
-
         stmt = (
             select(func.count(OTPRequest.id))
             .where(
@@ -132,9 +134,10 @@ class AuthRepository:
                 OTPRequest.expires_at > current_time,
             )
         )
-        return int(self.db.execute(stmt).scalar_one())
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one())
 
-    def mark_otp_request_used(
+    async def mark_otp_request_used(
         self,
         otp_request: OTPRequest,
         *,
@@ -142,14 +145,14 @@ class AuthRepository:
     ) -> OTPRequest:
         otp_request.used_at = used_at or utcnow()
         self.db.add(otp_request)
-        self.db.flush()
+        await self.db.flush()
         return otp_request
 
     # ============================================================
     # sessions
     # ============================================================
 
-    def create_user_session(
+    async def create_user_session(
         self,
         *,
         user_id: str,
@@ -162,17 +165,18 @@ class AuthRepository:
             expires_at=expires_at,
         )
         self.db.add(session)
-        self.db.flush()
+        await self.db.flush()
         return session
 
-    def get_user_session_by_token_hash(
+    async def get_user_session_by_token_hash(
         self,
         token_hash: str,
     ) -> UserSession | None:
         stmt = select(UserSession).where(UserSession.token_hash == token_hash)
-        return self.db.execute(stmt).scalar_one_or_none()
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def get_active_user_session_by_token_hash(
+    async def get_active_user_session_by_token_hash(
         self,
         token_hash: str,
         *,
@@ -187,9 +191,10 @@ class AuthRepository:
             )
             .limit(1)
         )
-        return self.db.execute(stmt).scalar_one_or_none()
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
-    def touch_user_session(
+    async def touch_user_session(
         self,
         session: UserSession,
         *,
@@ -197,21 +202,21 @@ class AuthRepository:
     ) -> UserSession:
         session.last_used_at = used_at or utcnow()
         self.db.add(session)
-        self.db.flush()
+        await self.db.flush()
         return session
 
-    def delete_user_session_by_token_hash(self, token_hash: str) -> int:
+    async def delete_user_session_by_token_hash(self, token_hash: str) -> int:
         stmt = delete(UserSession).where(UserSession.token_hash == token_hash)
-        result = self.db.execute(stmt)
+        result = await self.db.execute(stmt)
         return int(result.rowcount or 0)
 
-    def delete_user_sessions_by_user_id(self, user_id: str) -> int:
+    async def delete_user_sessions_by_user_id(self, user_id: str) -> int:
         stmt = delete(UserSession).where(UserSession.user_id == user_id)
-        result = self.db.execute(stmt)
+        result = await self.db.execute(stmt)
         return int(result.rowcount or 0)
 
-    def delete_expired_user_sessions(self, *, now: datetime | None = None) -> int:
+    async def delete_expired_user_sessions(self, *, now: datetime | None = None) -> int:
         current_time = now or utcnow()
         stmt = delete(UserSession).where(UserSession.expires_at <= current_time)
-        result = self.db.execute(stmt)
+        result = await self.db.execute(stmt)
         return int(result.rowcount or 0)

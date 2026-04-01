@@ -1,63 +1,69 @@
 # app/db/database.py
-
 import os
-from typing import Generator
+from typing import AsyncGenerator
 from dotenv import load_dotenv
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-from app.db.schema import Base  # ✅ import Base from schema.py
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
+from app.db.schema import Base
 
 # ---------------------------
 # Load environment variables
 # ---------------------------
 load_dotenv()
 
+# Ensure your .env DATABASE_URL uses asyncpg
+# Example: postgresql+asyncpg://user:password@host:port/dbname
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:postgres@localhost:5432/corporate_shuttle_db"  # fallback
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/corporate_shuttle_db"
 )
 
 # ---------------------------
-# SQLAlchemy Engine
+# Async SQLAlchemy Engine
 # ---------------------------
-engine = create_engine(
+engine = create_async_engine(
     DATABASE_URL,
-    echo=True,          # Print SQL queries in console
-    pool_pre_ping=True
+    echo=True,         # Show SQL queries in console
+    pool_pre_ping=True,
 )
 
 # ---------------------------
-# Session factory
+# Async Session Factory
 # ---------------------------
-SessionLocal = sessionmaker(
-    autocommit=False,
-    autoflush=False,
-    bind=engine
+async_sessionmaker = sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
 )
 
 # ---------------------------
-# FastAPI dependency
+# FastAPI Dependency
 # ---------------------------
-def get_db() -> Generator[Session, None, None]:
+async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     """
-    Dependency for FastAPI routes to get a SQLAlchemy session.
+    Async FastAPI dependency for getting a database session.
+
     Usage:
-        @app.get("/users")
-        def read_users(db: Session = Depends(get_db)):
+        @app.get("/endpoint")
+        async def route(db: AsyncSession = Depends(get_async_session)):
             ...
     """
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+    async with async_sessionmaker() as session:
+        yield session
 
 # ---------------------------
-# Optional: initialize all tables (dev only)
+# Optional: Initialize all tables (dev only)
 # ---------------------------
 def init_db():
     """
     Create all tables based on Base metadata.
-    Useful for initial dev/testing (not recommended in production if using Alembic)
+    Only for initial development/testing.
+    Use Alembic migrations in production.
     """
-    Base.metadata.create_all(bind=engine)
+    import asyncio
+
+    async def _init():
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    asyncio.run(_init())
