@@ -1,7 +1,10 @@
+from datetime import datetime, timedelta, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from app.db import schema
+from sqlalchemy import update
 
 
 class AdminService:
@@ -66,6 +69,37 @@ class AdminService:
         return result.scalars().first()
 
 
+    async def fetch_inactive_users(self, months: int = 3):
+       threshold_date = datetime.now(timezone.utc) - timedelta(days=months * 30)
+
+       stmt = (
+        select(schema.User)
+        .join(schema.UserSession)
+        .options(
+            joinedload(schema.User.passenger_profile),
+            joinedload(schema.User.driver_profile)
+        )
+        .where(schema.UserSession.last_used_at < threshold_date)
+        .distinct() 
+    )
+
+       result = await self.db.execute(stmt)
+       return result.scalars().all()
+
+    async def toggle_driver_status(self, user_id: str, active: bool):
+        stmt = (
+        update(schema.User)
+        .where(
+            schema.User.id == user_id, 
+            schema.User.role == schema.UserRole.DRIVER
+        )
+        .values(is_active=active)
+    )
+    
+        await self.db.execute(stmt)
+        await self.db.commit()
+        return True
+    
 # @router.post("/stops",response_model=None)
 # def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):
 #     new_stop=schema.Stop(

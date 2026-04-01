@@ -184,3 +184,58 @@ async def get_passenger_details(
             ],
         },
     }
+
+
+# check the users who has been inactive from last 3 months 
+@router.get("/reports/inactive-users")
+async def get_inactive_users(
+    months: int = 3, 
+    db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    users = await service.fetch_inactive_users(months)
+
+    return [
+    {
+        "user_id": u.id,
+        "email": u.email,
+        "phone_no": u.phone_number,  # Added phone number field
+        "role": u.role,
+        "name": (
+            u.passenger_profile.full_name if u.passenger_profile 
+            else u.driver_profile.full_name if u.driver_profile 
+            else "Unknown"
+        ),
+        "status": "Inactive"
+    }
+    for u in users
+]
+
+
+# active,inactive for the driver and passenger
+@router.post("/driver/activate/{user_id}")
+async def activate_driver(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    # Optional: Check if driver exists first
+    driver = await service.fetch_driver_by_id(user_id)
+    if not driver:
+        return {"error": "Driver not found"}, 404
+
+    await service.toggle_driver_status(user_id, active=True)
+    return {"message": f"Driver {user_id} has been activated successfully"}
+
+
+@router.post("/driver/deactivate/{user_id}")
+async def deactivate_driver(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    # Optional: Check if driver exists first
+    driver = await service.fetch_driver_by_id(user_id)
+    if not driver:
+        return {"error": "Driver not found"}, 404
+
+    await service.toggle_driver_status(user_id, active=False)
+    return {"message": f"Driver {user_id} has been deactivated successfully"}
