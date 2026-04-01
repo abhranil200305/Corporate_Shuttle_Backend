@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, File, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user
@@ -63,6 +63,13 @@ async def patch_profile(
 ) -> PassengerProfileMutationResponse:
     return await service.patch_profile(current_user, payload)
 
+@router.post("/profile/picture", response_model=PassengerProfileMutationResponse)
+async def upsert_profile_picture(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerProfileMutationResponse:
+    return await service.upsert_profile_picture(current_user, file)
 
 @router.get("/routes", response_model=RouteListResponse)
 async def list_routes(

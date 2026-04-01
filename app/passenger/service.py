@@ -7,10 +7,12 @@ import json
 import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import httpx
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -77,6 +79,30 @@ class PassengerService:
                 },
             )
         return cleaned
+    
+    @staticmethod
+    def _get_profile_picture_upload_dir() -> Path:
+        upload_dir = Path("/uploads/passenger/profile")
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return upload_dir
+
+    @staticmethod
+    def _guess_profile_picture_extension(
+        filename: str | None,
+        content_type: str | None,
+    ) -> str:
+        suffix = Path(filename or "").suffix.lower().strip()
+        if suffix in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            return ".jpg" if suffix == ".jpeg" else suffix
+
+        mime_to_ext = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+        }
+        return mime_to_ext.get((content_type or "").lower(), ".jpg")
+
 
     @staticmethod
     def _quantize_money(value: Decimal) -> Decimal:
@@ -420,6 +446,97 @@ class PassengerService:
 
         return {
             "message": "Passenger profile created successfully.",
+            "profile": {
+                "id": profile.id,
+                "user_id": profile.user_id,
+                "full_name": profile.full_name,
+                "profile_picture_path": profile.profile_picture_path,
+                "created_at": profile.created_at,
+                "updated_at": profile.updated_at,
+            },
+        }
+    
+    async def upsert_profile_picture(
+        self,
+        current_user: User,
+        file: UploadFile,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        profile = await self._get_profile_obj(current_user.id)
+        if profile is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "profile_not_found",
+                    "message": "Passenger profile not found. Create profile first.",
+                },
+            )
+
+        if file is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "file_required",
+                    "message": "Profile picture file is required.",
+                },
+            )
+
+        content_type = (file.content_type or "").lower().strip()
+        allowed_content_types = {
+            "image/jpeg",
+            "image/png",
+            "image/webp",
+            "image/gif",
+        }
+        if content_type not in allowed_content_types:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_file_type",
+                    "message": "Only JPG, PNG, WEBP, and GIF images are allowed.",
+                },
+            )
+
+        try:
+            content = await file.read()
+        finally:
+            await file.close()
+
+        if not content:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "empty_file",
+                    "message": "Uploaded file is empty.",
+                },
+            )
+
+        upload_dir = self._get_profile_picture_upload_dir()
+        extension = self._guess_profile_picture_extension(
+            file.filename,
+            file.content_type,
+        )
+        filename = f"passenger_profile_{current_user.id}_{uuid4().hex}{extension}"
+        destination = upload_dir / filename
+        destination.write_bytes(content)
+
+        old_path = (profile.profile_picture_path or "").strip()
+        if old_path and old_path != str(destination):
+            try:
+                old_file = Path(old_path)
+                if old_file.is_file():
+                    old_file.unlink()
+            except Exception:
+                pass
+
+        profile.profile_picture_path = str(destination)
+        self.db.add(profile)
+        await self.db.commit()
+        await self.db.refresh(profile)
+
+        return {
+            "message": "Passenger profile picture uploaded successfully.",
             "profile": {
                 "id": profile.id,
                 "user_id": profile.user_id,
