@@ -72,17 +72,16 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     "ac": d.vehicle.has_ac if d.vehicle else False,
                     "status": d.vehicle.verification_status if d.vehicle else "N/A",
                 },
-                "payout_info": {
-                    "bank": d.payout_details.account_holder_name
-                    if d.payout_details
+                "account_info": {
+                    "account_number": d.driver_profile.bank_account_number
+                    if d.driver_profile
                     else None,
-                    "account": d.payout_details.bank_account_number
-                    if d.payout_details
+                    "IFSC_code": d.driver_profile.ifsc_code
+                    if d.driver_profile
                     else None,
-                    "ifsc": d.payout_details.ifsc_code if d.payout_details else None,
-                    "payout_status": d.payout_details.linked_account_status
-                    if d.payout_details
-                    else "NOT_READY",
+                    "passbook_url": d.driver_profile.passbook_file_path
+                    if d.driver_profile
+                    else None,
                 },
             }
         )
@@ -163,17 +162,14 @@ async def get_driver_details(
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
             "verification": d.vehicle.verification_status if d.vehicle else "N/A",
         },
-        "payout": {
-            "account_holder": d.payout_details.account_holder_name
-            if d.payout_details
+        "account_info": {
+            "account_number": d.driver_profile.bank_account_number
+            if d.driver_profile
             else None,
-            "bank_account": d.payout_details.bank_account_number
-            if d.payout_details
+            "IFSC_code": d.driver_profile.ifsc_code if d.driver_profile else None,
+            "passbook_url": d.driver_profile.passbook_file_path
+            if d.driver_profile
             else None,
-            "ifsc": d.payout_details.ifsc_code if d.payout_details else None,
-            "razorpay_status": d.payout_details.linked_account_status
-            if d.payout_details
-            else "NOT_CREATED",
         },
     }
 
