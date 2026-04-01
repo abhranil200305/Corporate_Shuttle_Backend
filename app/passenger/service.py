@@ -14,6 +14,7 @@ from uuid import uuid4
 import httpx
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -152,6 +153,31 @@ class PassengerService:
             raise HTTPException(
                 status_code=404,
                 detail={"error": "scheduled_trip_not_found", "message": "Scheduled trip not found."},
+            )
+        return trip
+    
+    async def _get_trip_obj_for_booking_update(self, trip_id: str) -> ScheduledTrip:
+        stmt = (
+            select(ScheduledTrip)
+            .where(ScheduledTrip.id == trip_id)
+            .with_for_update()
+            .options(
+                selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+                selectinload(ScheduledTrip.vehicle),
+                selectinload(ScheduledTrip.driver),
+            )
+        )
+        result = await self.db.execute(stmt)
+        trip = result.scalar_one_or_none()
+        if trip is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "scheduled_trip_not_found",
+                    "message": "Scheduled trip not found.",
+                },
             )
         return trip
 
@@ -819,7 +845,7 @@ class PassengerService:
                 },
             )
 
-        trip = await self._get_trip_obj(payload.scheduled_trip_id)
+        trip = await self._get_trip_obj_for_booking_update(payload.scheduled_trip_id)
 
         if trip.status != ScheduledTripStatus.SCHEDULED:
             raise HTTPException(
@@ -871,32 +897,43 @@ class PassengerService:
             dropoff_stop_id=payload.dropoff_stop_id,
         )
 
-        booking = TripBooking(
-            passenger_user_id=current_user.id,
-            scheduled_trip_id=trip.id,
-            route_id=trip.route_id,
-            pickup_stop_id=payload.pickup_stop_id,
-            dropoff_stop_id=payload.dropoff_stop_id,
-            booking_status=BookingStatus.PENDING_PAYMENT,
-            fare_amount=self._quantize_money(fare.amount),
-        )
-        self.db.add(booking)
-        await self.db.flush()
+        try:
+            booking = TripBooking(
+                passenger_user_id=current_user.id,
+                scheduled_trip_id=trip.id,
+                route_id=trip.route_id,
+                pickup_stop_id=payload.pickup_stop_id,
+                dropoff_stop_id=payload.dropoff_stop_id,
+                booking_status=BookingStatus.PENDING_PAYMENT,
+                fare_amount=self._quantize_money(fare.amount),
+            )
+            self.db.add(booking)
+            await self.db.flush()
 
-        order_payload = await self._create_razorpay_order(
-            booking=booking,
-            amount=booking.fare_amount,
-        )
+            order_payload = await self._create_razorpay_order(
+                booking=booking,
+                amount=booking.fare_amount,
+            )
 
-        payment = BookingPayment(
-            booking_id=booking.id,
-            razorpay_order_id=order_payload["id"],
-            amount=booking.fare_amount,
-            status=BookingPaymentStatus.CREATED,
-        )
-        self.db.add(payment)
+            payment = BookingPayment(
+                booking_id=booking.id,
+                razorpay_order_id=order_payload["id"],
+                amount=booking.fare_amount,
+                status=BookingPaymentStatus.CREATED,
+            )
+            self.db.add(payment)
 
-        await self.db.commit()
+            await self.db.commit()
+
+        except IntegrityError:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "duplicate_booking",
+                    "message": "Passenger already has a booking for this scheduled trip.",
+                },
+            )
 
         booking = await self._get_booking_obj(
             booking_id=booking.id,
