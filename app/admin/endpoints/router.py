@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.admin.logic.service import AdminService
 from app.auth.dependencies import get_current_admin
 from app.db.database import get_async_session
@@ -8,8 +9,9 @@ from app.db.database import get_async_session
 router = APIRouter(
     prefix="/admin",
     tags=["Admin Management"],
-    dependencies=[Depends(get_current_admin)]  # Protects all routes
+    dependencies=[Depends(get_current_admin)],  # Protects all routes
 )
+
 
 # -----------------------------
 # Admin: All Drivers
@@ -64,6 +66,7 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
         )
     return results
 
+
 # -----------------------------
 # Admin: All Passengers
 # -----------------------------
@@ -79,6 +82,100 @@ async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session))
             "is_active": p.is_active,
             "joined_at": p.created_at,
             "is_active": p.is_active,
-            "total_trips_booked": len(p.passenger_bookings)
-        } for p in passengers
+            "total_trips_booked": len(p.passenger_bookings),
+        }
+        for p in passengers
     ]
+
+
+# -----------------------------
+# Admin: Specific Driver Details
+# -----------------------------
+@router.get("/driver/{user_id}")
+async def get_driver_details(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    d = await service.fetch_driver_by_id(user_id)
+
+    if not d:
+        return {"error": "Driver not found"}
+
+    return {
+        "user_id": d.id,
+        "email": d.email,
+        "is_active": d.is_active,
+        "profile": {
+            "full_name": d.driver_profile.full_name if d.driver_profile else "Not Set",
+            "phone": d.driver_profile.phone if d.driver_profile else None,
+            "verification_status": d.driver_profile.verification_status
+            if d.driver_profile
+            else "draft",
+            "documents": {
+                "aadhaar_url": d.driver_profile.aadhaar_file_path
+                if d.driver_profile
+                else None,
+                "pan_url": d.driver_profile.pan_file_path if d.driver_profile else None,
+            },
+        },
+        "vehicle": {
+            "reg_no": d.vehicle.registration_number if d.vehicle else None,
+            "model": d.vehicle.vehicle_model if d.vehicle else None,
+            "capacity": d.vehicle.seat_count if d.vehicle else 0,
+            "has_ac": d.vehicle.has_ac if d.vehicle else False,
+            "verification": d.vehicle.verification_status if d.vehicle else "N/A",
+        },
+        "payout": {
+            "account_holder": d.payout_details.account_holder_name
+            if d.payout_details
+            else None,
+            "bank_account": d.payout_details.bank_account_number
+            if d.payout_details
+            else None,
+            "ifsc": d.payout_details.ifsc_code if d.payout_details else None,
+            "razorpay_status": d.payout_details.linked_account_status
+            if d.payout_details
+            else "NOT_CREATED",
+        },
+    }
+
+
+# -----------------------------
+# Admin: Specific Passenger Details
+# -----------------------------
+@router.get("/passenger/{user_id}")
+async def get_passenger_details(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    p = await service.fetch_passenger_by_id(user_id)
+
+    if not p:
+        return {"error": "Passenger not found"}
+
+    return {
+        "user_id": p.id,
+        "email": p.email,
+        "joined_at": p.created_at,
+        "is_active": p.is_active,
+        "profile": {
+            "full_name": p.passenger_profile.full_name
+            if p.passenger_profile
+            else "Not Set",
+            "avatar": p.passenger_profile.profile_picture_path
+            if p.passenger_profile
+            else None,
+        },
+        "booking_history": {
+            "total_count": len(p.passenger_bookings),
+            "bookings": [
+                {
+                    "booking_id": b.id,
+                    "status": b.booking_status,
+                    "fare": float(b.fare_amount),
+                    "created_at": b.created_at,
+                }
+                for b in p.passenger_bookings
+            ],
+        },
+    }

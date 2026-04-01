@@ -1,41 +1,44 @@
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy import select
+from sqlalchemy.orm import joinedload
 
 from app.db import schema
 
 
 class AdminService:
-    def __init__(self, db: Session):
+    def __init__(self, db):
         self.db = db
 
-    def fetch_detailed_drivers(self):
-        """Fetches all drivers with their profile, vehicle, and bank info."""
-        return (
-            self.db.query(schema.User)
+    async def fetch_detailed_drivers(self):
+        """Fetches all drivers with profile, vehicle, and payout info."""
+        stmt = (
+            select(schema.User)
             .filter(schema.User.role == schema.UserRole.DRIVER)
             .options(
                 joinedload(schema.User.driver_profile),
                 joinedload(schema.User.vehicle),
                 joinedload(schema.User.payout_details),
             )
-            .all()
         )
+        result = await self.db.execute(stmt)
+        return result.scalars().unique().all()
 
-    def fetch_detailed_passengers(self):
-        return (
-            self.db.query(schema.User)
+    async def fetch_detailed_passengers(self):
+        """Fetches all passengers with profiles and bookings."""
+        stmt = (
+            select(schema.User)
             .filter(schema.User.role == schema.UserRole.PASSENGER)
             .options(
-                joinedload(schema.User.passenger_profile),  # Load the name and picture
-                joinedload(
-                    schema.User.passenger_bookings
-                ),  # Load history for trip counts
+                joinedload(schema.User.passenger_profile),
+                joinedload(schema.User.passenger_bookings),
             )
-            .all()
         )
+        result = await self.db.execute(stmt)
+        return result.scalars().unique().all()
 
-    def fetch_driver_by_id(self, user_id: str):
-        return (
-            self.db.query(schema.User)
+    async def fetch_driver_by_id(self, user_id: str):
+        """Fetches one driver by ID."""
+        stmt = (
+            select(schema.User)
             .filter(
                 schema.User.id == user_id, schema.User.role == schema.UserRole.DRIVER
             )
@@ -44,12 +47,14 @@ class AdminService:
                 joinedload(schema.User.vehicle),
                 joinedload(schema.User.payout_details),
             )
-            .first()
         )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
-    def fetch_passenger_by_id(self, user_id: str):
-        return (
-            self.db.query(schema.User)
+    async def fetch_passenger_by_id(self, user_id: str):
+        """Fetches one passenger by ID."""
+        stmt = (
+            select(schema.User)
             .filter(
                 schema.User.id == user_id, schema.User.role == schema.UserRole.PASSENGER
             )
@@ -57,8 +62,9 @@ class AdminService:
                 joinedload(schema.User.passenger_profile),
                 joinedload(schema.User.passenger_bookings),
             )
-            .first()
         )
+        result = await self.db.execute(stmt)
+        return result.scalars().first()
 
 
 # @router.post("/stops",response_model=None)
