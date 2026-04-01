@@ -34,11 +34,33 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     "verification": d.driver_profile.verification_status
                     if d.driver_profile
                     else "N/A",
-                    "docs": {
-                        "aadhaar": d.driver_profile.aadhaar_file_path
+                    # "docs": {
+                    #     "aadhaar": d.driver_profile.aadhaar_file_path
+                    #     if d.driver_profile
+                    #     else None,
+                    #     "pan": d.driver_profile.pan_file_path
+                    #     if d.driver_profile
+                    #     else None,
+                    # },
+                    "documents": {
+                        # Added Aadhaar and PAN numbers here
+                        "aadhaar_number": d.driver_profile.aadhaar_number
                         if d.driver_profile
                         else None,
-                        "pan": d.driver_profile.pan_file_path
+                        "pan_number": d.driver_profile.pan_number
+                        if d.driver_profile
+                        else None,
+                        "driving_license_number": d.driver_profile.driving_license_number
+                        if d.driver_profile
+                        else None,
+                        # File paths/URLs
+                        "aadhaar_url": d.driver_profile.aadhaar_file_path
+                        if d.driver_profile
+                        else None,
+                        "pan_url": d.driver_profile.pan_file_path
+                        if d.driver_profile
+                        else None,
+                        "dl_url": d.driver_profile.driving_license_file_path
                         if d.driver_profile
                         else None,
                     },
