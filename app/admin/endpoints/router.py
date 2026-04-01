@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.logic.service import AdminService
+from app.admin.structs.dto import VerificationUpdate
 from app.auth.dependencies import get_current_admin
 from app.db.database import get_async_session
 
@@ -17,71 +18,53 @@ router = APIRouter(
 # Admin: All Drivers
 # -----------------------------
 @router.get("/view/all-drivers")
+@router.get("/view/all-drivers")
 async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
     drivers = await service.fetch_detailed_drivers()
 
     results = []
     for d in drivers:
+        # Check if profiles exist to avoid NoneType errors
+        p = d.driver_profile
+        v = d.vehicle
+
         results.append(
             {
                 "user_id": d.id,
                 "email": d.email,
                 "is_active": d.is_active,
                 "profile": {
-                    "name": d.driver_profile.full_name if d.driver_profile else None,
-                    "phone": d.driver_profile.phone if d.driver_profile else None,
-                    "verification": d.driver_profile.verification_status
-                    if d.driver_profile
-                    else "N/A",
-                    # "docs": {
-                    #     "aadhaar": d.driver_profile.aadhaar_file_path
-                    #     if d.driver_profile
-                    #     else None,
-                    #     "pan": d.driver_profile.pan_file_path
-                    #     if d.driver_profile
-                    #     else None,
-                    # },
+                    "name": p.full_name if p else None,
+                    "phone": p.phone if p else None,
+                    "verification": p.verification_status if p else "N/A",
                     "documents": {
-                        # Added Aadhaar and PAN numbers here
-                        "aadhaar_number": d.driver_profile.aadhaar_number
-                        if d.driver_profile
+                        "aadhaar_number": p.aadhaar_number if p else None,
+                        "pan_number": p.pan_number if p else None,
+                        "driving_license_number": p.driving_license_number
+                        if p
                         else None,
-                        "pan_number": d.driver_profile.pan_number
-                        if d.driver_profile
-                        else None,
-                        "driving_license_number": d.driver_profile.driving_license_number
-                        if d.driver_profile
-                        else None,
-                        # File paths/URLs
-                        "aadhaar_url": d.driver_profile.aadhaar_file_path
-                        if d.driver_profile
-                        else None,
-                        "pan_url": d.driver_profile.pan_file_path
-                        if d.driver_profile
-                        else None,
-                        "dl_url": d.driver_profile.driving_license_file_path
-                        if d.driver_profile
-                        else None,
+                        "aadhaar_url": p.aadhaar_file_path if p else None,
+                        "pan_url": p.pan_file_path if p else None,
+                        "dl_url": p.driving_license_file_path if p else None,
                     },
                 },
                 "bus_details": {
-                    "reg_no": d.vehicle.registration_number if d.vehicle else None,
-                    "model": d.vehicle.vehicle_model if d.vehicle else None,
-                    "capacity": d.vehicle.seat_count if d.vehicle else 0,
-                    "ac": d.vehicle.has_ac if d.vehicle else False,
-                    "status": d.vehicle.verification_status if d.vehicle else "N/A",
+                    "reg_no": v.registration_number if v else None,
+                    "model": v.vehicle_model if v else None,
+                    "capacity": v.seat_count if v else 0,
+                    "ac": v.has_ac if v else False,
+                    "status": v.verification_status if v else "Pending",
+                    # FIXED: Checking v.rc_file_path instead of d.rc_file_path
+                    "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
+                    "rear_photo_file_path": v.rear_photo_file_path
+                    if (v and v.rear_photo_file_path)
+                    else "NA",
                 },
                 "account_info": {
-                    "account_number": d.driver_profile.bank_account_number
-                    if d.driver_profile
-                    else None,
-                    "IFSC_code": d.driver_profile.ifsc_code
-                    if d.driver_profile
-                    else None,
-                    "passbook_url": d.driver_profile.passbook_file_path
-                    if d.driver_profile
-                    else None,
+                    "account_number": p.bank_account_number if p else None,
+                    "IFSC_code": p.ifsc_code if p else None,
+                    "passbook_url": p.passbook_file_path if p else None,
                 },
             }
         )
@@ -125,7 +108,7 @@ async def get_driver_details(
 
     if not d:
         return {"error": "Driver not found"}
-
+    v = d.vehicle
     return {
         "user_id": d.id,
         "email": d.email,
@@ -161,6 +144,10 @@ async def get_driver_details(
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
             "verification": d.vehicle.verification_status if d.vehicle else "N/A",
+            "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
+            "rear_photo_file_path": v.rear_photo_file_path
+            if (v and v.rear_photo_file_path)
+            else "NA",
         },
         "account_info": {
             "account_number": d.driver_profile.bank_account_number
@@ -269,4 +256,26 @@ async def deactivate_driver(
     return {"message": f"Driver {user_id} has been deactivated successfully"}
 
 
-# add
+# change the verification status
+@router.post("/driver/verify/{user_id}")
+async def verify_driver(
+    user_id: str,
+    data: VerificationUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    # 1. Check if the driver profile exists
+    driver = await service.fetch_driver_by_id(user_id)
+    if not driver or not driver.driver_profile:
+        return {"error": "Driver profile not found"}, 404
+
+    # 2. Update the status
+    await service.update_driver_verification(
+        user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
+    )
+
+    return {
+        "message": f"Driver verification status updated to {data.status}",
+        "user_id": user_id,
+    }

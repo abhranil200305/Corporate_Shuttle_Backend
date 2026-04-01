@@ -3,6 +3,8 @@ from typing import List
 
 from pydantic import BaseModel
 
+from app.db import schema
+
 
 class stopCreate(BaseModel):
     name: str
@@ -22,3 +24,7 @@ class RouteCreate(BaseModel):
     name: str
     code: str
     stops: List[RouteStopCreate]
+
+class VerificationUpdate(BaseModel):
+    status: schema.DriverVerificationStatus
+    rejection_reason: str | None = None
