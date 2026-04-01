@@ -82,7 +82,7 @@ class PassengerService:
     
     @staticmethod
     def _get_profile_picture_upload_dir() -> Path:
-        upload_dir = Path("/uploads/passenger/profile")
+        upload_dir = Path("/uploads/passenger/profilepictures")
         upload_dir.mkdir(parents=True, exist_ok=True)
         return upload_dir
 
