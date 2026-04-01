@@ -250,3 +250,6 @@ async def deactivate_driver(
 
     await service.toggle_driver_status(user_id, active=False)
     return {"message": f"Driver {user_id} has been deactivated successfully"}
+
+
+# add
