@@ -11,6 +11,7 @@ from sqlalchemy import text   # ✅ FIX ADDED
 from app.driver.driverprofile import router as driverprofile_router
 from app.db.database import engine   # 👈 import engine
 from app.driver.driverprofileshow import router as driverprofileshow_router
+from app.driver import driver_kyc
 
 
 # Create FastAPI app
@@ -33,7 +34,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(driverprofile_router)
-
+app.include_router(driver_kyc.router)
 app.include_router(driverprofileshow_router)
 
 # ---------------------------
