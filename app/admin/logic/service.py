@@ -9,7 +9,6 @@ class AdminService:
         self.db = db
 
     async def fetch_detailed_drivers(self):
-        """Fetches all drivers with profile, vehicle, and payout info."""
         stmt = (
             select(schema.User)
             .filter(schema.User.role == schema.UserRole.DRIVER)
