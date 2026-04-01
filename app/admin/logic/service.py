@@ -116,6 +116,25 @@ class AdminService:
         await self.db.commit()
         return True
 
+    async def update_vehicle_verification(
+        self,
+        user_id: str,
+        status: schema.VehicleVerificationStatus,
+        rejection_reason: str = None,
+    ):
+        stmt = (
+            update(schema.Vehicle)
+            .where(schema.Vehicle.driver_user_id == user_id)
+            .values(
+                verification_status=status,
+                rejection_reason=rejection_reason,
+                reviewed_at=datetime.now(timezone.utc),
+            )
+        )
+        await self.db.execute(stmt)
+        await self.db.commit()
+        return True
+
 
 # @router.post("/stops",response_model=None)
 # def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):

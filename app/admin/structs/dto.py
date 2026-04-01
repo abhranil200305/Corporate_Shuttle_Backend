@@ -28,3 +28,7 @@ class RouteCreate(BaseModel):
 class VerificationUpdate(BaseModel):
     status: schema.DriverVerificationStatus
     rejection_reason: str | None = None
+
+class VehicleVerificationUpdate(BaseModel):
+    status: schema.VehicleVerificationStatus
+    rejection_reason: str | None = None

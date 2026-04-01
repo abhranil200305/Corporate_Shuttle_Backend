@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.logic.service import AdminService
-from app.admin.structs.dto import VerificationUpdate
+from app.admin.structs.dto import VehicleVerificationUpdate, VerificationUpdate
 from app.auth.dependencies import get_current_admin
 from app.db.database import get_async_session
 
@@ -278,4 +278,29 @@ async def verify_driver(
     return {
         "message": f"Driver verification status updated to {data.status}",
         "user_id": user_id,
+    }
+
+
+@router.post("/vehicle/verify/{user_id}")
+async def verify_vehicle(
+    user_id: str,
+    data: VehicleVerificationUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    # 1. Check if the vehicle exists for this user
+    driver = await service.fetch_driver_by_id(user_id)  # Reuse your fetch logic
+    if not driver or not driver.vehicle:
+        return {"error": "Vehicle record not found for this user"}, 404
+
+    # 2. Update the vehicle status
+    await service.update_vehicle_verification(
+        user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
+    )
+
+    return {
+        "message": f"Vehicle verification status updated to {data.status}",
+        "user_id": user_id,
+        "registration_number": driver.vehicle.registration_number,
     }
