@@ -1,5 +1,5 @@
 # app/controllers/driverprofile/driverprofile.py
-
+from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -25,7 +25,6 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ------------------------------
 # Pydantic Schemas
 # ------------------------------
-from pydantic import BaseModel
 
 class DriverProfileResponse(BaseModel):
     id: str
