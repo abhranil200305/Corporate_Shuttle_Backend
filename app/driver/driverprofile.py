@@ -37,10 +37,11 @@ class DriverProfileResponse(BaseModel):
     class Config:
         from_attributes = True  # ✅ Pydantic v2
 
+
 # ------------------------------
 # Helper function
 # ------------------------------
-def save_upload(upload: UploadFile, prefix: str) -> str:
+def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
     if not upload or not upload.filename:
         return None
 
@@ -54,6 +55,7 @@ def save_upload(upload: UploadFile, prefix: str) -> str:
 
     return str(file_path.relative_to(BASE_DIR))
 
+
 # ------------------------------
 # Create Driver Profile
 # ------------------------------
@@ -65,9 +67,8 @@ async def create_driver_profile(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Create driver profile (ONLY basic info, KYC separate)"""
+    """Create driver profile"""
 
-    # check if already exists
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
@@ -78,16 +79,15 @@ async def create_driver_profile(
 
     profile_pic_path = save_upload(profile_pic, "profile")
 
-    # ⚠️ IMPORTANT: add safe defaults for KYC fields (until schema is updated)
     driver_profile = DriverProfile(
         user_id=current_user.id,
         full_name=full_name,
         phone=phone,
         profile_picture_path=profile_pic_path,
 
-        # 👇 TEMP SAFE FIELDS (avoid DB NOT NULL crash)
-        aadhaar_file_path=None,
-        pan_file_path=None,
+        # TEMP FIX (should be nullable in DB ideally)
+        aadhaar_file_path="",
+        pan_file_path="",
 
         verification_status=DriverVerificationStatus.DRAFT,
     )
@@ -108,21 +108,17 @@ async def create_driver_profile(
 
 
 # ------------------------------
-# Get Profile
+# Get My Profile
 # ------------------------------
-@router.get("/{user_id}", response_model=DriverProfileResponse)
-async def get_driver_profile(
-    user_id: str,
+@router.get("/me", response_model=DriverProfileResponse)
+async def get_my_driver_profile(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Get driver profile"""
-
-    if str(current_user.role).lower() != "admin" and current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized")
+    """Get logged-in driver's profile"""
 
     result = await db.execute(
-        select(DriverProfile).where(DriverProfile.user_id == user_id)
+        select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     profile = result.scalar_one_or_none()
 
@@ -133,29 +129,38 @@ async def get_driver_profile(
 
 
 # ------------------------------
-# Update Profile Picture
+# Update My Profile (Partial)
 # ------------------------------
-@router.put("/{user_id}/profile-pic", response_model=DriverProfileResponse)
-async def update_profile_pic(
-    user_id: str,
-    profile_pic: UploadFile = File(...),
+@router.patch("/update", response_model=DriverProfileResponse)
+async def update_my_profile(
+    full_name: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    profile_pic: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Update profile picture"""
+    """Update logged-in driver's profile (partial update)"""
 
-    if str(current_user.role).lower() != "admin" and current_user.id != user_id:
-        raise HTTPException(status_code=403, detail="Not authorized")
-
+    # Fetch profile
     result = await db.execute(
-        select(DriverProfile).where(DriverProfile.user_id == user_id)
+        select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     profile = result.scalar_one_or_none()
 
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    profile.profile_picture_path = save_upload(profile_pic, "profile")
+    # ------------------------------
+    # Update fields if provided
+    # ------------------------------
+    if full_name is not None:
+        profile.full_name = full_name
+
+    if phone is not None:
+        profile.phone = phone
+
+    if profile_pic is not None:
+        profile.profile_picture_path = save_upload(profile_pic, "profile")
 
     db.add(profile)
 
