@@ -107,7 +107,6 @@ async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session))
                 "name": p.passenger_profile.full_name
                 if p.passenger_profile
                 else "Not Set",
-                "phone": p.passenger_profile.phone if p.passenger_profile else "N/A",
             },
             "total_trips_booked": len(p.passenger_bookings),
         }
