@@ -5,8 +5,12 @@ from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
 from sqlalchemy import text   # ✅ FIX ADDED
 
+
+
+
 from app.driver.driverprofile import router as driverprofile_router
 from app.db.database import engine   # 👈 import engine
+from app.driver.driverprofileshow import router as driverprofileshow_router
 
 
 # Create FastAPI app
@@ -30,6 +34,7 @@ app.include_router(auth_router)
 app.include_router(admin_router)
 app.include_router(driverprofile_router)
 
+app.include_router(driverprofileshow_router)
 
 # ---------------------------
 # Healthcheck endpoint
