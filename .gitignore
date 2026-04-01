@@ -13,4 +13,6 @@ venv/
 .vscode/
 
 # OS
+# Ignore uploaded images (root level only)
+upload_pic/
 

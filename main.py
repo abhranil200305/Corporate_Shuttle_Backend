@@ -3,7 +3,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
+from sqlalchemy import text   # ✅ FIX ADDED
+
 from app.driver.driverprofile import router as driverprofile_router
+from app.db.database import engine   # 👈 import engine
+
 
 # Create FastAPI app
 app = FastAPI(title="Kolkata Corporate Shuttle - Driver API")
@@ -33,7 +37,17 @@ app.include_router(driverprofile_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
+# ---------------------------
+# STARTUP EVENT (🔥 ADD THIS)
+# ---------------------------
+@app.on_event("startup")
+async def startup_db_check():
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+        print("✅ Database connected successfully")
+    except Exception as e:
+        print("❌ Database connection failed:", e)
 
 @app.get("/")
 def root():
