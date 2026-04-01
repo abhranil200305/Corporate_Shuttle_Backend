@@ -934,12 +934,19 @@ class PassengerService:
                     "message": "Passenger already has a booking for this scheduled trip.",
                 },
             )
+        
+        except HTTPException:
+            await self.db.rollback()
+            raise
+        except Exception:
+            await self.db.rollback()
+            raise
 
         booking = await self._get_booking_obj(
             booking_id=booking.id,
             passenger_user_id=current_user.id,
         )
-
+        
         return {
             "message": "Booking created. Payment is pending.",
             "booking": self._serialize_booking(booking),
