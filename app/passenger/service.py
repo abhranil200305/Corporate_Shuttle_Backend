@@ -82,18 +82,10 @@ class PassengerService:
     
     @staticmethod
     def _get_profile_picture_upload_dir() -> Path:
-        base_upload_dir = Path(
-            os.getenv("UPLOADS_BASE_DIR", str(Path.cwd() / "uploads"))
-        ).resolve()
-
-        upload_dir = base_upload_dir / "passenger" / "profilepictures"
+        upload_dir = Path.cwd() / "uploads" / "passenger" / "profilepictures"
         upload_dir.mkdir(parents=True, exist_ok=True)
-
-        if not upload_dir.exists() or not upload_dir.is_dir():
-            raise RuntimeError(f"Failed to prepare upload directory: {upload_dir}")
-
         return upload_dir
-
+    
     @staticmethod
     def _guess_profile_picture_extension(
         filename: str | None,
@@ -526,19 +518,23 @@ class PassengerService:
             file.content_type,
         )
         filename = f"passenger_profile_{current_user.id}_{uuid4().hex}{extension}"
-        destination = upload_dir / filename
-        destination.write_bytes(content)
 
-        old_path = (profile.profile_picture_path or "").strip()
-        if old_path and old_path != str(destination):
+        disk_path = upload_dir / filename
+        disk_path.write_bytes(content)
+
+        public_path = f"/uploads/passenger/profilepictures/{filename}"
+
+        old_public_path = (profile.profile_picture_path or "").strip()
+        if old_public_path and old_public_path != public_path:
             try:
-                old_file = Path(old_path)
-                if old_file.is_file():
-                    old_file.unlink()
+                old_filename = Path(old_public_path).name
+                old_disk_path = upload_dir / old_filename
+                if old_disk_path.is_file():
+                    old_disk_path.unlink()
             except Exception:
                 pass
 
-        profile.profile_picture_path = str(destination)
+        profile.profile_picture_path = public_path
         self.db.add(profile)
         await self.db.commit()
         await self.db.refresh(profile)

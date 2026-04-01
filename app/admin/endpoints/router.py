@@ -34,11 +34,33 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     "verification": d.driver_profile.verification_status
                     if d.driver_profile
                     else "N/A",
-                    "docs": {
-                        "aadhaar": d.driver_profile.aadhaar_file_path
+                    # "docs": {
+                    #     "aadhaar": d.driver_profile.aadhaar_file_path
+                    #     if d.driver_profile
+                    #     else None,
+                    #     "pan": d.driver_profile.pan_file_path
+                    #     if d.driver_profile
+                    #     else None,
+                    # },
+                    "documents": {
+                        # Added Aadhaar and PAN numbers here
+                        "aadhaar_number": d.driver_profile.aadhaar_number
                         if d.driver_profile
                         else None,
-                        "pan": d.driver_profile.pan_file_path
+                        "pan_number": d.driver_profile.pan_number
+                        if d.driver_profile
+                        else None,
+                        "driving_license_number": d.driver_profile.driving_license_number
+                        if d.driver_profile
+                        else None,
+                        # File paths/URLs
+                        "aadhaar_url": d.driver_profile.aadhaar_file_path
+                        if d.driver_profile
+                        else None,
+                        "pan_url": d.driver_profile.pan_file_path
+                        if d.driver_profile
+                        else None,
+                        "dl_url": d.driver_profile.driving_license_file_path
                         if d.driver_profile
                         else None,
                     },
@@ -117,10 +139,22 @@ async def get_driver_details(
             if d.driver_profile
             else "draft",
             "documents": {
+                # Added Aadhaar and PAN numbers here
+                "aadhaar_number": d.driver_profile.aadhaar_number
+                if d.driver_profile
+                else None,
+                "pan_number": d.driver_profile.pan_number if d.driver_profile else None,
+                "driving_license_number": d.driver_profile.driving_license_number
+                if d.driver_profile
+                else None,
+                # File paths/URLs
                 "aadhaar_url": d.driver_profile.aadhaar_file_path
                 if d.driver_profile
                 else None,
                 "pan_url": d.driver_profile.pan_file_path if d.driver_profile else None,
+                "dl_url": d.driver_profile.driving_license_file_path
+                if d.driver_profile
+                else None,
             },
         },
         "vehicle": {
@@ -186,37 +220,36 @@ async def get_passenger_details(
     }
 
 
-# check the users who has been inactive from last 3 months 
+# check the users who has been inactive from last 3 months
 @router.get("/reports/inactive-users")
 async def get_inactive_users(
-    months: int = 3, 
-    db: AsyncSession = Depends(get_async_session)
+    months: int = 3, db: AsyncSession = Depends(get_async_session)
 ):
     service = AdminService(db)
     users = await service.fetch_inactive_users(months)
 
     return [
-    {
-        "user_id": u.id,
-        "email": u.email,
-        "phone_no": u.phone_number,  # Added phone number field
-        "role": u.role,
-        "name": (
-            u.passenger_profile.full_name if u.passenger_profile 
-            else u.driver_profile.full_name if u.driver_profile 
-            else "Unknown"
-        ),
-        "status": "Inactive"
-    }
-    for u in users
-]
+        {
+            "user_id": u.id,
+            "email": u.email,
+            "phone_no": u.phone_number,  # Added phone number field
+            "role": u.role,
+            "name": (
+                u.passenger_profile.full_name
+                if u.passenger_profile
+                else u.driver_profile.full_name
+                if u.driver_profile
+                else "Unknown"
+            ),
+            "status": "Inactive",
+        }
+        for u in users
+    ]
 
 
 # active,inactive for the driver and passenger
 @router.post("/driver/activate/{user_id}")
-async def activate_driver(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
-):
+async def activate_driver(user_id: str, db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
     # Optional: Check if driver exists first
     driver = await service.fetch_driver_by_id(user_id)
@@ -239,3 +272,6 @@ async def deactivate_driver(
 
     await service.toggle_driver_status(user_id, active=False)
     return {"message": f"Driver {user_id} has been deactivated successfully"}
+
+
+# add
