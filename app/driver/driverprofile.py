@@ -19,7 +19,7 @@ router = APIRouter(prefix="/driver-profile", tags=["DriverProfile"])
 # Upload folder
 # ------------------------------
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-UPLOAD_DIR = BASE_DIR / "upload_pic"
+UPLOAD_DIR = BASE_DIR / "uploads" / "upload_pic"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 # ------------------------------
@@ -53,6 +53,7 @@ def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(upload.file, buffer)
 
+    # Store relative path w.r.t BASE_DIR
     return str(file_path.relative_to(BASE_DIR))
 
 
