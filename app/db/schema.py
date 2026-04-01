@@ -340,12 +340,15 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     phone: Mapped[str] = mapped_column(String(20), nullable=False)
     profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    aadhaar_number: Mapped[str | None] = mapped_column(String(12), nullable=True)  # Aadhaar number
-    pan_number: Mapped[str | None] = mapped_column(String(10), nullable=True)       # PAN number
-    driving_license_number: Mapped[str | None] = mapped_column(String(20), nullable=True)  # Driving License
+    aadhaar_number: Mapped[str | None] = mapped_column(String(12), nullable=True)  
+    pan_number: Mapped[str | None] = mapped_column(String(10), nullable=True)       
+    driving_license_number: Mapped[str | None] = mapped_column(String(20), nullable=True)  
     aadhaar_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
     pan_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
     driving_license_file_path: Mapped[str] = mapped_column(String(255), nullable=True)
+    bank_account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ifsc_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    passbook_file_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
     verification_status: Mapped[DriverVerificationStatus] = mapped_column(
