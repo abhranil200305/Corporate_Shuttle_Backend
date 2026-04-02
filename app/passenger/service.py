@@ -984,6 +984,12 @@ class PassengerService:
                 },
             )
 
+        fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
+            route_id=trip.route_id,
+            pickup_stop_id=payload.pickup_stop_id,
+            dropoff_stop_id=payload.dropoff_stop_id,
+        )
+
         overlapping_active_booking_count = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
             pickup_sequence_no=pickup_route_stop.sequence_no,
@@ -998,12 +1004,6 @@ class PassengerService:
                     "message": "No seats are currently available for the selected trip segment.",
                 },
             )
-
-        fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
-            route_id=trip.route_id,
-            pickup_stop_id=payload.pickup_stop_id,
-            dropoff_stop_id=payload.dropoff_stop_id,
-        )
 
         try:
             booking = TripBooking(
