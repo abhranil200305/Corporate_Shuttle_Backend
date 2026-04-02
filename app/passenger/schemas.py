@@ -90,7 +90,7 @@ class ScheduledTripResponse(BaseModel):
     actual_end_at: datetime | None
     status: str
     admin_note: str | None
-    available_seats: int
+    available_seats: int | None    
     route: RouteResponse
     vehicle: VehicleBriefResponse | None
     driver: DriverBriefResponse | None

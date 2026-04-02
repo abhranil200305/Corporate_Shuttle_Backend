@@ -380,6 +380,35 @@ class PassengerService:
         )
         result = await self.db.execute(stmt)
         return int(result.scalar_one() or 0)
+    
+    async def _count_overlapping_active_trip_bookings(
+        self,
+        *,
+        scheduled_trip_id: str,
+        pickup_sequence_no: int,
+        dropoff_sequence_no: int,
+    ) -> int:
+        current_time = utcnow()
+
+        stmt = select(func.count(TripBooking.id)).where(
+            TripBooking.scheduled_trip_id == scheduled_trip_id,
+            TripBooking.pickup_sequence_no_snapshot < dropoff_sequence_no,
+            TripBooking.dropoff_sequence_no_snapshot > pickup_sequence_no,
+            or_(
+                TripBooking.booking_status.in_(
+                    (BookingStatus.BOOKED, BookingStatus.BOARDED)
+                ),
+                and_(
+                    TripBooking.booking_status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        TripBooking.payment_hold_expires_at.is_(None),
+                        TripBooking.payment_hold_expires_at > current_time,
+                    ),
+                ),
+            ),
+        )
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one() or 0)
 
     def _serialize_stop_brief(self, stop: Stop) -> dict[str, Any]:
         return {
@@ -410,9 +439,7 @@ class PassengerService:
         }
 
     async def _serialize_trip(self, trip: ScheduledTrip) -> dict[str, Any]:
-        seat_count = trip.vehicle.seat_count if trip.vehicle is not None else 0
-        booked_count = await self._count_active_trip_bookings(trip.id)
-        available_seats = max(seat_count - booked_count, 0)
+        available_seats = None
 
         return {
             "id": trip.id,
@@ -957,18 +984,22 @@ class PassengerService:
                 },
             )
 
-        active_booking_count = await self._count_active_trip_bookings(trip.id)
+        overlapping_active_booking_count = await self._count_overlapping_active_trip_bookings(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
         seat_count = trip.vehicle.seat_count if trip.vehicle is not None else 0
-        if active_booking_count >= seat_count:
+        if overlapping_active_booking_count >= seat_count:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "error": "trip_full",
-                    "message": "No seats are currently available for this scheduled trip.",
+                    "error": "trip_segment_full",
+                    "message": "No seats are currently available for the selected trip segment.",
                 },
             )
 
-        fare, _, _ = await self._resolve_fare(
+        fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
             route_id=trip.route_id,
             pickup_stop_id=payload.pickup_stop_id,
             dropoff_stop_id=payload.dropoff_stop_id,
@@ -983,6 +1014,8 @@ class PassengerService:
                 dropoff_stop_id=payload.dropoff_stop_id,
                 booking_status=BookingStatus.PENDING_PAYMENT,
                 fare_amount=self._quantize_money(fare.amount),
+                pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
+                dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                 payment_hold_expires_at=self._get_payment_hold_expires_at(),
             )
             self.db.add(booking)
