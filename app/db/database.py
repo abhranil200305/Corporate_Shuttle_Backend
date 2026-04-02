@@ -5,7 +5,7 @@ import asyncio
 from typing import AsyncGenerator
 from dotenv import load_dotenv
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
-from sqlalchemy.orm import declarative_base
+from app.db.schema import Base
 from sqlalchemy.exc import OperationalError
 
 # ---------------------------
@@ -17,10 +17,7 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://postgres:postgres@localhost:5432/corporate_shuttle_db"
 )
 
-# ---------------------------
-# Base for models
-# ---------------------------
-Base = declarative_base()
+
 
 # ---------------------------
 # Async Engine with Controlled Connection Pool
