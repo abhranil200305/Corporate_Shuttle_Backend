@@ -195,7 +195,34 @@ class AdminService:
         await self.db.commit()
         return new_route
     
+    async def get_all_trips(self, status=None):
+        stmt = (
+            select(schema.ScheduledTrip)
+            .options(
+                joinedload(schema.ScheduledTrip.route),
+                joinedload(schema.ScheduledTrip.driver),
+                joinedload(schema.ScheduledTrip.vehicle)
+            )
+            .order_by(schema.ScheduledTrip.planned_start_at.desc())
+        )
+        if status:
+            stmt = stmt.where(schema.ScheduledTrip.status == status)
+            
+        result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
 
+    async def cancel_trip(self, trip_id: str, reason: str):
+        trip_stmt = select(schema.ScheduledTrip).where(schema.ScheduledTrip.id == trip_id)
+        res = await self.db.execute(trip_stmt)
+        trip = res.scalar_one_or_none()
+
+        if trip:
+            trip.status = schema.ScheduledTripStatus.CANCELLED
+            trip.admin_note = reason
+            # Important: You would usually trigger a refund logic here for all bookings
+            await self.db.commit()
+            return True
+        return False
 # @router.post("/stops",response_model=None)
 # def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):
 #     new_stop=schema.Stop(
