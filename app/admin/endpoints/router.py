@@ -1,9 +1,18 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
-from app.admin.structs.dto import VehicleVerificationUpdate, VerificationUpdate
+from app.admin.structs.dto import (
+    RouteCreate,
+    RouteFareCreate,
+    StopCreate,
+    VehicleVerificationUpdate,
+    VerificationUpdate,
+)
 from app.auth.dependencies import get_current_admin
+from app.db import schema
 from app.db.database import get_async_session
 
 # Create ONE router for all admin tasks
@@ -304,3 +313,271 @@ async def verify_vehicle(
         "user_id": user_id,
         "registration_number": driver.vehicle.registration_number,
     }
+
+
+@router.post("/stops/bulk-upload")
+async def bulk_upload_stops(
+    file: UploadFile = File(...), db: AsyncSession = Depends(get_async_session)
+):
+    content = await file.read()
+    service = AdminService(db)
+    total = await service.upsert_stops_from_jsonl(content.decode("utf-8"))
+    return {"status": "success", "imported": total}
+
+
+@router.get("/stops/all")
+async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
+    # Fetch all active stops from the library
+    result = await db.execute(
+        select(schema.Stop)
+        .where(schema.Stop.is_active == True)
+        .order_by(schema.Stop.name)
+    )
+    stops = result.scalars().all()
+
+    return [
+        {
+            "stop_id": s.id,
+            "name": s.name,
+            "latitude": float(s.lat),
+            "longitude": float(s.lng),
+        }
+        for s in stops
+    ]
+
+
+@router.post("/stops/add-single")
+async def add_single_stop(
+    data: StopCreate, db: AsyncSession = Depends(get_async_session)
+):
+    # 1. Check if the stop already exists by name
+    stmt = select(schema.Stop).where(schema.Stop.name == data.name)
+    result = await db.execute(stmt)
+    existing_stop = result.scalar_one_or_none()
+
+    if existing_stop:
+        # Update existing stop
+        existing_stop.lat = data.latitude
+        existing_stop.lng = data.longitude
+        existing_stop.radius_meters = data.radius_meters
+        message = f"Stop '{data.name}' updated successfully."
+    else:
+        # Create new stop
+        new_stop = schema.Stop(
+            name=data.name,
+            lat=data.latitude,
+            lng=data.longitude,
+            radius_meters=data.radius_meters,
+        )
+        db.add(new_stop)
+        message = f"Stop '{data.name}' created successfully."
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": message,
+        "data": {"name": data.name, "coords": [data.latitude, data.longitude]},
+    }
+
+
+@router.delete("/stops/{stop_id}")
+async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session)):
+    # 1. Search for the stop
+    stmt = select(schema.Stop).where(schema.Stop.id == stop_id)
+    result = await db.execute(stmt)
+    stop = result.scalar_one_or_none()
+
+    if not stop:
+        raise HTTPException(status_code=404, detail="Stop not found")
+
+    # 2. Check if it's linked to any routes (Optional but Recommended)
+    # This prevents breaking an active bus route accidentally
+    route_check = await db.execute(
+        select(schema.RouteStop).where(schema.RouteStop.stop_id == stop_id)
+    )
+    if route_check.scalars().first():
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete: This stop is part of an active route. Remove it from the route first.",
+        )
+
+    # 3. Delete the stop
+    await db.delete(stop)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Stop '{stop.name}' has been deleted.",
+        "deleted_id": stop_id,
+    }
+
+
+@router.post("/routes/create")
+async def create_route(
+    data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+):
+    # 1. Create the Route Entry
+    new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+    db.add(new_route)
+
+    # Flush allows us to get the new_route.id for the linking table
+    await db.flush()
+
+    # 2. Map the sequence in RouteStop
+    route_stops = []
+    for index, stop_data in enumerate(data.stops):
+        rs = schema.RouteStop(
+            route_id=new_route.id,
+            stop_id=stop_data.stop_id,
+            sequence_no=index + 1,  # Matching your schema 'sequence_no'
+            boarding_allowed=stop_data.boarding_allowed,
+            deboarding_allowed=stop_data.deboarding_allowed,
+        )
+        route_stops.append(rs)
+
+    db.add_all(route_stops)
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Route '{data.name}' created successfully",
+        "route_id": new_route.id,
+        "stops_count": len(data.stops),
+    }
+
+
+@router.get("/routes/all")
+async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
+    # We use joinedload to count stops without extra queries
+    stmt = (
+        select(schema.Route)
+        .options(joinedload(schema.Route.route_stops))
+        .order_by(schema.Route.created_at.desc())
+    )
+    result = await db.execute(stmt)
+    routes = result.unique().scalars().all()
+
+    return [
+        {
+            "route_id": r.id,
+            "name": r.name,
+            "code": r.code,
+            "is_active": r.is_active,
+            "total_stops": len(r.route_stops),
+            "created_at": r.created_at,
+        }
+        for r in routes
+    ]
+
+
+@router.get("/routes/{route_id}")
+async def get_route_details(
+    route_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    # Fetch route and join stops in the correct sequence order
+    stmt = (
+        select(schema.Route)
+        .options(joinedload(schema.Route.route_stops).joinedload(schema.RouteStop.stop))
+        .where(schema.Route.id == route_id)
+    )
+
+    result = await db.execute(stmt)
+    route = result.unique().scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    # Format the stops into a clean list
+    ordered_stops = [
+        {
+            "sequence_no": rs.sequence_no,
+            "stop_id": rs.stop.id,
+            "stop_name": rs.stop.name,
+            "latitude": float(rs.stop.lat),
+            "longitude": float(rs.stop.lng),
+            "boarding": rs.boarding_allowed,
+            "deboarding": rs.deboarding_allowed,
+        }
+        for rs in route.route_stops
+    ]
+
+    return {
+        "route_id": route.id,
+        "name": route.name,
+        "code": route.code,
+        "is_active": route.is_active,
+        "path": ordered_stops,
+    }
+
+
+@router.post("/routes/fares/bulk-set")
+async def set_route_fares(
+    data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
+):
+    # 1. Verify the route exists
+    route_stmt = select(schema.Route).where(schema.Route.id == data.route_id)
+    route_res = await db.execute(route_stmt)
+    if not route_res.scalar_one_or_none():
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    new_fares_count = 0
+    updated_fares_count = 0
+
+    for entry in data.fares:
+        # 2. Check if a fare rule already exists for this specific path
+        stmt = select(schema.RouteFare).where(
+            schema.RouteFare.route_id == data.route_id,
+            schema.RouteFare.pickup_stop_id == entry.pickup_stop_id,
+            schema.RouteFare.dropoff_stop_id == entry.dropoff_stop_id,
+        )
+        result = await db.execute(stmt)
+        existing_fare = result.scalar_one_or_none()
+
+        if existing_fare:
+            existing_fare.amount = entry.amount
+            updated_fares_count += 1
+        else:
+            new_fare = schema.RouteFare(
+                route_id=data.route_id,
+                pickup_stop_id=entry.pickup_stop_id,
+                dropoff_stop_id=entry.dropoff_stop_id,
+                amount=entry.amount,
+            )
+            db.add(new_fare)
+            new_fares_count += 1
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "route_id": data.route_id,
+        "new_rules": new_fares_count,
+        "updated_rules": updated_fares_count,
+    }
+
+
+@router.get("/routes/{route_id}/fares")
+async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_session)):
+    # Fetch fares with stop names for the Admin to read easily
+    stmt = (
+        select(schema.RouteFare)
+        .options(
+            joinedload(schema.RouteFare.pickup_stop),
+            joinedload(schema.RouteFare.dropoff_stop),
+        )
+        .where(schema.RouteFare.route_id == route_id)
+    )
+    result = await db.execute(stmt)
+    fares = result.scalars().all()
+
+    return [
+        {
+            "fare_id": f.id,
+            "from": f.pickup_stop.name,
+            "to": f.dropoff_stop.name,
+            "amount": float(f.amount),
+            "is_active": f.is_active,
+        }
+        for f in fares
+    ]
