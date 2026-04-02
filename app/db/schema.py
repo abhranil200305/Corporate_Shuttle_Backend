@@ -889,6 +889,9 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
 
     fare_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
+    pickup_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    dropoff_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+
     payment_hold_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
