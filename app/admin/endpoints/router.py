@@ -480,6 +480,7 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
 #         "stops_count": len(data.stops),
 #     }
 
+
 @router.post("/routes/create")
 async def create_route(
     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
@@ -494,14 +495,14 @@ async def create_route(
     for index, stop_data in enumerate(data.stops):
         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
-        
+
         rs = schema.RouteStop(
             route_id=new_route.id,
             stop_id=stop_data.stop_id,
             sequence_no=index + 1,
             boarding_allowed=stop_data.boarding_allowed,
             deboarding_allowed=stop_data.deboarding_allowed,
-            assume_time_diff_minutes=time_diff
+            assume_time_diff_minutes=time_diff,
         )
         route_stops.append(rs)
 
@@ -566,6 +567,7 @@ async def get_route_details(
             "longitude": float(rs.stop.lng),
             "boarding": rs.boarding_allowed,
             "deboarding": rs.deboarding_allowed,
+            "time_diff_min": rs.assume_time_diff_minutes,
         }
         for rs in route.route_stops
     ]
