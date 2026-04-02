@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -9,6 +9,7 @@ from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
     RouteCreate,
     RouteFareCreate,
+    RouteStatusUpdate,
     StopCreate,
     VehicleVerificationUpdate,
     VerificationUpdate,
@@ -28,7 +29,6 @@ router = APIRouter(
 # -----------------------------
 # Admin: All Drivers
 # -----------------------------
-@router.get("/view/all-drivers")
 @router.get("/view/all-drivers")
 async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
@@ -267,7 +267,7 @@ async def deactivate_driver(
     return {"message": f"Driver {user_id} has been deactivated successfully"}
 
 
-# change the verification status
+# ----------------- driver profiles verification ---------------------------
 @router.post("/driver/verify/{user_id}")
 async def verify_driver(
     user_id: str,
@@ -292,6 +292,7 @@ async def verify_driver(
     }
 
 
+# ----------------- driver vehical verification ---------------------------
 @router.post("/vehicle/verify/{user_id}")
 async def verify_vehicle(
     user_id: str,
@@ -315,6 +316,9 @@ async def verify_vehicle(
         "user_id": user_id,
         "registration_number": driver.vehicle.registration_number,
     }
+
+
+# ------------------- add stops and routes -----------------------------
 
 
 @router.post("/stops/bulk-upload")
@@ -513,6 +517,28 @@ async def get_route_details(
     }
 
 
+@router.patch("/routes/{route_id}/toggle")
+async def toggle_route(
+    route_id: str,
+    data: RouteStatusUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    route = await service.toggle_route_status(route_id, data.is_active)
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    status_text = "Activated" if route.is_active else "Deactivated"
+    return {
+        "status": "success",
+        "message": f"Route '{route.name}' has been {status_text}.",
+        "route_id": route.id,
+        "current_status": route.is_active,
+    }
+
+
+# ------------------------  routs fares routes --------------------------
 @router.post("/routes/fares/bulk-set")
 async def set_route_fares(
     data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
@@ -584,39 +610,89 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
         for f in fares
     ]
 
+
+# ----------------------  trips routes -------------------
+
+
 @router.get("/trips/monitor")
 async def monitor_all_trips(
-    status: Optional[schema.ScheduledTripStatus] = Query(None), 
-    db: AsyncSession = Depends(get_async_session)
+    status: Optional[schema.ScheduledTripStatus] = Query(None),
+    db: AsyncSession = Depends(get_async_session),
 ):
     # Initialize the combined AdminService
     service = AdminService(db)
     trips = await service.get_all_trips(status=status)
-    
+
     return [
         {
-            "trip_id": t.id,
-            "route_name": t.route.name,
-            "route_code": t.route.code,
-            "driver": t.driver.full_name, # Assuming 'full_name' exists in User model
-            "vehicle": f"{t.vehicle.registration_number}",
-            "planned_start": t.planned_start_at,
-            "status": t.status,
-            "bookings_count": len(t.bookings)
+            "trip_id": t.id if t else "N/A",
+            "route_name": t.route.name if t else "N/A",
+            "route_code": t.route.code if t else "N/A",
+            # "driver": t.driver.driver_profile.full_name
+            # if t.driver and t.driver.driver_profile
+            # else "No Driver Assigned",
+            # Assuming 'full_name' exists in User model
+            # In your router list comprehension:
+            "driver": t.driver.driver_profile.full_name
+            if t.driver and t.driver.driver_profile
+            else "No Driver Assigned",
+            "vehicle": f"{t.vehicle.registration_number}" if t else "N/A",
+            "planned_start": t.planned_start_at if t else "N/A",
+            "status": t.status if t else "N/A",
+            "bookings_count": len(t.bookings) if t else "N/A",
         }
         for t in trips
     ]
 
+
 @router.patch("/trips/{trip_id}/cancel")
 async def cancel_trip_by_id(
-    trip_id: str, 
-    reason: str, # You can send this as a query param or a small body
-    db: AsyncSession = Depends(get_async_session)
+    trip_id: str,
+    reason: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_async_session),
 ):
     service = AdminService(db)
     success = await service.cancel_trip(trip_id, reason)
-    
+
     if not success:
         raise HTTPException(status_code=404, detail="Trip not found in database.")
-    
+
     return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}
+
+
+@router.get("/trips/{trip_id}")
+async def get_specific_trip_status(
+    trip_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    trip = await service.get_trip_by_id(trip_id)
+
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
+    return {
+        "trip_id": trip.id,
+        "status": trip.status,  # ACTIVE, COMPLETED, or CANCELLED
+        "route": {"name": trip.route.name, "code": trip.route.code},
+        "assignment": {
+            # "driver": trip.driver.full_name,
+            "driver": trip.driver.driver_profile.full_name
+            if trip.driver and trip.driver.driver_profile
+            else "No Driver Assigned",
+            "vehicle": trip.vehicle.registration_number,
+        },
+        "timing": {
+            "planned_start": trip.planned_start_at,
+            "actual_start": trip.actual_start_at,
+            "planned_end": trip.planned_end_at,
+            "actual_end": trip.actual_end_at,
+        },
+        "occupancy": {
+            "total_bookings": len(trip.bookings),
+            "passengers": [
+                {"name": b.passenger.full_name, "status": b.booking_status}
+                for b in trip.bookings
+            ],
+        },
+        "admin_note": trip.admin_note,
+    }
