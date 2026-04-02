@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent / "uploads"
 UPLOAD_DIR = BASE_DIR / "upload_document"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-ALLOWED_TYPES = ["image/jpeg", "image/png", "application/pdf"]
+ALLOWED_TYPES = ["image/jpeg", "image/png", "image/webp", "application/pdf"]
 
 # -----------------------------
 # Helper Functions
