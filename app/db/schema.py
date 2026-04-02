@@ -539,7 +539,7 @@ class Stop(UUIDPKMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     lat: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
     lng: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
-    radius_meters: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
+    radius_meters: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
     route_stops: Mapped[list["RouteStop"]] = relationship(

@@ -1,4 +1,5 @@
 # app/driver/vehicle.py
+
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -7,7 +8,14 @@ import shutil
 from datetime import datetime, timezone
 
 from app.db.database import get_async_session
-from app.db.schema import Vehicle, VehicleVerificationStatus, User, UserRole
+from app.db.schema import (
+    Vehicle,
+    VehicleVerificationStatus,
+    User,
+    UserRole,
+    DriverProfile,
+    DriverVerificationStatus
+)
 from app.driver.schemas import VehicleOut
 from app.auth.dependencies import get_current_active_user
 
@@ -37,10 +45,27 @@ async def register_vehicle(
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can register vehicles")
 
+    # ✅ KYC CHECK (NEW)
+    result = await session.execute(
+        select(DriverProfile).where(DriverProfile.user_id == current_driver.id)
+    )
+    driver_profile = result.scalar_one_or_none()
+
+    if not driver_profile:
+        raise HTTPException(status_code=400, detail="Driver profile not found. Complete KYC first.")
+
+    if driver_profile.verification_status != DriverVerificationStatus.VERIFIED:
+        raise HTTPException(
+            status_code=403,
+            detail="KYC not verified. Complete and get approval before registering vehicle."
+        )
+
     driver_user_id = current_driver.id
 
     # Check for duplicate registration number
-    result = await session.execute(select(Vehicle).where(Vehicle.registration_number == registration_number))
+    result = await session.execute(
+        select(Vehicle).where(Vehicle.registration_number == registration_number)
+    )
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Vehicle registration already exists")
 
@@ -53,10 +78,11 @@ async def register_vehicle(
 
     with open(rc_path, "wb") as f:
         shutil.copyfileobj(rc_file.file, f)
+
     with open(rear_path, "wb") as f:
         shutil.copyfileobj(rear_photo.file, f)
 
-    # Save vehicle in DB with relative paths
+    # Save vehicle in DB
     vehicle = Vehicle(
         driver_user_id=driver_user_id,
         registration_number=registration_number,
@@ -73,6 +99,7 @@ async def register_vehicle(
     session.add(vehicle)
     await session.commit()
     await session.refresh(vehicle)
+
     return vehicle
 
 
@@ -87,17 +114,20 @@ async def get_my_vehicle(
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can view vehicles")
 
-    result = await session.execute(select(Vehicle).where(Vehicle.driver_user_id == current_driver.id))
+    result = await session.execute(
+        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
+    )
     vehicle = result.scalar_one_or_none()
+
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle registered")
+
     return vehicle
 
 
 # ---------------------------
-# Update Vehicle (Token-only, no vehicle_id)
+# Update Vehicle
 # ---------------------------
-
 @router.patch("/update", response_model=VehicleOut)
 async def update_vehicle(
     vehicle_name: str | None = Form(None),
@@ -113,20 +143,15 @@ async def update_vehicle(
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can update vehicles")
 
-    # Fetch all vehicles for the driver
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
-    vehicles = result.scalars().all()
+    vehicle = result.scalar_one_or_none()
 
-    if len(vehicles) > 1:
-        raise HTTPException(status_code=400, detail="Multiple vehicles registered! Only one allowed per driver.")
-
-    vehicle = vehicles[0] if vehicles else None
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle registered for this driver")
+        raise HTTPException(status_code=404, detail="No vehicle registered")
 
-    # Update text fields if provided
+    # Update fields
     if vehicle_name is not None:
         vehicle.vehicle_name = vehicle_name
     if vehicle_model is not None:
@@ -138,7 +163,7 @@ async def update_vehicle(
     if has_ac is not None:
         vehicle.has_ac = has_ac
 
-    # Update files if provided
+    # Update files
     if rc_file:
         rc_filename = f"{vehicle.registration_number}_rc_{rc_file.filename}"
         rc_path = UPLOAD_DIR / rc_filename
@@ -159,7 +184,10 @@ async def update_vehicle(
 
     await session.commit()
     await session.refresh(vehicle)
+
     return vehicle
+
+
 # ---------------------------
 # Request Verification
 # ---------------------------
@@ -171,14 +199,18 @@ async def request_vehicle_verification(
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can request verification")
 
-    result = await session.execute(select(Vehicle).where(Vehicle.driver_user_id == current_driver.id))
+    result = await session.execute(
+        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
+    )
     vehicle = result.scalar_one_or_none()
+
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle registered for this driver")
+        raise HTTPException(status_code=404, detail="No vehicle registered")
 
     vehicle.verification_status = VehicleVerificationStatus.PENDING
     vehicle.verification_requested_at = datetime.now(timezone.utc)
 
     await session.commit()
     await session.refresh(vehicle)
+
     return vehicle
