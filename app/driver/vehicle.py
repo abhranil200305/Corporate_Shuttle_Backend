@@ -1,3 +1,4 @@
+# app/driver/vehicle.py
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -94,60 +95,86 @@ async def get_my_vehicle(
 
 
 # ---------------------------
-# Update Vehicle
+# Update Vehicle (Token-only, no vehicle_id)
 # ---------------------------
-@router.patch("/update/{vehicle_id}", response_model=VehicleOut)
+
+@router.patch("/update", response_model=VehicleOut)
 async def update_vehicle(
-    vehicle_id: str,
-    vehicle_name: str = Form(...),
-    vehicle_model: str = Form(...),
-    color: str = Form(...),
-    seat_count: int = Form(...),
-    has_ac: bool = Form(...),
+    vehicle_name: str | None = Form(None),
+    vehicle_model: str | None = Form(None),
+    color: str | None = Form(None),
+    seat_count: int | None = Form(None),
+    has_ac: bool | None = Form(None),
+    rc_file: UploadFile | None = File(None),
+    rear_photo: UploadFile | None = File(None),
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can update vehicles")
 
+    # Fetch all vehicles for the driver
     result = await session.execute(
-        select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.driver_user_id == current_driver.id)
+        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
-    vehicle = result.scalar_one_or_none()
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found or not owned by driver")
+    vehicles = result.scalars().all()
 
-    vehicle.vehicle_name = vehicle_name
-    vehicle.vehicle_model = vehicle_model
-    vehicle.color = color
-    vehicle.seat_count = seat_count
-    vehicle.has_ac = has_ac
+    if len(vehicles) > 1:
+        raise HTTPException(status_code=400, detail="Multiple vehicles registered! Only one allowed per driver.")
+
+    vehicle = vehicles[0] if vehicles else None
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="No vehicle registered for this driver")
+
+    # Update text fields if provided
+    if vehicle_name is not None:
+        vehicle.vehicle_name = vehicle_name
+    if vehicle_model is not None:
+        vehicle.vehicle_model = vehicle_model
+    if color is not None:
+        vehicle.color = color
+    if seat_count is not None:
+        vehicle.seat_count = seat_count
+    if has_ac is not None:
+        vehicle.has_ac = has_ac
+
+    # Update files if provided
+    if rc_file:
+        rc_filename = f"{vehicle.registration_number}_rc_{rc_file.filename}"
+        rc_path = UPLOAD_DIR / rc_filename
+        with open(rc_path, "wb") as f:
+            shutil.copyfileobj(rc_file.file, f)
+        vehicle.rc_file_path = str(rc_path)
+
+    if rear_photo:
+        rear_filename = f"{vehicle.registration_number}_rear_{rear_photo.filename}"
+        rear_path = UPLOAD_DIR / rear_filename
+        with open(rear_path, "wb") as f:
+            shutil.copyfileobj(rear_photo.file, f)
+        vehicle.rear_photo_file_path = str(rear_path)
+
+    # Reset verification
     vehicle.verification_status = VehicleVerificationStatus.DRAFT
     vehicle.rejection_reason = None
 
     await session.commit()
     await session.refresh(vehicle)
     return vehicle
-
-
 # ---------------------------
 # Request Verification
 # ---------------------------
-@router.post("/request-verification/{vehicle_id}", response_model=VehicleOut)
+@router.post("/request-verification", response_model=VehicleOut)
 async def request_vehicle_verification(
-    vehicle_id: str,
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can request verification")
 
-    result = await session.execute(
-        select(Vehicle).where(Vehicle.id == vehicle_id, Vehicle.driver_user_id == current_driver.id)
-    )
+    result = await session.execute(select(Vehicle).where(Vehicle.driver_user_id == current_driver.id))
     vehicle = result.scalar_one_or_none()
     if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found or not owned by driver")
+        raise HTTPException(status_code=404, detail="No vehicle registered for this driver")
 
     vehicle.verification_status = VehicleVerificationStatus.PENDING
     vehicle.verification_requested_at = datetime.now(timezone.utc)
