@@ -651,7 +651,7 @@ class RouteStop(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    assume_time_diff_minutes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    assume_time_diff_minutes: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
     boarding_allowed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
