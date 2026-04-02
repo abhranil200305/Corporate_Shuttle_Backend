@@ -810,6 +810,11 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         back_populates="scheduled_trips",
         foreign_keys=[route_id],
     )
+    trip_events: Mapped[list["TripEvent"]] = relationship(
+    back_populates="scheduled_trip",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+    )
     driver: Mapped["User"] = relationship(
         back_populates="driven_trips",
         foreign_keys=[driver_user_id],
