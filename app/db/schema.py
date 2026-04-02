@@ -1025,6 +1025,14 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
             "pickup_stop_id <> dropoff_stop_id",
             name="ck_trip_bookings_pickup_dropoff_different",
         ),
+        CheckConstraint(
+            "pickup_sequence_no_snapshot > 0",
+            name="ck_trip_bookings_pickup_sequence_positive",
+        ),
+        CheckConstraint(
+            "dropoff_sequence_no_snapshot > pickup_sequence_no_snapshot",
+            name="ck_trip_bookings_dropoff_after_pickup",
+        ),
         Index("ix_trip_bookings_trip_status", "scheduled_trip_id", "booking_status"),
     )
 
