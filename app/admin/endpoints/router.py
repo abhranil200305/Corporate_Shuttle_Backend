@@ -172,6 +172,34 @@ async def get_driver_details(
     }
 
 
+@router.get("/driver/vehicle/{user_id}")
+async def get_driver_details_vechicals(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    d = await service.fetch_driver_by_id(user_id)
+
+    if not d:
+        return {"error": "Driver not found"}
+    v = d.vehicle
+    return {
+        "user_id": d.id,
+        "email": d.email,
+        "is_active": d.is_active,
+        "vehicle": {
+            "reg_no": d.vehicle.registration_number if d.vehicle else None,
+            "model": d.vehicle.vehicle_model if d.vehicle else None,
+            "capacity": d.vehicle.seat_count if d.vehicle else 0,
+            "has_ac": d.vehicle.has_ac if d.vehicle else False,
+            "verification": d.vehicle.verification_status if d.vehicle else "N/A",
+            "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
+            "rear_photo_file_path": v.rear_photo_file_path
+            if (v and v.rear_photo_file_path)
+            else "NA",
+        },
+    }
+
+
 # -----------------------------
 # Admin: Specific Passenger Details
 # -----------------------------
@@ -696,3 +724,30 @@ async def get_specific_trip_status(
         },
         "admin_note": trip.admin_note,
     }
+
+
+# ----------------------   check all bookings ------------------------------
+@router.get("/trips/{trip_id}/bookings")
+async def get_all_bookings_for_trip(
+    trip_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    bookings = await service.get_trip_bookings(trip_id)
+
+    if not bookings:
+        return []  # Return empty list if no one has booked yet
+
+    return bookings
+
+
+@router.patch("/bookings/{booking_id}/noshow")
+async def record_passenger_no_show(
+    booking_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    success = await service.mark_no_show(booking_id)
+
+    if not success:
+        raise HTTPException(status_code=404, detail="Booking record not found.")
+
+    return {"status": "success", "message": f"Booking {booking_id} marked as No-Show."}

@@ -261,3 +261,29 @@ class AdminService:
         )
         result = await self.db.execute(stmt)
         return result.unique().scalar_one_or_none()
+    
+    async def get_trip_bookings(self, trip_id: str):
+        stmt = (
+        select(schema.TripBooking)
+        .options(
+            joinedload(schema.TripBooking.passenger),
+            joinedload(schema.TripBooking.pickup_stop),
+            joinedload(schema.TripBooking.dropoff_stop)
+        )
+        .where(schema.TripBooking.scheduled_trip_id == trip_id)
+    )
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
+
+    async def mark_no_show(self, booking_id: str):
+      stmt = select(schema.TripBooking).where(schema.TripBooking.id == booking_id)
+      res = await self.db.execute(stmt)
+      booking = res.scalar_one_or_none()
+
+      if booking:
+        # Assuming NO_SHOW is a status in your Enum
+        booking.booking_status = "NO_SHOW" 
+        booking.updated_at = datetime.now(timezone.utc)
+        await self.db.commit()
+        return True
+        return False
