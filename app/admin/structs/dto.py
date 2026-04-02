@@ -49,3 +49,6 @@ class FareEntry(BaseModel):
 class RouteFareCreate(BaseModel):
     route_id: str
     fares: List[FareEntry]
+
+class RouteStatusUpdate(BaseModel):
+    is_active: bool

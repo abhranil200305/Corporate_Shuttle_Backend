@@ -1,5 +1,5 @@
-from datetime import datetime, timedelta, timezone
 import json
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import joinedload
@@ -142,7 +142,7 @@ class AdminService:
         for line in lines:
             if not line.strip():
                 continue
-            
+
             try:
                 data = json.loads(line)
                 location_name = data.get("location")
@@ -164,55 +164,73 @@ class AdminService:
                         name=location_name,
                         lat=lat,
                         lng=lng,
-                        radius_meters=150  # Default geofence for Kolkata IT parks
+                        radius_meters=150,  # Default geofence for Kolkata IT parks
                     )
                     self.db.add(new_stop)
-                
+
                 count += 1
             except json.JSONDecodeError:
                 print(f"Skipping invalid JSON line: {line}")
                 continue
-        
+
         await self.db.commit()
         return count
 
-
-    async def create_route_with_sequence(self, name: str, code: str, stop_ids: list[str]):
+    async def create_route_with_sequence(
+        self, name: str, code: str, stop_ids: list[str]
+    ):
         # 1. Create Route
         new_route = schema.Route(name=name, code=code)
         self.db.add(new_route)
-        await self.db.flush() # Get ID without committing
+        await self.db.flush()  # Get ID without committing
 
         # 2. Create Sequence (The Ordered Playlist)
         for index, s_id in enumerate(stop_ids):
             rs = schema.RouteStop(
-                route_id=new_route.id,
-                stop_id=s_id,
-                sequence_order=index + 1 
+                route_id=new_route.id, stop_id=s_id, sequence_order=index + 1
             )
             self.db.add(rs)
-        
+
         await self.db.commit()
         return new_route
-    
+
+    async def toggle_route_status(self, route_id: str, is_active: bool):
+        # 1. Fetch the specific route
+        stmt = select(schema.Route).where(schema.Route.id == route_id)
+        result = await self.db.execute(stmt)
+        route = result.scalar_one_or_none()
+
+        if not route:
+            return None
+
+        # 2. Update the status
+        route.is_active = is_active
+        await self.db.commit()
+        return route
+
     async def get_all_trips(self, status=None):
         stmt = (
             select(schema.ScheduledTrip)
             .options(
                 joinedload(schema.ScheduledTrip.route),
-                joinedload(schema.ScheduledTrip.driver),
-                joinedload(schema.ScheduledTrip.vehicle)
+                joinedload(schema.ScheduledTrip.driver).joinedload(
+                    schema.User.driver_profile
+                ),  # Pre-load the profile too!
+                joinedload(schema.ScheduledTrip.vehicle),
+                joinedload(schema.ScheduledTrip.bookings),  # <--- ADD THIS LINE
             )
             .order_by(schema.ScheduledTrip.planned_start_at.desc())
         )
         if status:
             stmt = stmt.where(schema.ScheduledTrip.status == status)
-            
+
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
     async def cancel_trip(self, trip_id: str, reason: str):
-        trip_stmt = select(schema.ScheduledTrip).where(schema.ScheduledTrip.id == trip_id)
+        trip_stmt = select(schema.ScheduledTrip).where(
+            schema.ScheduledTrip.id == trip_id
+        )
         res = await self.db.execute(trip_stmt)
         trip = res.scalar_one_or_none()
 
@@ -223,62 +241,23 @@ class AdminService:
             await self.db.commit()
             return True
         return False
-# @router.post("/stops",response_model=None)
-# def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):
-#     new_stop=schema.Stop(
-#         name=stop_data.name,
-#         lat=stop_data.lat,
-#         lng=stop_data.lng,
-#         radius_meters=stop_data.radius_meters
-#     )
-#     db.add(new_stop)
-#     db.commit()
-#     db.refresh(new_stop)
-#     return new_stop
 
-# @router.post("/routes")
-# def create_route_with_stops(route_data:RouteCreate,db:Session=Depends(get_db)):
-#     new_route=schema.Route(
-#         name=route_data.name,
-#         code=route_data.code
-#     )
-#     db.add(new_route)
-#     db.flush()
-
-#     for stop_items in route_data.stops:
-#         route_stop=schema.RouteStop(
-#             route_id=new_route.id,
-#             stop_id=stop_items.stop_id,
-#             sequence_no=stop_items.sequence_no,
-#             boarding_allowed=stop_items.bording_allowed,
-#             deboarding_allowed=stop_items.debording_allowed
-#         )
-#         db.add(route_stop)
-
-#     try:
-#         db.commit()
-#     except Exception as e:
-#         db.rollback()
-#         raise HTTPException(status_code=400,detail=str(e))
-#     return {"message": "Route and Stops created successfully", "route_id": new_route.id}
-
-
-# @router.get("/routes/{route_id}")
-# def get_route_details(route_id: str, db: Session = Depends(get_db)):
-#     """Fetch a route and its ordered stops"""
-#     route = db.query(schema.Route).filter(schema.Route.id == route_id).first()
-#     if not route:
-#         raise HTTPException(status_code=404, detail="Route not found")
-
-#     return {
-#         "route_name": route.name,
-#         "code": route.code,
-#         "stops": [
-#             {
-#                 "stop_name": rs.stop.name,
-#                 "sequence": rs.sequence_no,
-#                 "lat": rs.stop.lat,
-#                 "lng": rs.stop.lng
-#             } for rs in route.route_stops
-#         ]
-#     }
+    async def get_trip_by_id(self, trip_id: str):
+        stmt = (
+            select(schema.ScheduledTrip)
+            .options(
+                joinedload(schema.ScheduledTrip.route),
+                joinedload(schema.ScheduledTrip.vehicle),
+                # Combine driver + driver_profile into one chain
+                joinedload(schema.ScheduledTrip.driver).joinedload(
+                    schema.User.driver_profile
+                ),
+                # Combine bookings + passenger into one chain (PICK ONE: joinedload is fine here)
+                joinedload(schema.ScheduledTrip.bookings).joinedload(
+                    schema.TripBooking.passenger
+                ),
+            )
+            .where(schema.ScheduledTrip.id == trip_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.unique().scalar_one_or_none()
