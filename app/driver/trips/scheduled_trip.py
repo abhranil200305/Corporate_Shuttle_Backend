@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 
 from app.db.database import get_async_session
 from app.db.schema import (
@@ -34,21 +34,53 @@ async def create_scheduled_trip(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # -------------------------
+    # Role check
+    # -------------------------
     if current_user.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers can create trips")
 
     driver_user_id = current_user.id
+    now = datetime.now(timezone.utc)
 
-    # 1️⃣ Get vehicle
+    # -------------------------
+    # 🚫 24-hour rule
+    # -------------------------
+    if planned_start_at > now + timedelta(hours=24):
+        raise HTTPException(
+            status_code=400,
+            detail="Trip can only be scheduled within next 24 hours"
+        )
+
+    # -------------------------
+    # 🚫 No past / early scheduling
+    # -------------------------
+    if planned_start_at < now:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot schedule trip in the past"
+        )
+
+    if planned_end_at <= planned_start_at:
+        raise HTTPException(status_code=400, detail="Invalid timing")
+
+    # -------------------------
+    # Get vehicle
+    # -------------------------
     result = await session.execute(
-        select(Vehicle).where(Vehicle.driver_user_id == driver_user_id)
+        select(Vehicle).where(
+            Vehicle.driver_user_id == driver_user_id,
+            Vehicle.is_active == True
+        )
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=400, detail="No vehicle found")
+        raise HTTPException(status_code=400, detail="No active vehicle found")
 
-    # 2️⃣ Get route
+    # -------------------------
+    # Get route
+    # -------------------------
     result = await session.execute(
         select(Route).where(
             Route.name.ilike(route_name),
@@ -60,7 +92,9 @@ async def create_scheduled_trip(
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    # 3️⃣ Validate stops
+    # -------------------------
+    # Validate stops
+    # -------------------------
     result = await session.execute(
         select(RouteStop)
         .where(RouteStop.route_id == route.id)
@@ -69,9 +103,15 @@ async def create_scheduled_trip(
     stops = result.scalars().all()
 
     if len(stops) < 2:
-        raise HTTPException(status_code=400, detail="Route must have at least 2 stops")
+        raise HTTPException(
+            status_code=400,
+            detail="Route must have at least 2 stops"
+        )
 
-    # 4️⃣ Previous trip check
+    # -------------------------
+    # Previous trip check
+    # (ALLOW if CANCELLED)
+    # -------------------------
     result = await session.execute(
         select(ScheduledTrip)
         .where(ScheduledTrip.driver_user_id == driver_user_id)
@@ -79,17 +119,19 @@ async def create_scheduled_trip(
     )
     last_trip = result.scalars().first()
 
-    if last_trip and last_trip.actual_end_at is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Finish previous trip first"
-        )
+    if last_trip:
+        if last_trip.status not in [
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.CANCELLED
+        ]:
+            raise HTTPException(
+                status_code=400,
+                detail="Finish or cancel previous trip first"
+            )
 
-    # 5️⃣ Validate time
-    if planned_end_at <= planned_start_at:
-        raise HTTPException(status_code=400, detail="Invalid timing")
-
-    # 6️⃣ Create
+    # -------------------------
+    # Create trip
+    # -------------------------
     trip = ScheduledTrip(
         route_id=route.id,
         driver_user_id=driver_user_id,
@@ -103,20 +145,28 @@ async def create_scheduled_trip(
     await session.commit()
     await session.refresh(trip)
 
+    # -------------------------
+    # ✅ FINAL RESPONSE (UPDATED)
+    # -------------------------
     return {
         "message": "Trip created successfully",
         "trip_id": trip.id,
+        "route_id": route.id,
+        "route_name": route.name,
+        "vehicle_id": vehicle.id,
         "status": trip.status,
+        "planned_start": trip.planned_start_at,
+        "planned_end": trip.planned_end_at,
     }
 
 
 # ============================================================
-# START TRIP (MANUAL TIME)
+# START TRIP
 # ============================================================
 @router.post("/{trip_id}/start")
 async def start_trip(
     trip_id: str,
-    actual_start_at: datetime = Form(...),   # 🔥 NEW
+    actual_start_at: datetime = Form(...),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -134,7 +184,7 @@ async def start_trip(
     if trip.status != ScheduledTripStatus.SCHEDULED:
         raise HTTPException(status_code=400, detail="Trip cannot be started")
 
-    # ❌ No early start
+    # 🚫 No early start
     if actual_start_at < trip.planned_start_at:
         raise HTTPException(
             status_code=400,
@@ -155,12 +205,12 @@ async def start_trip(
 
 
 # ============================================================
-# END TRIP (MANUAL TIME)
+# END TRIP
 # ============================================================
 @router.post("/{trip_id}/end")
 async def end_trip(
     trip_id: str,
-    actual_end_at: datetime = Form(...),   # 🔥 NEW
+    actual_end_at: datetime = Form(...),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -178,7 +228,6 @@ async def end_trip(
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(status_code=400, detail="Trip not in progress")
 
-    # ❌ Cannot end before start
     if not trip.actual_start_at or actual_end_at < trip.actual_start_at:
         raise HTTPException(
             status_code=400,
@@ -215,4 +264,16 @@ async def list_driver_trips(
         .order_by(ScheduledTrip.planned_start_at.desc())
     )
 
-    return result.scalars().all()
+    trips = result.scalars().all()
+
+    return [
+        {
+            "trip_id": t.id,
+            "route_id": t.route_id,
+            "vehicle_id": t.vehicle_id,
+            "status": t.status,
+            "planned_start": t.planned_start_at,
+            "planned_end": t.planned_end_at,
+        }
+        for t in trips
+    ]
