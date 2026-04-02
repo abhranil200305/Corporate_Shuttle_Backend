@@ -28,7 +28,7 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ---------------------------
 # Register Vehicle
 # ---------------------------
-@router.post("/register", response_model=VehicleOut, status_code=status.HTTP_201_CREATED)
+@router.patch("/register", response_model=VehicleOut, status_code=status.HTTP_201_CREATED)
 async def register_vehicle(
     registration_number: str = Form(...),
     vehicle_name: str = Form(...),
