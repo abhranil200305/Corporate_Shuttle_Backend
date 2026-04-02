@@ -21,7 +21,6 @@ from app.auth.dependencies import get_current_active_user
 
 router = APIRouter(prefix="/driver/vehicle", tags=["Driver Vehicle"])
 
-# Save uploaded vehicle photos here
 UPLOAD_DIR = Path("uploads/upload_vehicledetails_photo")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -43,31 +42,26 @@ async def register_vehicle(
     session: AsyncSession = Depends(get_async_session)
 ):
     if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers can register vehicles")
+        raise HTTPException(status_code=403, detail="Only drivers allowed")
 
-    # ✅ KYC CHECK (NEW)
+    # KYC CHECK
     result = await session.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_driver.id)
     )
     driver_profile = result.scalar_one_or_none()
 
     if not driver_profile:
-        raise HTTPException(status_code=400, detail="Driver profile not found. Complete KYC first.")
+        raise HTTPException(status_code=400, detail="Complete KYC first")
 
     if driver_profile.verification_status != DriverVerificationStatus.VERIFIED:
-        raise HTTPException(
-            status_code=403,
-            detail="KYC not verified. Complete and get approval before registering vehicle."
-        )
+        raise HTTPException(status_code=403, detail="KYC not verified")
 
-    driver_user_id = current_driver.id
-
-    # Check for duplicate registration number
+    # Check duplicate
     result = await session.execute(
         select(Vehicle).where(Vehicle.registration_number == registration_number)
     )
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Vehicle registration already exists")
+        raise HTTPException(status_code=400, detail="Vehicle already exists")
 
     # Save files
     rc_filename = f"{registration_number}_rc_{rc_file.filename}"
@@ -82,17 +76,16 @@ async def register_vehicle(
     with open(rear_path, "wb") as f:
         shutil.copyfileobj(rear_photo.file, f)
 
-    # Save vehicle in DB
     vehicle = Vehicle(
-        driver_user_id=driver_user_id,
+        driver_user_id=current_driver.id,
         registration_number=registration_number,
         vehicle_name=vehicle_name,
         vehicle_model=vehicle_model,
         color=color,
         seat_count=seat_count,
         has_ac=has_ac,
-        rc_file_path=str(Path("uploads/upload_vehicledetails_photo") / rc_filename),
-        rear_photo_file_path=str(Path("uploads/upload_vehicledetails_photo") / rear_filename),
+        rc_file_path=str(rc_path),
+        rear_photo_file_path=str(rear_path),
         verification_status=VehicleVerificationStatus.DRAFT,
     )
 
@@ -104,23 +97,20 @@ async def register_vehicle(
 
 
 # ---------------------------
-# View Own Vehicle
+# View Vehicle
 # ---------------------------
 @router.get("/my-vehicle", response_model=VehicleOut)
 async def get_my_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers can view vehicles")
-
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle registered")
+        raise HTTPException(status_code=404, detail="No vehicle found")
 
     return vehicle
 
@@ -140,16 +130,27 @@ async def update_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers can update vehicles")
-
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle registered")
+        raise HTTPException(status_code=404, detail="No vehicle found")
+
+    # ❌ BLOCK UPDATE if submitted
+    if vehicle.verification_status in [
+        VehicleVerificationStatus.PENDING,
+        VehicleVerificationStatus.VERIFIED
+    ]:
+        raise HTTPException(
+            status_code=403,
+            detail="Cannot update after submission. Wait for admin or rejection."
+        )
+
+    # If REJECTED → allow edit and move back to DRAFT
+    if vehicle.verification_status == VehicleVerificationStatus.REJECTED:
+        vehicle.verification_status = VehicleVerificationStatus.DRAFT
 
     # Update fields
     if vehicle_name is not None:
@@ -163,23 +164,19 @@ async def update_vehicle(
     if has_ac is not None:
         vehicle.has_ac = has_ac
 
-    # Update files
+    # Files
     if rc_file:
-        rc_filename = f"{vehicle.registration_number}_rc_{rc_file.filename}"
-        rc_path = UPLOAD_DIR / rc_filename
+        rc_path = UPLOAD_DIR / f"{vehicle.registration_number}_rc_{rc_file.filename}"
         with open(rc_path, "wb") as f:
             shutil.copyfileobj(rc_file.file, f)
         vehicle.rc_file_path = str(rc_path)
 
     if rear_photo:
-        rear_filename = f"{vehicle.registration_number}_rear_{rear_photo.filename}"
-        rear_path = UPLOAD_DIR / rear_filename
+        rear_path = UPLOAD_DIR / f"{vehicle.registration_number}_rear_{rear_photo.filename}"
         with open(rear_path, "wb") as f:
             shutil.copyfileobj(rear_photo.file, f)
         vehicle.rear_photo_file_path = str(rear_path)
 
-    # Reset verification
-    vehicle.verification_status = VehicleVerificationStatus.DRAFT
     vehicle.rejection_reason = None
 
     await session.commit()
@@ -189,23 +186,30 @@ async def update_vehicle(
 
 
 # ---------------------------
-# Request Verification
+# SUBMIT VEHICLE (IMPORTANT)
 # ---------------------------
-@router.post("/request-verification", response_model=VehicleOut)
-async def request_vehicle_verification(
+@router.post("/submit", response_model=VehicleOut)
+async def submit_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers can request verification")
-
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle registered")
+        raise HTTPException(status_code=404, detail="No vehicle found")
+
+    # Only DRAFT or REJECTED can submit
+    if vehicle.verification_status not in [
+        VehicleVerificationStatus.DRAFT,
+        VehicleVerificationStatus.REJECTED
+    ]:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle already submitted or verified"
+        )
 
     vehicle.verification_status = VehicleVerificationStatus.PENDING
     vehicle.verification_requested_at = datetime.now(timezone.utc)
