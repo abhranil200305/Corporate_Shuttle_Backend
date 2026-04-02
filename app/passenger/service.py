@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -112,6 +112,69 @@ class PassengerService:
     @classmethod
     def _to_subunits(cls, amount: Decimal) -> int:
         return int((cls._quantize_money(amount) * 100).to_integral_value(rounding=ROUND_HALF_UP))
+    
+    @staticmethod
+    def _get_payment_hold_minutes() -> int:
+        raw = os.getenv("PASSENGER_PAYMENT_HOLD_MINUTES", "2").strip()
+        try:
+            minutes = int(raw)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "invalid_payment_hold_minutes",
+                    "message": "PASSENGER_PAYMENT_HOLD_MINUTES must be an integer.",
+                },
+            ) from exc
+
+        if minutes <= 0:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "invalid_payment_hold_minutes",
+                    "message": "PASSENGER_PAYMENT_HOLD_MINUTES must be greater than 0.",
+                },
+            )
+
+        return minutes
+
+    @classmethod
+    def _get_payment_hold_expires_at(cls) -> datetime:
+        return utcnow() + timedelta(minutes=cls._get_payment_hold_minutes())
+
+    async def _expire_pending_booking_hold(self, booking: TripBooking) -> None:
+        if booking.booking_status != BookingStatus.PENDING_PAYMENT:
+            return
+
+        booking.booking_status = BookingStatus.CANCELLED
+        booking.cancelled_at = utcnow()
+        booking.payment_hold_expires_at = None
+        self.db.add(booking)
+
+        for payment in booking.payments:
+            if payment.status == BookingPaymentStatus.CREATED:
+                payment.status = BookingPaymentStatus.FAILED
+                self.db.add(payment)
+
+        await self.db.flush()
+
+    async def _expire_stale_pending_bookings_for_trip(self, scheduled_trip_id: str) -> None:
+        stmt = (
+            select(TripBooking)
+            .where(
+                TripBooking.scheduled_trip_id == scheduled_trip_id,
+                TripBooking.booking_status == BookingStatus.PENDING_PAYMENT,
+                TripBooking.payment_hold_expires_at.is_not(None),
+                TripBooking.payment_hold_expires_at <= utcnow(),
+            )
+            .options(selectinload(TripBooking.payments))
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        stale_bookings = result.scalars().unique().all()
+
+        for stale_booking in stale_bookings:
+            await self._expire_pending_booking_hold(stale_booking)
 
     async def _get_profile_obj(self, user_id: str) -> PassengerProfile | None:
         stmt = select(PassengerProfile).where(PassengerProfile.user_id == user_id)
@@ -298,14 +361,22 @@ class PassengerService:
         return fare, pickup_route_stop, dropoff_route_stop
 
     async def _count_active_trip_bookings(self, scheduled_trip_id: str) -> int:
-        active_statuses = (
-            BookingStatus.PENDING_PAYMENT,
-            BookingStatus.BOOKED,
-            BookingStatus.BOARDED,
-        )
+        current_time = utcnow()
+
         stmt = select(func.count(TripBooking.id)).where(
             TripBooking.scheduled_trip_id == scheduled_trip_id,
-            TripBooking.booking_status.in_(active_statuses),
+            or_(
+                TripBooking.booking_status.in_(
+                    (BookingStatus.BOOKED, BookingStatus.BOARDED)
+                ),
+                and_(
+                    TripBooking.booking_status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        TripBooking.payment_hold_expires_at.is_(None),
+                        TripBooking.payment_hold_expires_at > current_time,
+                    ),
+                ),
+            ),
         )
         result = await self.db.execute(stmt)
         return int(result.scalar_one() or 0)
@@ -406,6 +477,7 @@ class PassengerService:
             "dropoff_stop_id": booking.dropoff_stop_id,
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
+            "payment_hold_expires_at": booking.payment_hold_expires_at,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
             "driver_payout_amount": booking.driver_payout_amount,
@@ -864,10 +936,15 @@ class PassengerService:
                     "message": "This scheduled trip can no longer be booked.",
                 },
             )
+        
+        await self._expire_stale_pending_bookings_for_trip(trip.id)
 
         existing_stmt = select(TripBooking).where(
             TripBooking.passenger_user_id == current_user.id,
             TripBooking.scheduled_trip_id == trip.id,
+            TripBooking.booking_status.in_(
+                (BookingStatus.PENDING_PAYMENT, BookingStatus.BOOKED, BookingStatus.BOARDED)
+            ),
         )
         existing_result = await self.db.execute(existing_stmt)
         existing_booking = existing_result.scalar_one_or_none()
@@ -906,6 +983,7 @@ class PassengerService:
                 dropoff_stop_id=payload.dropoff_stop_id,
                 booking_status=BookingStatus.PENDING_PAYMENT,
                 fare_amount=self._quantize_money(fare.amount),
+                payment_hold_expires_at=self._get_payment_hold_expires_at(),
             )
             self.db.add(booking)
             await self.db.flush()
@@ -982,6 +1060,20 @@ class PassengerService:
                     "message": "This booking is not awaiting payment verification.",
                 },
             )
+        
+        if (
+            booking.payment_hold_expires_at is not None
+            and booking.payment_hold_expires_at <= utcnow()
+        ):
+            await self._expire_pending_booking_hold(booking)
+            await self.db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_hold_expired",
+                    "message": "Payment hold expired. Booking was cancelled and the seat was released.",
+                },
+            )
 
         payment = next(
             (item for item in booking.payments if item.razorpay_order_id == payload.razorpay_order_id),
@@ -1051,6 +1143,7 @@ class PassengerService:
         payment.status = BookingPaymentStatus.PAID
 
         booking.booking_status = BookingStatus.BOOKED
+        booking.payment_hold_expires_at = None
 
         self.db.add(payment)
         self.db.add(booking)
@@ -1129,6 +1222,7 @@ class PassengerService:
 
         booking.booking_status = BookingStatus.CANCELLED
         booking.cancelled_at = utcnow()
+        booking.payment_hold_expires_at = None
 
         self.db.add(booking)
         await self.db.commit()

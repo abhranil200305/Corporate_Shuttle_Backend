@@ -171,6 +171,7 @@ class TripBookingResponse(BaseModel):
     cancelled_at: datetime | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
+    payment_hold_expires_at: datetime | None
     payments: list[BookingPaymentResponse]
     rating: BookingRatingResponse | None
     created_at: datetime
