@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import joinedload
@@ -135,6 +136,65 @@ class AdminService:
         await self.db.commit()
         return True
 
+    async def upsert_stops_from_jsonl(self, file_content: str):
+        lines = file_content.splitlines()
+        count = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            
+            try:
+                data = json.loads(line)
+                location_name = data.get("location")
+                lat = data.get("latitude")
+                lng = data.get("longitude")
+
+                # Check if this stop already exists in the database
+                stmt = select(schema.Stop).where(schema.Stop.name == location_name)
+                result = await self.db.execute(stmt)
+                existing_stop = result.scalar_one_or_none()
+
+                if existing_stop:
+                    # Update coordinates if the building moved or was refined
+                    existing_stop.lat = lat
+                    existing_stop.lng = lng
+                else:
+                    # Create a new Stop in the 'Library'
+                    new_stop = schema.Stop(
+                        name=location_name,
+                        lat=lat,
+                        lng=lng,
+                        radius_meters=150  # Default geofence for Kolkata IT parks
+                    )
+                    self.db.add(new_stop)
+                
+                count += 1
+            except json.JSONDecodeError:
+                print(f"Skipping invalid JSON line: {line}")
+                continue
+        
+        await self.db.commit()
+        return count
+
+
+    async def create_route_with_sequence(self, name: str, code: str, stop_ids: list[str]):
+        # 1. Create Route
+        new_route = schema.Route(name=name, code=code)
+        self.db.add(new_route)
+        await self.db.flush() # Get ID without committing
+
+        # 2. Create Sequence (The Ordered Playlist)
+        for index, s_id in enumerate(stop_ids):
+            rs = schema.RouteStop(
+                route_id=new_route.id,
+                stop_id=s_id,
+                sequence_order=index + 1 
+            )
+            self.db.add(rs)
+        
+        await self.db.commit()
+        return new_route
+    
 
 # @router.post("/stops",response_model=None)
 # def create_stop(stop_data:stopCreate, db:Session=Depends(get_db)):
