@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -581,3 +583,40 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
         }
         for f in fares
     ]
+
+@router.get("/trips/monitor")
+async def monitor_all_trips(
+    status: Optional[schema.ScheduledTripStatus] = Query(None), 
+    db: AsyncSession = Depends(get_async_session)
+):
+    # Initialize the combined AdminService
+    service = AdminService(db)
+    trips = await service.get_all_trips(status=status)
+    
+    return [
+        {
+            "trip_id": t.id,
+            "route_name": t.route.name,
+            "route_code": t.route.code,
+            "driver": t.driver.full_name, # Assuming 'full_name' exists in User model
+            "vehicle": f"{t.vehicle.registration_number}",
+            "planned_start": t.planned_start_at,
+            "status": t.status,
+            "bookings_count": len(t.bookings)
+        }
+        for t in trips
+    ]
+
+@router.patch("/trips/{trip_id}/cancel")
+async def cancel_trip_by_id(
+    trip_id: str, 
+    reason: str, # You can send this as a query param or a small body
+    db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    success = await service.cancel_trip(trip_id, reason)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Trip not found in database.")
+    
+    return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}

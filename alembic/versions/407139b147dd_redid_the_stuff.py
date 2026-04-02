@@ -1,8 +1,8 @@
-"""Stuff
+"""Redid the stuff
 
-Revision ID: 8095677da04e
+Revision ID: 407139b147dd
 Revises: 
-Create Date: 2026-03-31 16:33:01.788393
+Create Date: 2026-04-02 11:50:33.251406
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '8095677da04e'
+revision: str = '407139b147dd'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -106,8 +106,16 @@ def upgrade() -> None:
     sa.Column('user_id', sa.String(length=36), nullable=False),
     sa.Column('full_name', sa.String(length=120), nullable=False),
     sa.Column('phone', sa.String(length=20), nullable=False),
-    sa.Column('aadhaar_file_path', sa.String(length=255), nullable=False),
-    sa.Column('pan_file_path', sa.String(length=255), nullable=False),
+    sa.Column('profile_picture_path', sa.String(length=255), nullable=True),
+    sa.Column('aadhaar_number', sa.String(length=12), nullable=True),
+    sa.Column('pan_number', sa.String(length=10), nullable=True),
+    sa.Column('driving_license_number', sa.String(length=20), nullable=True),
+    sa.Column('aadhaar_file_path', sa.String(length=255), nullable=True),
+    sa.Column('pan_file_path', sa.String(length=255), nullable=True),
+    sa.Column('driving_license_file_path', sa.String(length=255), nullable=True),
+    sa.Column('bank_account_number', sa.String(length=64), nullable=True),
+    sa.Column('ifsc_code', sa.String(length=20), nullable=True),
+    sa.Column('passbook_file_path', sa.String(length=255), nullable=True),
     sa.Column('verification_status', sa.Enum('draft', 'pending', 'verified', 'rejected', name='driver_verification_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('lifecycle_status', sa.Enum('active', 'banned', 'deleted', name='driver_lifecycle_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('verification_requested_at', sa.DateTime(timezone=True), nullable=True),
@@ -120,6 +128,18 @@ def upgrade() -> None:
     sa.CheckConstraint("full_name <> ''", name='ck_driver_profiles_full_name_nonempty'),
     sa.CheckConstraint("phone <> ''", name='ck_driver_profiles_phone_nonempty'),
     sa.ForeignKeyConstraint(['reviewed_by_admin_id'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('user_id')
+    )
+    op.create_table('passenger_profiles',
+    sa.Column('user_id', sa.String(length=36), nullable=False),
+    sa.Column('full_name', sa.String(length=120), nullable=False),
+    sa.Column('profile_picture_path', sa.String(length=255), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("full_name <> ''", name='ck_passenger_profiles_full_name_nonempty'),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('user_id')
@@ -369,6 +389,7 @@ def downgrade() -> None:
     op.drop_index('ix_route_stops_route_id_stop_id', table_name='route_stops')
     op.drop_table('route_stops')
     op.drop_table('route_fares')
+    op.drop_table('passenger_profiles')
     op.drop_table('driver_profiles')
     op.drop_table('driver_payout_details')
     op.drop_table('users')
