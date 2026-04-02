@@ -32,6 +32,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -888,6 +889,11 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
 
     fare_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
+    payment_hold_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     commission_percent_snapshot: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
@@ -990,10 +996,14 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        UniqueConstraint(
+        Index(
+            "uq_trip_bookings_passenger_trip_active",
             "passenger_user_id",
             "scheduled_trip_id",
-            name="uq_trip_bookings_passenger_trip",
+            unique=True,
+            postgresql_where=text(
+                "booking_status IN ('pending_payment', 'booked', 'boarded')"
+            ),
         ),
         CheckConstraint("fare_amount >= 0", name="ck_trip_bookings_fare_nonnegative"),
         CheckConstraint(
