@@ -447,6 +447,39 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
     }
 
 
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+
+#     # Flush allows us to get the new_route.id for the linking table
+#     await db.flush()
+
+#     # 2. Map the sequence in RouteStop
+#     route_stops = []
+#     for index, stop_data in enumerate(data.stops):
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,  # Matching your schema 'sequence_no'
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+#     await db.commit()
+
+#     return {
+#         "status": "success",
+#         "message": f"Route '{data.name}' created successfully",
+#         "route_id": new_route.id,
+#         "stops_count": len(data.stops),
+#     }
+
 @router.post("/routes/create")
 async def create_route(
     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
@@ -454,19 +487,21 @@ async def create_route(
     # 1. Create the Route Entry
     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
     db.add(new_route)
-
-    # Flush allows us to get the new_route.id for the linking table
     await db.flush()
 
     # 2. Map the sequence in RouteStop
     route_stops = []
     for index, stop_data in enumerate(data.stops):
+        # Logic: If it's the first stop, force 0. Otherwise, use provided time.
+        time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+        
         rs = schema.RouteStop(
             route_id=new_route.id,
             stop_id=stop_data.stop_id,
-            sequence_no=index + 1,  # Matching your schema 'sequence_no'
+            sequence_no=index + 1,
             boarding_allowed=stop_data.boarding_allowed,
             deboarding_allowed=stop_data.deboarding_allowed,
+            assume_time_diff_minutes=time_diff
         )
         route_stops.append(rs)
 
@@ -475,7 +510,6 @@ async def create_route(
 
     return {
         "status": "success",
-        "message": f"Route '{data.name}' created successfully",
         "route_id": new_route.id,
         "stops_count": len(data.stops),
     }

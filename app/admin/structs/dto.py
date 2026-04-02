@@ -12,28 +12,35 @@ class stopCreate(BaseModel):
     lng: Decimal
     radius_meters: int = 100
 
+
 class RouteCreateSchema(BaseModel):
     name: str
     code: str
     stop_ids: list[str]
 
+
 class RouteStopCreate(BaseModel):
     stop_id: str
     boarding_allowed: bool = True
     deboarding_allowed: bool = True
+    assume_time_diff_minutes: int = 0
+
 
 class RouteCreate(BaseModel):
     name: str
     code: str
     stops: List[RouteStopCreate]
 
+
 class VerificationUpdate(BaseModel):
     status: schema.DriverVerificationStatus
     rejection_reason: str | None = None
 
+
 class VehicleVerificationUpdate(BaseModel):
     status: schema.VehicleVerificationStatus
     rejection_reason: str | None = None
+
 
 class StopCreate(BaseModel):
     name: str = Field(..., example="Technopolis - Main Gate")
@@ -41,14 +48,17 @@ class StopCreate(BaseModel):
     longitude: float = Field(..., example=88.4355)
     radius_meters: int = Field(default=150, description="Geofence radius in meters")
 
+
 class FareEntry(BaseModel):
     pickup_stop_id: str
     dropoff_stop_id: str
     amount: Decimal = Field(..., ge=0)
 
+
 class RouteFareCreate(BaseModel):
     route_id: str
     fares: List[FareEntry]
+
 
 class RouteStatusUpdate(BaseModel):
     is_active: bool
