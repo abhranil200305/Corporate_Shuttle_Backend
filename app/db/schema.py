@@ -851,6 +851,57 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         Index("ix_scheduled_trips_vehicle_start", "vehicle_id", "planned_start_at"),
         Index("ix_scheduled_trips_route_start", "route_id", "planned_start_at"),
     )
+    
+class TripEvent(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "trip_events"
+
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    stop_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    arrival_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    departure_time: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # 🔗 Relationships
+    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+        back_populates="trip_events",
+        foreign_keys=[scheduled_trip_id],
+    )
+
+    stop: Mapped["Stop"] = relationship(
+        foreign_keys=[stop_id],
+    )
+
+    __table_args__ = (
+        # 🚫 Prevent duplicate stop entry per trip
+        UniqueConstraint(
+            "scheduled_trip_id",
+            "stop_id",
+            name="uq_trip_events_trip_stop",
+        ),
+
+        # ⚡ Faster query
+        Index(
+            "ix_trip_events_trip_stop",
+            "scheduled_trip_id",
+            "stop_id",
+        ),
+    )
 
 
 class TripBooking(UUIDPKMixin, TimestampMixin, Base):
