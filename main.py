@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from app.passenger.router import router as passenger_route
 from app.driver import vehicle
-
+from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 
 # Create FastAPI app
 app = FastAPI(title="Kolkata Corporate Shuttle - Driver API")
@@ -45,7 +45,7 @@ app.include_router(driver_kyc.router)
 app.include_router(driverprofileshow_router)
 app.include_router(passenger_route)
 app.include_router(vehicle.router)
-
+app.include_router(scheduled_trip_router)
 
 
 # ---------------------------
