@@ -548,6 +548,71 @@ async def create_route(
     }
 
 
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. Duplicate Check (Name/Code)
+#     from sqlalchemy import or_
+
+#     stmt = select(schema.Route).where(
+#         or_(
+#             schema.Route.name == data.name.strip(),
+#             schema.Route.code == data.code.strip(),
+#         )
+#     )
+#     result = await db.execute(stmt)
+#     if result.scalar_one_or_none():
+#         raise HTTPException(
+#             status_code=400, detail="Route Name or Code already exists."
+#         )
+
+#     # 2. Basic Validation: A route needs at least 2 stops
+#     if len(data.stops) < 2:
+#         raise HTTPException(
+#             status_code=400, detail="A route must have at least 2 stops."
+#         )
+
+#     # 3. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+#     await db.flush()  # Get the new_route.id
+
+#     # 4. Map the Bulk List to the Sequence
+#     route_stops = []
+
+#     # Python's enumerate gives us the order perfectly
+#     for index, stop_data in enumerate(data.stops):
+#         # The first stop (index 0) is the START, so time_diff is always 0
+#         actual_time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,  # 1, 2, 3...
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=actual_time_diff,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+
+#     try:
+#         await db.commit()
+#     except Exception:
+#         await db.rollback()
+#         raise HTTPException(
+#             status_code=500, detail="Database error while saving stops."
+#         )
+
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "total_stops_added": len(route_stops),
+#     }
+
+
 @router.get("/routes/all")
 async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
     # We use joinedload to count stops without extra queries
