@@ -96,7 +96,7 @@ app.include_router(
 )
 
 app.include_router(
-    booking_details.router,
+    booking_details_service.router,
     prefix="/driver/trips",
     tags=["Driver Trips"],
 )
