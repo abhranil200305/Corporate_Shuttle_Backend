@@ -9,7 +9,7 @@ from app.db.schema import BookingStatus, User
 from app.passenger.schemas import (
     BookingCreateResponse,
     BookingListResponse,
-    BookingModelResponse,
+    BookingDetailResponse,
     BookingMutationResponse,
     BookingQRResponse,
     BookingRatingMutationResponse,
@@ -192,12 +192,12 @@ async def list_history(
     return await service.list_history(current_user)
 
 
-@router.get("/bookings/{booking_id}", response_model=BookingModelResponse)
+@router.get("/bookings/{booking_id}", response_model=BookingDetailResponse)
 async def get_booking_detail(
     booking_id: str,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
-) -> BookingModelResponse:
+) -> BookingDetailResponse:
     return await service.get_booking_detail(current_user, booking_id)
 
 
