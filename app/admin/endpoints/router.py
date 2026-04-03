@@ -447,16 +447,77 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
     }
 
 
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+#     await db.flush()
+
+#     # 2. Map the sequence in RouteStop
+#     route_stops = []
+#     for index, stop_data in enumerate(data.stops):
+#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
+#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=time_diff,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+#     await db.commit()
+
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "stops_count": len(data.stops),
+#     }
+
+
 @router.post("/routes/create")
 async def create_route(
     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
 ):
-    # 1. Create the Route Entry
+    # 1. PRE-CHECK: Look for duplicate Name or Code
+    # We use 'or_' because both must be unique
+    from sqlalchemy import or_
+
+    stmt = select(schema.Route).where(
+        or_(
+            schema.Route.name == data.name.strip(),
+            schema.Route.code == data.code.strip(),
+        )
+    )
+    result = await db.execute(stmt)
+    existing_route = result.scalar_one_or_none()
+
+    if existing_route:
+        # Determine which one caused the conflict for a better error message
+        conflict_field = "Name" if existing_route.name == data.name.strip() else "Code"
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "duplicate_route",
+                "message": f"A route with this {conflict_field} already exists. Please use a unique value.",
+            },
+        )
+
+    # 2. Create the Route Entry
     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
     db.add(new_route)
+
+    # We flush here to get the new_route.id for the RouteStops
     await db.flush()
 
-    # 2. Map the sequence in RouteStop
+    # 3. Map the sequence in RouteStop
     route_stops = []
     for index, stop_data in enumerate(data.stops):
         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
@@ -473,7 +534,12 @@ async def create_route(
         route_stops.append(rs)
 
     db.add_all(route_stops)
-    await db.commit()
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise HTTPException(status_code=500, detail="Failed to save route stops.")
 
     return {
         "status": "success",
