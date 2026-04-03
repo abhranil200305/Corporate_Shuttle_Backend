@@ -21,6 +21,8 @@ from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.passenger.router import router as passenger_route
 from app.driver.support.support import router as support_router
+from app.driver.trips import cancel_trip  
+
 
 
 
@@ -85,6 +87,7 @@ app.include_router(vehicle.router)
 app.include_router(scheduled_trip_router)
 app.include_router(driver_routes_router)
 app.include_router(support_router)
+app.include_router(cancel_trip.router, prefix="/driver", tags=["Driver"])
 
 app.include_router(
     trip_details.router,
