@@ -26,9 +26,6 @@ class RouteStopInput(BaseModel):
     assume_time_diff_minutes: int = 10  # Default estimate
 
 
-
-
-
 class AddRouteStopsRequest(BaseModel):
     stops: List[RouteStopInput]
 
