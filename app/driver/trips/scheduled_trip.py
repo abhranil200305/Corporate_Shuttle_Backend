@@ -122,7 +122,8 @@ async def create_trip(
     last_trip = result.scalars().first()
     if last_trip and last_trip.status not in [
         ScheduledTripStatus.COMPLETED,
-        ScheduledTripStatus.CANCELLED
+        ScheduledTripStatus.CANCELLED,
+        ScheduledTripStatus.PREMATURE_END
     ]:
         raise HTTPException(400, "Previous trip not finished")
 
@@ -160,16 +161,12 @@ async def start_trip(
         raise HTTPException(404, "Trip not found")
     if trip.driver_user_id != current_user.id:
         raise HTTPException(403, "Not your trip")
-    if trip.status == ScheduledTripStatus.IN_PROGRESS:
-        return {
-            "message": "Trip already started",
-            "actual_start_at": to_ist(trip.actual_start_at)
-        }
-    if trip.status != ScheduledTripStatus.SCHEDULED:
+    if trip.status not in [ScheduledTripStatus.SCHEDULED, ScheduledTripStatus.IN_PROGRESS]:
         raise HTTPException(400, f"Invalid status: {trip.status}")
     if now_utc() < trip.planned_start_at - timedelta(minutes=5):
         raise HTTPException(400, "Too early to start")
 
+    # FETCH STOPS
     result = await session.execute(
         select(RouteStop)
         .where(RouteStop.route_id == trip.route_id)
@@ -179,24 +176,32 @@ async def start_trip(
     if not stops:
         raise HTTPException(400, "No stops found")
 
-    result = await session.execute(
-        select(TripEvent.id)
-        .where(TripEvent.scheduled_trip_id == trip.id)
-        .limit(1)
+    # FETCH EXISTING EVENTS
+    existing_stop_ids = set(
+        await session.scalars(
+            select(TripEvent.stop_id).where(TripEvent.scheduled_trip_id == trip.id)
+        )
     )
-    if result.scalar_one_or_none():
-        raise HTTPException(400, "Trip already initialized")
 
-    events = [TripEvent(scheduled_trip_id=trip.id, stop_id=rs.stop_id) for rs in stops]
-    session.add_all(events)
+    # CREATE MISSING EVENTS ONLY
+    events_to_create = [
+        TripEvent(scheduled_trip_id=trip.id, stop_id=rs.stop_id)
+        for rs in stops
+        if rs.stop_id not in existing_stop_ids
+    ]
+    if events_to_create:
+        session.add_all(events_to_create)
 
-    trip.actual_start_at = now_utc()
+    # UPDATE TRIP STATUS AND START TIME
+    if not trip.actual_start_at:
+        trip.actual_start_at = now_utc()
     trip.status = ScheduledTripStatus.IN_PROGRESS
+
     await session.commit()
 
     return {
         "message": "Trip started successfully",
-        "total_stops": len(events),
+        "total_stops": len(stops),
         "actual_start_at": to_ist(trip.actual_start_at)
     }
 
@@ -282,7 +287,6 @@ async def end_trip(
         raise HTTPException(403, "Invalid trip")
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
-    # Cannot end before planned_end_at
     if now_utc() < trip.planned_end_at:
         raise HTTPException(400, "Use emergency end if ending early")
 
@@ -311,13 +315,12 @@ async def emergency_end_trip(
         raise HTTPException(403, "Invalid trip")
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
-
     if not reason.strip():
         raise HTTPException(400, "Reason is required for emergency end")
 
     trip.actual_end_at = now_utc()
-    trip.status = ScheduledTripStatus.PREMATURE_END  # Use dedicated enum value
-    trip.premature_end_reason = reason  # Store in the correct column
+    trip.status = ScheduledTripStatus.PREMATURE_END  # Dedicated enum value
+    trip.premature_end_reason = reason
 
     await session.commit()
     return {
