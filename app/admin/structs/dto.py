@@ -25,9 +25,11 @@ class RouteStopInput(BaseModel):
     deboarding_allowed: bool = True
     assume_time_diff_minutes: int = 10  # Default estimate
 
-class RouteCreate(BaseModel):
-    name: str
-    code: str
+
+
+
+
+class AddRouteStopsRequest(BaseModel):
     stops: List[RouteStopInput]
 
 
@@ -61,4 +63,22 @@ class RouteFareCreate(BaseModel):
 
 class RouteStatusUpdate(BaseModel):
     is_active: bool
- # This allows the "bulk" selection
+
+
+# This allows the "bulk" selection
+
+
+class RouteCreate(BaseModel):
+    name: str
+    code: str
+
+
+class RouteStopInput(BaseModel):
+    stop_id: str
+    boarding_allowed: bool = True
+    deboarding_allowed: bool = True
+    assume_time_diff_minutes: int = 10
+
+
+class BulkStopAddRequest(BaseModel):
+    stops: List[RouteStopInput]
