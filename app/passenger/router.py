@@ -15,6 +15,7 @@ from app.passenger.schemas import (
     BookingRatingResponse,
     CreateBookingRatingRequest,
     CreateBookingRequest,
+    CurrentTripBookingListResponse,
     FarePreviewRequest,
     FarePreviewResponse,
     PassengerProfileMutationResponse,
@@ -151,11 +152,11 @@ async def list_upcoming_bookings(
     return await service.list_upcoming_bookings(current_user)
 
 
-@router.get("/bookings/current", response_model=BookingListResponse)
+@router.get("/bookings/current", response_model=CurrentTripBookingListResponse)
 async def list_current_bookings(
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
-) -> BookingListResponse:
+) -> CurrentTripBookingListResponse:
     return await service.list_current_bookings(current_user)
 
 

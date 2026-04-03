@@ -196,6 +196,29 @@ class TripBookingResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class CurrentTripBookingResponse(BaseModel):
+    id: str
+    passenger_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    booking_status: str
+    fare_amount: Decimal
+    payment_hold_expires_at: datetime | None
+    boarded_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    scheduled_trip: ScheduledTripResponse
+    created_at: datetime
+    updated_at: datetime
+
+
+class CurrentTripBookingListResponse(BaseModel):
+    items: list[CurrentTripBookingResponse]
+    count: int
 
 class BookingListResponse(BaseModel):
     items: list[TripBookingResponse]

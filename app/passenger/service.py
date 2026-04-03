@@ -213,6 +213,17 @@ class PassengerService:
                 selectinload(ScheduledTrip.trip_events).selectinload(TripEvent.stop),
             )
         )
+        result = await self.db.execute(stmt)
+        trip = result.scalar_one_or_none()
+        if trip is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "scheduled_trip_not_found",
+                    "message": "Scheduled trip not found.",
+                },
+            )
+        return trip
     
     async def _get_trip_obj_for_booking_update(self, trip_id: str) -> ScheduledTrip:
         stmt = (
@@ -425,24 +436,6 @@ class PassengerService:
                 {
                     "route_stop_id": route_stop.id,
                     "sequence_no": route_stop.sequence_no,
-                    "boarding_allowed": route_stop.boarding_allowed,
-                    "deboarding_allowed": route_stop.deboarding_allowed,
-                    "stop": self._serialize_stop_brief(route_stop.stop),
-                }
-                for route_stop in sorted(route.route_stops, key=lambda item: item.sequence_no)
-            ],
-        }
-
-    def _serialize_route(self, route: Route) -> dict[str, Any]:
-        return {
-            "id": route.id,
-            "name": route.name,
-            "code": route.code,
-            "is_active": route.is_active,
-            "stops": [
-                {
-                    "route_stop_id": route_stop.id,
-                    "sequence_no": route_stop.sequence_no,
                     "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
                     "boarding_allowed": route_stop.boarding_allowed,
                     "deboarding_allowed": route_stop.deboarding_allowed,
@@ -583,6 +576,27 @@ class PassengerService:
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
             "rating": self._serialize_rating(booking.rating),
+            "created_at": booking.created_at,
+            "updated_at": booking.updated_at,
+        }
+    
+    async def _serialize_current_booking(self, booking: TripBooking) -> dict[str, Any]:
+        return {
+            "id": booking.id,
+            "passenger_user_id": booking.passenger_user_id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "booking_status": booking.booking_status,
+            "fare_amount": booking.fare_amount,
+            "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "boarded_at": booking.boarded_at,
+            "completed_at": booking.completed_at,
+            "cancelled_at": booking.cancelled_at,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
         }
@@ -1610,15 +1624,22 @@ class PassengerService:
                 .selectinload(RouteStop.stop),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.vehicle),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.driver),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
             )
             .order_by(ScheduledTrip.planned_start_at.asc())
         )
         result = await self.db.execute(stmt)
         bookings = result.scalars().unique().all()
 
+        items: list[dict[str, Any]] = []
+        for booking in bookings:
+            items.append(await self._serialize_current_booking(booking))
+
         return {
-            "items": [self._serialize_booking(booking) for booking in bookings],
-            "count": len(bookings),
+            "items": items,
+            "count": len(items),
         }
 
     async def list_history(self, current_user: User) -> dict[str, Any]:
