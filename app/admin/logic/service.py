@@ -292,15 +292,15 @@ class AdminService:
 
     # app/admin/logic/service.py (Add these methods)
 
-async def create_driver_linked_account(self, driver_id: str):
-    driver = await self.fetch_driver_by_id(driver_id)
-    if not driver or not driver.driver_profile:
+    async def create_driver_linked_account(self, driver_id: str):
+      driver = await self.fetch_driver_by_id(driver_id)
+      if not driver or not driver.driver_profile:
         raise HTTPException(status_code=404, detail="Driver profile not found")
     
-    p = driver.driver_profile
+      p = driver.driver_profile
     
     # 2. Razorpay Account Creation Payload
-    payload = {
+      payload = {
         "type": "route",
         "email": driver.email,
         "contact": p.phone,
@@ -320,14 +320,19 @@ async def create_driver_linked_account(self, driver_id: str):
     
     # 3. Call Razorpay API (using the helper in RoutePayoutService)
     # Note: You should instantiate RoutePayoutService here
-    payout_service = RoutePayoutService(self.db)
-    response = await payout_service._razorpay_request(
+      payout_service = RoutePayoutService(self.db)
+      response = await payout_service._razorpay_request(
         method="POST", 
         path="/accounts", 
         json_payload=payload
     )
     
     # 4. Save the Account ID to DriverPayoutDetails
-    account_id = response.get("id")
+      account_id = response.get("id")
     # Logic to update DriverPayoutDetails table with account_id and status='active'
-    return account_id
+      return account_id
+
+
+    # app/payments/service.py (Add to RoutePayoutService)
+
+    
