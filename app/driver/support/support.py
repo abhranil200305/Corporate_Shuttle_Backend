@@ -185,3 +185,39 @@ async def reject_ticket(
     await db.commit()
 
     return {"message": "Ticket rejected successfully"}
+
+# ============================================================
+# DRIVER - GET SINGLE SUPPORT TICKET
+# ============================================================
+@router.get("/driver/view/{ticket_id}")
+async def driver_view_support_ticket(
+    ticket_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Retrieve a single support ticket for the current driver/passenger.
+    Only the ticket owner can view it.
+    """
+    result = await db.execute(
+        select(SupportTicket).where(SupportTicket.id == ticket_id)
+    )
+    ticket = result.scalar_one_or_none()
+
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+
+    # Only the driver/passenger who created the ticket can view it
+    if ticket.user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Not authorized to view this ticket")
+
+    return {
+        "id": ticket.id,
+        "subject": ticket.subject,
+        "description": ticket.description,
+        "status": ticket.status,
+        "attachment": ticket.attachment_path,
+        "created_at": ticket.created_at,
+        "resolved_at": ticket.resolved_at,
+        "rejection_reason": ticket.rejection_reason,
+    }
