@@ -46,6 +46,20 @@ class StopBriefResponse(BaseModel):
 class RouteStopResponse(BaseModel):
     route_stop_id: str
     sequence_no: int
+    assume_time_diff_minutes: int | None
+    boarding_allowed: bool
+    deboarding_allowed: bool
+    stop: StopBriefResponse
+
+
+class ScheduledTripStopResponse(BaseModel):
+    route_stop_id: str
+    sequence_no: int
+    assume_time_diff_minutes: int | None
+    minutes_from_trip_start: int
+    planned_time_at_stop: datetime
+    actual_arrival_time: datetime | None
+    actual_departure_time: datetime | None
     boarding_allowed: bool
     deboarding_allowed: bool
     stop: StopBriefResponse
@@ -90,7 +104,12 @@ class ScheduledTripResponse(BaseModel):
     actual_end_at: datetime | None
     status: str
     admin_note: str | None
-    available_seats: int | None    
+    available_seats: int | None
+
+    trip_from_stop: StopBriefResponse | None
+    trip_to_stop: StopBriefResponse | None
+    stops: list[ScheduledTripStopResponse]
+
     route: RouteResponse
     vehicle: VehicleBriefResponse | None
     driver: DriverBriefResponse | None
