@@ -19,6 +19,7 @@ from app.driver import vehicle
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips import trip_details
+from app.driver.trips import route_trip_details  
 
 
 # Create FastAPI app
@@ -54,6 +55,11 @@ app.include_router(
     trip_details.router,
     prefix="/driver/trips",
     tags=["Driver Trips"],
+)
+app.include_router(
+    route_trip_details.router,
+    prefix="/driver",   # 👈 keep consistent with your project
+    tags=["Driver Trips"]
 )
 
 # ---------------------------
