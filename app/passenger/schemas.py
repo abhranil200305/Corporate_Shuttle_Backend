@@ -93,6 +93,18 @@ class VehicleBriefResponse(BaseModel):
     has_ac: bool
 
 
+class ScheduledTripDriverVehicleInfoResponse(BaseModel):
+    scheduled_trip_id: str
+    driver_user_id: str
+    driver_name: str | None
+    driver_average_rating: Decimal | None
+    driver_rating_count: int
+    vehicle_registration_number: str | None
+    vehicle_name: str | None
+    vehicle_model: str | None
+    vehicle_color: str | None
+
+
 class ScheduledTripResponse(BaseModel):
     id: str
     route_id: str
@@ -135,6 +147,24 @@ class FarePreviewResponse(BaseModel):
     pickup_sequence_no: int
     dropoff_sequence_no: int
     amount: Decimal
+
+class LegAvailableSeatsRequest(BaseModel):
+    route_id: str = Field(..., min_length=1, max_length=36)
+    pickup_stop_id: str = Field(..., min_length=1, max_length=36)
+    dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
+
+
+class LegAvailableSeatsResponse(BaseModel):
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    pickup_sequence_no: int
+    dropoff_sequence_no: int
+    seat_capacity: int
+    overlapping_active_bookings: int
+    available_seats: int
+    trip_bookable: bool
 
 
 class CreateBookingRequest(BaseModel):
@@ -191,6 +221,33 @@ class TripBookingResponse(BaseModel):
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
     payment_hold_expires_at: datetime | None
+    payments: list[BookingPaymentResponse]
+    rating: BookingRatingResponse | None
+    created_at: datetime
+    updated_at: datetime
+
+class BookingDetailResponse(BaseModel):
+    id: str
+    passenger_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    booking_status: str
+    fare_amount: Decimal
+    payment_hold_expires_at: datetime | None
+    commission_percent_snapshot: Decimal
+    commission_amount: Decimal
+    driver_payout_amount: Decimal
+    transfer_status: str
+    transfer_ready_at: datetime | None
+    transfer_processed_at: datetime | None
+    boarded_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    scheduled_trip: ScheduledTripResponse
     payments: list[BookingPaymentResponse]
     rating: BookingRatingResponse | None
     created_at: datetime

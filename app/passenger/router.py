@@ -9,6 +9,7 @@ from app.db.schema import BookingStatus, User
 from app.passenger.schemas import (
     BookingCreateResponse,
     BookingListResponse,
+    BookingModelResponse,
     BookingMutationResponse,
     BookingQRResponse,
     BookingRatingMutationResponse,
@@ -26,7 +27,9 @@ from app.passenger.schemas import (
     ScheduledTripListResponse,
     ScheduledTripResponse,
     VerifyBookingPaymentRequest,
-    TripBookingResponse,
+    ScheduledTripDriverVehicleInfoResponse,
+    LegAvailableSeatsRequest,
+    LegAvailableSeatsResponse,
     CurrentTripStatusResponse,
 )
 from app.passenger.service import PassengerService
@@ -108,6 +111,15 @@ async def get_scheduled_trip_detail(
 ) -> ScheduledTripResponse:
     return await service.get_scheduled_trip_detail(trip_id)
 
+@router.get(
+    "/scheduled-trips/{trip_id}/driver-vehicle-info",
+    response_model=ScheduledTripDriverVehicleInfoResponse,
+)
+async def get_scheduled_trip_driver_vehicle_info(
+    trip_id: str,
+    service: PassengerService = Depends(get_passenger_service),
+) -> ScheduledTripDriverVehicleInfoResponse:
+    return await service.get_scheduled_trip_driver_vehicle_info(trip_id)
 
 @router.post("/fare/preview", response_model=FarePreviewResponse)
 async def preview_fare(
@@ -116,6 +128,17 @@ async def preview_fare(
 ) -> FarePreviewResponse:
     return await service.preview_fare(payload)
 
+@router.post(
+    "/scheduled-trips/{trip_id}/available-seats",
+    response_model=LegAvailableSeatsResponse,
+)
+async def get_leg_available_seats(
+    trip_id: str,
+    payload: LegAvailableSeatsRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> LegAvailableSeatsResponse:
+    return await service.get_leg_available_seats(current_user, trip_id, payload)
 
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(
@@ -169,12 +192,12 @@ async def list_history(
     return await service.list_history(current_user)
 
 
-@router.get("/bookings/{booking_id}", response_model=TripBookingResponse)
+@router.get("/bookings/{booking_id}", response_model=BookingModelResponse)
 async def get_booking_detail(
     booking_id: str,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
-) -> TripBookingResponse:
+) -> BookingModelResponse:
     return await service.get_booking_detail(current_user, booking_id)
 
 
