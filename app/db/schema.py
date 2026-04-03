@@ -828,6 +828,8 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
 
     admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     premature_end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     route: Mapped["Route"] = relationship(
