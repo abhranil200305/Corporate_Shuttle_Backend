@@ -1,35 +1,61 @@
-from fastapi import FastAPI, HTTPException
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
+
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import text
 
 from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
-from sqlalchemy import text   # ✅ FIX ADDED
-
-
-
-
+from app.db.database import engine
+from app.driver import driver_kyc, vehicle
 from app.driver.driverprofile import router as driverprofile_router
-from app.db.database import engine   # 👈 import engine
 from app.driver.driverprofileshow import router as driverprofileshow_router
-from app.driver import driver_kyc
-from fastapi.staticfiles import StaticFiles
-from pathlib import Path
-from app.passenger.router import router as passenger_route
-from app.driver import vehicle
-from app.driver.trips.scheduled_trip import router as scheduled_trip_router
+from app.driver.trips import route_trip_details, trip_details
 from app.driver.trips.routes import router as driver_routes_router
-from app.driver.trips import trip_details
-from app.driver.trips import route_trip_details  
+from app.driver.trips.scheduled_trip import router as scheduled_trip_router
+from app.jobs.payment_reconciler import payment_reconcile_loop
+from app.passenger.router import router as passenger_route
 
-
-# Create FastAPI app
-app = FastAPI(title="Kolkata Corporate Shuttle - Driver API")
 
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("SELECT 1"))
+        print("✅ Database connected successfully")
+    except Exception as e:
+        print("❌ Database connection failed:", e)
+
+    reconcile_task = asyncio.create_task(
+        payment_reconcile_loop(),
+        name="payment-reconcile-loop",
+    )
+    app.state.payment_reconcile_task = reconcile_task
+
+    try:
+        yield
+    finally:
+        reconcile_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await reconcile_task
+
+
+app = FastAPI(
+    title="Kolkata Corporate Shuttle - Driver API",
+    lifespan=lifespan,
+)
+
 # ---------------------------
-# Allow all origins (everyone can access)
+# Allow all origins
 # ---------------------------
 app.add_middleware(
     CORSMiddleware,
@@ -40,7 +66,12 @@ app.add_middleware(
 )
 
 # ---------------------------
-# Include driver signup router
+# Static files
+# ---------------------------
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+# ---------------------------
+# Routers
 # ---------------------------
 app.include_router(auth_router)
 app.include_router(admin_router)
@@ -51,40 +82,27 @@ app.include_router(passenger_route)
 app.include_router(vehicle.router)
 app.include_router(scheduled_trip_router)
 app.include_router(driver_routes_router)
+
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",
     tags=["Driver Trips"],
 )
+
 app.include_router(
     route_trip_details.router,
-    prefix="/driver",   # 👈 keep consistent with your project
-    tags=["Driver Trips"]
+    prefix="/driver",
+    tags=["Driver Trips"],
 )
 
 # ---------------------------
-# Healthcheck endpoint
+# Health / root
 # ---------------------------
 @app.get("/health")
 def health():
     return {"status": "ok"}
-# ---------------------------
-# STARTUP EVENT (🔥 ADD THIS)
-# ---------------------------
-@app.on_event("startup")
-async def startup_db_check():
-    try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
-        print("✅ Database connected successfully")
-    except Exception as e:
-        print("❌ Database connection failed:", e)
+
 
 @app.get("/")
 def root():
     return {"message": "Backend Running 🚀"}
-
-app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
-
-
-app.include_router(auth_router)
