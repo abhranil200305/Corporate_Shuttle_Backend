@@ -793,6 +793,23 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    started_at_lat: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+    started_at_long: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+    ended_at_lat: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+    ended_at_long: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+
     started_near_stop_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("stops.id", ondelete="SET NULL"),
