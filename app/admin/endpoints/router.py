@@ -19,6 +19,7 @@ from app.admin.structs.dto import (
 from app.auth.dependencies import get_current_admin
 from app.db import schema
 from app.db.database import get_async_session
+from app.payments.service import RoutePayoutService
 
 # Create ONE router for all admin tasks
 router = APIRouter(
@@ -868,6 +869,74 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
     ]
 
 
+@router.get("/routes/{route_id}/full-report")
+async def get_route_and_trip_details(
+    route_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    # Notice the change from .stops to .route_stops
+    # and .trips to .scheduled_trips
+    stmt = (
+        select(schema.Route)
+        .options(
+            joinedload(schema.Route.route_stops).joinedload(schema.RouteStop.stop),
+            joinedload(schema.Route.scheduled_trips)
+            .joinedload(schema.ScheduledTrip.driver)  # Load the User
+            .joinedload(schema.User.driver_profile),  # Load the Profile from User
+            joinedload(schema.Route.scheduled_trips).joinedload(
+                schema.ScheduledTrip.vehicle
+            ),
+        )
+        .where(schema.Route.id == route_id)
+    )
+
+    result = await db.execute(stmt)
+    route = result.unique().scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    return {
+        "route_info": {
+            "name": route.name,
+            "code": route.code,
+            "stops": [
+                {
+                    "seq": rs.sequence_no,
+                    "name": rs.stop.name,
+                    "lat": float(rs.stop.lat),
+                    "lng": float(rs.stop.lng),
+                    "time_offset": rs.assume_time_diff_minutes,
+                }
+                for rs in route.route_stops  # route_stops is already sorted by sequence_no in your schema
+            ],
+        },
+        "trips": [
+            {
+                "trip_id": trip.id,
+                "status": trip.status,
+                "scheduled_start": trip.planned_start_at,  # Changed from scheduled_start_time to match your schema
+                "driver": {
+                    # Accessing via trip.driver.driver_profile
+                    "name": trip.driver.driver_profile.full_name
+                    if (trip.driver and trip.driver.driver_profile)
+                    else "Unassigned",
+                    "phone": trip.driver.driver_profile.phone
+                    if (trip.driver and trip.driver.driver_profile)
+                    else "N/A",
+                },
+                "vehicle": {
+                    "reg_no": trip.vehicle.registration_number
+                    if trip.vehicle
+                    else "Unassigned",
+                    "model": trip.vehicle.vehicle_model if trip.vehicle else "N/A",
+                    "capacity": trip.vehicle.seat_count if trip.vehicle else 0,
+                },
+            }
+            for trip in route.scheduled_trips
+        ],
+    }
+
+
 # ----------------------  trips routes -------------------
 
 
@@ -980,3 +1049,29 @@ async def record_passenger_no_show(
         raise HTTPException(status_code=404, detail="Booking record not found.")
 
     return {"status": "success", "message": f"Booking {booking_id} marked as No-Show."}
+
+
+# app/admin/router.py
+
+
+@router.post("/drivers/{driver_id}/setup-payout-account")
+async def setup_payout_account(
+    driver_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    account_id = await service.create_driver_linked_account(driver_id)
+    return {"status": "success", "razorpay_account_id": account_id}
+
+
+@router.post("/payouts/batch-process")
+async def batch_process_driver_payouts(
+    driver_id: str,
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2024),
+    db: AsyncSession = Depends(get_async_session),
+):
+    payout_service = RoutePayoutService(db)
+    summary = await payout_service.process_monthly_payouts_for_driver(
+        driver_id, month, year
+    )
+    return {"status": "batch_completed", "details": summary}
