@@ -27,6 +27,7 @@ from app.passenger.schemas import (
     ScheduledTripResponse,
     VerifyBookingPaymentRequest,
     TripBookingResponse,
+    CurrentTripStatusResponse,
 )
 from app.passenger.service import PassengerService
 
@@ -194,6 +195,13 @@ async def get_booking_qr(
 ) -> BookingQRResponse:
     return await service.get_booking_qr(current_user, booking_id)
 
+@router.get("/bookings/{booking_id}/current-status", response_model=CurrentTripStatusResponse)
+async def get_current_trip_status(
+    booking_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> CurrentTripStatusResponse:
+    return await service.get_current_trip_status(current_user, booking_id)
 
 @router.post("/bookings/{booking_id}/rating", response_model=BookingRatingMutationResponse)
 async def create_rating(

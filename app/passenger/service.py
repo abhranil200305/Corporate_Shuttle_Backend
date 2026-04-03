@@ -32,6 +32,7 @@ from app.db.schema import (
     Stop,
     TripBooking,
     TripEvent,
+    TripScanEvent,
     User,
     UserRole,
 )
@@ -262,17 +263,21 @@ class PassengerService:
                 TripBooking.id == booking_id,
                 TripBooking.passenger_user_id == passenger_user_id,
             )
-            .options(
+             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
+                selectinload(TripBooking.scan_events),
                 selectinload(TripBooking.scheduled_trip)
                 .selectinload(ScheduledTrip.route)
                 .selectinload(Route.route_stops)
                 .selectinload(RouteStop.stop),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.vehicle),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.driver),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
             )
         )
         result = await self.db.execute(stmt)
@@ -599,6 +604,260 @@ class PassengerService:
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
+        }
+    
+    def _get_sorted_route_stops(self, trip: ScheduledTrip) -> list[RouteStop]:
+        return sorted(trip.route.route_stops, key=lambda item: item.sequence_no)
+
+    def _build_route_stop_by_stop_id(self, trip: ScheduledTrip) -> dict[str, RouteStop]:
+        return {item.stop_id: item for item in self._get_sorted_route_stops(trip)}
+
+    def _get_route_stop_planned_time(
+        self,
+        *,
+        trip: ScheduledTrip,
+        target_sequence_no: int,
+    ) -> datetime:
+        cumulative_minutes = 0
+        for index, route_stop in enumerate(self._get_sorted_route_stops(trip)):
+            if index == 0:
+                cumulative_minutes = 0
+            else:
+                cumulative_minutes += max(int(route_stop.assume_time_diff_minutes or 0), 0)
+
+            if route_stop.sequence_no == target_sequence_no:
+                return trip.planned_start_at + timedelta(minutes=cumulative_minutes)
+
+        return trip.planned_start_at
+
+    def _get_current_progress_stop(
+        self,
+        trip: ScheduledTrip,
+    ) -> dict[str, Any] | None:
+        route_stop_by_stop_id = self._build_route_stop_by_stop_id(trip)
+
+        best_departed: tuple[int, TripEvent] | None = None
+        best_arrived: tuple[int, TripEvent] | None = None
+
+        for event in trip.trip_events:
+            route_stop = route_stop_by_stop_id.get(event.stop_id)
+            if route_stop is None:
+                continue
+
+            sequence_no = route_stop.sequence_no
+
+            if event.departure_time is not None:
+                if best_departed is None or sequence_no > best_departed[0]:
+                    best_departed = (sequence_no, event)
+            elif event.arrival_time is not None:
+                if best_arrived is None or sequence_no > best_arrived[0]:
+                    best_arrived = (sequence_no, event)
+
+        if best_departed is not None:
+            _, event = best_departed
+            return {
+                "stop": self._serialize_stop_brief(event.stop),
+                "event_status": "departed",
+                "actual_time": event.departure_time,
+            }
+
+        if best_arrived is not None:
+            _, event = best_arrived
+            return {
+                "stop": self._serialize_stop_brief(event.stop),
+                "event_status": "arrived",
+                "actual_time": event.arrival_time,
+            }
+
+        return None
+
+    def _get_estimated_time_for_sequence(
+        self,
+        *,
+        trip: ScheduledTrip,
+        target_sequence_no: int,
+    ) -> datetime:
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+        trip_event_map = self._build_trip_event_map(trip)
+
+        anchor_sequence_no: int | None = None
+        anchor_time: datetime | None = None
+
+        for route_stop in reversed(sorted_route_stops):
+            event = trip_event_map.get(route_stop.stop_id)
+            if event is None:
+                continue
+
+            if event.departure_time is not None:
+                anchor_sequence_no = route_stop.sequence_no
+                anchor_time = event.departure_time
+                break
+
+            if event.arrival_time is not None:
+                anchor_sequence_no = route_stop.sequence_no
+                anchor_time = event.arrival_time
+                break
+
+        if anchor_sequence_no is None or anchor_time is None:
+            return self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=target_sequence_no,
+            )
+
+        if target_sequence_no <= anchor_sequence_no:
+            return self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=target_sequence_no,
+            )
+
+        minutes_to_add = 0
+        started = False
+        for route_stop in sorted_route_stops:
+            if route_stop.sequence_no == anchor_sequence_no:
+                started = True
+                continue
+
+            if not started:
+                continue
+
+            minutes_to_add += max(int(route_stop.assume_time_diff_minutes or 0), 0)
+
+            if route_stop.sequence_no == target_sequence_no:
+                return anchor_time + timedelta(minutes=minutes_to_add)
+
+        return self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=target_sequence_no,
+        )
+
+    def _serialize_segment_stops(
+        self,
+        booking: TripBooking,
+    ) -> list[dict[str, Any]]:
+        trip = booking.scheduled_trip
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+        trip_event_map = self._build_trip_event_map(trip)
+
+        segment_route_stops = [
+            item
+            for item in sorted_route_stops
+            if booking.pickup_sequence_no_snapshot <= item.sequence_no <= booking.dropoff_sequence_no_snapshot
+        ]
+
+        boarding_scan_completed = any(
+            event.scan_type.value == "board" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.boarded_at is not None or booking.booking_status in (
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+        )
+
+        drop_scan_completed = any(
+            event.scan_type.value == "drop" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.completed_at is not None or booking.booking_status == BookingStatus.COMPLETED
+
+        items: list[dict[str, Any]] = []
+
+        for route_stop in segment_route_stops:
+            trip_event = trip_event_map.get(route_stop.stop_id)
+            planned_time = self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=route_stop.sequence_no,
+            )
+            estimated_time = self._get_estimated_time_for_sequence(
+                trip=trip,
+                target_sequence_no=route_stop.sequence_no,
+            )
+
+            stop_status = "upcoming"
+
+            if trip_event is not None and trip_event.departure_time is not None:
+                stop_status = "departed"
+            elif trip_event is not None and trip_event.arrival_time is not None:
+                stop_status = "arrived"
+
+            if route_stop.sequence_no == booking.pickup_sequence_no_snapshot and boarding_scan_completed:
+                stop_status = "boarded_here"
+
+            if route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+                stop_status = "dropped_here"
+
+            if booking.scheduled_trip.status == ScheduledTripStatus.COMPLETED:
+                if route_stop.sequence_no < booking.dropoff_sequence_no_snapshot:
+                    stop_status = "passed"
+                elif route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+                    stop_status = "dropped_here"
+
+            items.append(
+                {
+                    "route_stop_id": route_stop.id,
+                    "sequence_no": route_stop.sequence_no,
+                    "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
+                    "is_pickup_stop": route_stop.sequence_no == booking.pickup_sequence_no_snapshot,
+                    "is_dropoff_stop": route_stop.sequence_no == booking.dropoff_sequence_no_snapshot,
+                    "stop_status": stop_status,
+                    "planned_time_at_stop": planned_time,
+                    "estimated_time_at_stop": estimated_time,
+                    "actual_arrival_time": None if trip_event is None else trip_event.arrival_time,
+                    "actual_departure_time": None if trip_event is None else trip_event.departure_time,
+                    "stop": self._serialize_stop_brief(route_stop.stop),
+                }
+            )
+
+        return items
+
+    def _serialize_current_trip_status(
+        self,
+        booking: TripBooking,
+    ) -> dict[str, Any]:
+        trip = booking.scheduled_trip
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+
+        trip_from_stop = (
+            self._serialize_stop_brief(sorted_route_stops[0].stop)
+            if sorted_route_stops
+            else None
+        )
+        trip_to_stop = (
+            self._serialize_stop_brief(sorted_route_stops[-1].stop)
+            if sorted_route_stops
+            else None
+        )
+
+        boarding_scan_completed = any(
+            event.scan_type.value == "board" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.boarded_at is not None or booking.booking_status in (
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+        )
+
+        drop_scan_completed = any(
+            event.scan_type.value == "drop" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.completed_at is not None or booking.booking_status == BookingStatus.COMPLETED
+
+        trip_completed = (
+            trip.status == ScheduledTripStatus.COMPLETED
+            or booking.booking_status == BookingStatus.COMPLETED
+            or trip.actual_end_at is not None
+        )
+
+        return {
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "booking_status": booking.booking_status,
+            "trip_status": trip.status,
+            "boarding_scan_completed": boarding_scan_completed,
+            "drop_scan_completed": drop_scan_completed,
+            "trip_completed": trip_completed,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "trip_from_stop": trip_from_stop,
+            "trip_to_stop": trip_to_stop,
+            "current_progress_stop": self._get_current_progress_stop(trip),
+            "segment_stops": self._serialize_segment_stops(booking),
         }
 
     # ------------------------------------------------------------------
@@ -1741,6 +2000,20 @@ class PassengerService:
             "qr_token": token,
             "payload": payload,
         }
+    
+    async def get_current_trip_status(
+        self,
+        current_user: User,
+        booking_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=current_user.id,
+        )
+
+        return self._serialize_current_trip_status(booking)
 
     # ------------------------------------------------------------------
     # rating

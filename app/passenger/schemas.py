@@ -220,6 +220,43 @@ class CurrentTripBookingListResponse(BaseModel):
     items: list[CurrentTripBookingResponse]
     count: int
 
+class CurrentTripProgressStopResponse(BaseModel):
+    stop: StopBriefResponse
+    event_status: str
+    actual_time: datetime | None
+
+
+class CurrentTripSegmentStopResponse(BaseModel):
+    route_stop_id: str
+    sequence_no: int
+    assume_time_diff_minutes: int | None
+    is_pickup_stop: bool
+    is_dropoff_stop: bool
+    stop_status: str
+    planned_time_at_stop: datetime
+    estimated_time_at_stop: datetime | None
+    actual_arrival_time: datetime | None
+    actual_departure_time: datetime | None
+    stop: StopBriefResponse
+
+class CurrentTripStatusResponse(BaseModel):
+    booking_id: str
+    scheduled_trip_id: str
+    booking_status: str
+    trip_status: str
+
+    boarding_scan_completed: bool
+    drop_scan_completed: bool
+    trip_completed: bool
+
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    trip_from_stop: StopBriefResponse | None
+    trip_to_stop: StopBriefResponse | None
+
+    current_progress_stop: CurrentTripProgressStopResponse | None
+    segment_stops: list[CurrentTripSegmentStopResponse]
+
 class BookingListResponse(BaseModel):
     items: list[TripBookingResponse]
     count: int
