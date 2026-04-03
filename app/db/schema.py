@@ -163,6 +163,10 @@ class ScanType(str, enum.Enum):
     BOARD = "board"
     DROP = "drop"
 
+class SupportStatus(str, enum.Enum):
+    PENDING = "pending"
+    RESOLVED = "resolved"
+    REJECTED = "rejected"
 
 # ============================================================
 # auth / users
@@ -1338,4 +1342,59 @@ class BookingRating(UUIDPKMixin, TimestampMixin, Base):
             "driver_rating >= 1 AND driver_rating <= 5",
             name="ck_booking_ratings_driver_range",
         ),
+    )
+
+class SupportTicket(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "support_tickets"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    subject: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+
+    attachment_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True
+    )
+
+    status: Mapped[SupportStatus] = mapped_column(
+        enum_type(SupportStatus, "support_status"),
+        nullable=False,
+        default=SupportStatus.PENDING,
+    )
+
+    # 🔗 Admin handling
+    resolved_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    rejection_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # 🔗 Relationships
+    user: Mapped["User"] = relationship(
+        foreign_keys=[user_id],
+    )
+
+    resolved_by_admin: Mapped["User | None"] = relationship(
+        foreign_keys=[resolved_by_admin_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint("subject <> ''", name="ck_support_subject_nonempty"),
+        CheckConstraint("description <> ''", name="ck_support_description_nonempty"),
+        Index("ix_support_user_status", "user_id", "status"),
     )
