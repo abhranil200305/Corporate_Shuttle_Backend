@@ -103,6 +103,7 @@ class ScheduledTripDriverVehicleInfoResponse(BaseModel):
     vehicle_name: str | None
     vehicle_model: str | None
     vehicle_color: str | None
+    vehicle_total_seat: str | int | None
 
 
 class ScheduledTripResponse(BaseModel):

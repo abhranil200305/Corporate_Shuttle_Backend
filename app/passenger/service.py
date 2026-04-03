@@ -1188,6 +1188,7 @@ class PassengerService:
             "vehicle_name": None if trip.vehicle is None else trip.vehicle.vehicle_name,
             "vehicle_model": None if trip.vehicle is None else trip.vehicle.vehicle_model,
             "vehicle_color": None if trip.vehicle is None else trip.vehicle.color,
+            "vehicle_total_seat": None if trip.vehicle.seat_count is None else trip.vehicle.seat_count
         }
 
     async def preview_fare(self, payload: FarePreviewRequest) -> dict[str, Any]:
