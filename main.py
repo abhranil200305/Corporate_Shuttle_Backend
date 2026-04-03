@@ -20,6 +20,7 @@ from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.passenger.router import router as passenger_route
+from app.driver.trips import booking_details, route_trip_details, trip_details
 
 
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"
@@ -92,6 +93,12 @@ app.include_router(
 app.include_router(
     route_trip_details.router,
     prefix="/driver",
+    tags=["Driver Trips"],
+)
+
+app.include_router(
+    booking_details.router,
+    prefix="/driver/trips",
     tags=["Driver Trips"],
 )
 
