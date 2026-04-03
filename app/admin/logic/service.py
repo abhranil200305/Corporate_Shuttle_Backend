@@ -1,10 +1,12 @@
 import json
 from datetime import datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.orm import joinedload
 
 from app.db import schema
+from app.payments.service import RoutePayoutService
 
 
 class AdminService:
@@ -287,3 +289,50 @@ class AdminService:
         await self.db.commit()
         return True
         return False
+
+    # app/admin/logic/service.py (Add these methods)
+
+    async def create_driver_linked_account(self, driver_id: str):
+      driver = await self.fetch_driver_by_id(driver_id)
+      if not driver or not driver.driver_profile:
+        raise HTTPException(status_code=404, detail="Driver profile not found")
+    
+      p = driver.driver_profile
+    
+    # 2. Razorpay Account Creation Payload
+      payload = {
+        "type": "route",
+        "email": driver.email,
+        "contact": p.phone,
+        "profile": {
+            "name": p.full_name,
+            "addresses": {
+                "permanent": {
+                    "city": "Kolkata", # Based on your context
+                    "state": "West Bengal",
+                    "country": "IN"
+                }
+            }
+        },
+        "legal_business_name": p.full_name,
+        "business_type": "individual"
+    }
+    
+    # 3. Call Razorpay API (using the helper in RoutePayoutService)
+    # Note: You should instantiate RoutePayoutService here
+      payout_service = RoutePayoutService(self.db)
+      response = await payout_service._razorpay_request(
+        method="POST", 
+        path="/accounts", 
+        json_payload=payload
+    )
+    
+    # 4. Save the Account ID to DriverPayoutDetails
+      account_id = response.get("id")
+    # Logic to update DriverPayoutDetails table with account_id and status='active'
+      return account_id
+
+
+    # app/payments/service.py (Add to RoutePayoutService)
+
+    

@@ -9,12 +9,14 @@ from app.db.schema import BookingStatus, User
 from app.passenger.schemas import (
     BookingCreateResponse,
     BookingListResponse,
+    BookingDetailResponse,
     BookingMutationResponse,
     BookingQRResponse,
     BookingRatingMutationResponse,
     BookingRatingResponse,
     CreateBookingRatingRequest,
     CreateBookingRequest,
+    CurrentTripBookingListResponse,
     FarePreviewRequest,
     FarePreviewResponse,
     PassengerProfileMutationResponse,
@@ -25,7 +27,10 @@ from app.passenger.schemas import (
     ScheduledTripListResponse,
     ScheduledTripResponse,
     VerifyBookingPaymentRequest,
-    TripBookingResponse,
+    ScheduledTripDriverVehicleInfoResponse,
+    LegAvailableSeatsRequest,
+    LegAvailableSeatsResponse,
+    CurrentTripStatusResponse,
 )
 from app.passenger.service import PassengerService
 
@@ -106,6 +111,15 @@ async def get_scheduled_trip_detail(
 ) -> ScheduledTripResponse:
     return await service.get_scheduled_trip_detail(trip_id)
 
+@router.get(
+    "/scheduled-trips/{trip_id}/driver-vehicle-info",
+    response_model=ScheduledTripDriverVehicleInfoResponse,
+)
+async def get_scheduled_trip_driver_vehicle_info(
+    trip_id: str,
+    service: PassengerService = Depends(get_passenger_service),
+) -> ScheduledTripDriverVehicleInfoResponse:
+    return await service.get_scheduled_trip_driver_vehicle_info(trip_id)
 
 @router.post("/fare/preview", response_model=FarePreviewResponse)
 async def preview_fare(
@@ -114,6 +128,17 @@ async def preview_fare(
 ) -> FarePreviewResponse:
     return await service.preview_fare(payload)
 
+@router.post(
+    "/scheduled-trips/{trip_id}/available-seats",
+    response_model=LegAvailableSeatsResponse,
+)
+async def get_leg_available_seats(
+    trip_id: str,
+    payload: LegAvailableSeatsRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> LegAvailableSeatsResponse:
+    return await service.get_leg_available_seats(current_user, trip_id, payload)
 
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(
@@ -151,11 +176,11 @@ async def list_upcoming_bookings(
     return await service.list_upcoming_bookings(current_user)
 
 
-@router.get("/bookings/current", response_model=BookingListResponse)
+@router.get("/bookings/current", response_model=CurrentTripBookingListResponse)
 async def list_current_bookings(
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
-) -> BookingListResponse:
+) -> CurrentTripBookingListResponse:
     return await service.list_current_bookings(current_user)
 
 
@@ -167,12 +192,12 @@ async def list_history(
     return await service.list_history(current_user)
 
 
-@router.get("/bookings/{booking_id}", response_model=TripBookingResponse)
+@router.get("/bookings/{booking_id}", response_model=BookingDetailResponse)
 async def get_booking_detail(
     booking_id: str,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
-) -> TripBookingResponse:
+) -> BookingDetailResponse:
     return await service.get_booking_detail(current_user, booking_id)
 
 
@@ -193,6 +218,13 @@ async def get_booking_qr(
 ) -> BookingQRResponse:
     return await service.get_booking_qr(current_user, booking_id)
 
+@router.get("/bookings/{booking_id}/current-status", response_model=CurrentTripStatusResponse)
+async def get_current_trip_status(
+    booking_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> CurrentTripStatusResponse:
+    return await service.get_current_trip_status(current_user, booking_id)
 
 @router.post("/bookings/{booking_id}/rating", response_model=BookingRatingMutationResponse)
 async def create_rating(

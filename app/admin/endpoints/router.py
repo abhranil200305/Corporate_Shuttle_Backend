@@ -1,12 +1,14 @@
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
+    BulkStopAddRequest,
     RouteCreate,
     RouteFareCreate,
     RouteStatusUpdate,
@@ -17,6 +19,7 @@ from app.admin.structs.dto import (
 from app.auth.dependencies import get_current_admin
 from app.db import schema
 from app.db.database import get_async_session
+from app.payments.service import RoutePayoutService
 
 # Create ONE router for all admin tasks
 router = APIRouter(
@@ -447,38 +450,263 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
     }
 
 
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+#     await db.flush()
+
+#     # 2. Map the sequence in RouteStop
+#     route_stops = []
+#     for index, stop_data in enumerate(data.stops):
+#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
+#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=time_diff,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+#     await db.commit()
+
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "stops_count": len(data.stops),
+#     }
+
+
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. PRE-CHECK: Look for duplicate Name or Code
+#     # We use 'or_' because both must be unique
+#     from sqlalchemy import or_
+
+#     stmt = select(schema.Route).where(
+#         or_(
+#             schema.Route.name == data.name.strip(),
+#             schema.Route.code == data.code.strip(),
+#         )
+#     )
+#     result = await db.execute(stmt)
+#     existing_route = result.scalar_one_or_none()
+
+#     if existing_route:
+#         # Determine which one caused the conflict for a better error message
+#         conflict_field = "Name" if existing_route.name == data.name.strip() else "Code"
+#         raise HTTPException(
+#             status_code=400,
+#             detail={
+#                 "error": "duplicate_route",
+#                 "message": f"A route with this {conflict_field} already exists. Please use a unique value.",
+#             },
+#         )
+
+#     # 2. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+
+#     # We flush here to get the new_route.id for the RouteStops
+#     await db.flush()
+
+#     # 3. Map the sequence in RouteStop
+#     route_stops = []
+#     for index, stop_data in enumerate(data.stops):
+#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
+#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=time_diff,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+
+#     try:
+#         await db.commit()
+#     except Exception:
+#         await db.rollback()
+#         raise HTTPException(status_code=500, detail="Failed to save route stops.")
+
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "stops_count": len(data.stops),
+#     }
+
+
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. Duplicate Check (Name/Code)
+#     from sqlalchemy import or_
+
+#     stmt = select(schema.Route).where(
+#         or_(
+#             schema.Route.name == data.name.strip(),
+#             schema.Route.code == data.code.strip(),
+#         )
+#     )
+#     result = await db.execute(stmt)
+#     if result.scalar_one_or_none():
+#         raise HTTPException(
+#             status_code=400, detail="Route Name or Code already exists."
+#         )
+
+#     # 2. Basic Validation: A route needs at least 2 stops
+#     if len(data.stops) < 2:
+#         raise HTTPException(
+#             status_code=400, detail="A route must have at least 2 stops."
+#         )
+
+#     # 3. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
+#     await db.flush()  # Get the new_route.id
+
+#     # 4. Map the Bulk List to the Sequence
+#     route_stops = []
+
+#     # Python's enumerate gives us the order perfectly
+#     for index, stop_data in enumerate(data.stops):
+#         # The first stop (index 0) is the START, so time_diff is always 0
+#         actual_time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,  # 1, 2, 3...
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=actual_time_diff,
+#         )
+#         route_stops.append(rs)
+
+#     db.add_all(route_stops)
+
+#     try:
+#         await db.commit()
+#     except Exception:
+#         await db.rollback()
+#         raise HTTPException(
+#             status_code=500, detail="Database error while saving stops."
+#         )
+
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "total_stops_added": len(route_stops),
+#     }
+
+
 @router.post("/routes/create")
-async def create_route(
+async def create_route_identity(
     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
 ):
-    # 1. Create the Route Entry
-    new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
-    db.add(new_route)
-    await db.flush()
+    try:
+        new_route = schema.Route(name=data.name.strip(), code=data.code.strip().upper())
+        db.add(new_route)
+        await db.commit()
+        await db.refresh(new_route)
 
-    # 2. Map the sequence in RouteStop
-    route_stops = []
-    for index, stop_data in enumerate(data.stops):
-        # Logic: If it's the first stop, force 0. Otherwise, use provided time.
-        time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+        return {
+            "status": "success",
+            "message": "Route identity created. Now add stops.",
+            "data": {
+                "route_id": new_route.id,
+                "name": new_route.name,
+                "code": new_route.code,
+            },
+        }
+
+    except IntegrityError as e:
+        await db.rollback()
+        # This catches the 500 and explains WHY (Duplicate Name/Code)
+        error_info = str(e.orig)
+        detail_msg = "Route Name or Code already exists."
+        if "code" in error_info.lower():
+            detail_msg = f"The route code '{data.code}' is already in use."
+        elif "name" in error_info.lower():
+            detail_msg = f"The route name '{data.name}' is already in use."
+
+        raise HTTPException(
+            status_code=400, detail={"error": "duplicate_entry", "message": detail_msg}
+        )
+
+
+@router.post("/routes/{route_id}/stops")
+async def add_bulk_stops(
+    route_id: str,
+    data: BulkStopAddRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    # 1. Check if the route exists
+    route = await db.get(schema.Route, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route ID not found.")
+
+    # 2. Find where the current sequence ends
+    seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
+        schema.RouteStop.route_id == route_id
+    )
+    result = await db.execute(seq_stmt)
+    last_seq = result.scalar() or 0
+
+    # 3. Create stop entries in order
+    new_entries = []
+    for i, stop_info in enumerate(data.stops):
+        current_seq = last_seq + i + 1
+
+        # If this is the absolute beginning of a route, force time to 0
+        time_gap = 0 if current_seq == 1 else stop_info.assume_time_diff_minutes
 
         rs = schema.RouteStop(
-            route_id=new_route.id,
-            stop_id=stop_data.stop_id,
-            sequence_no=index + 1,
-            boarding_allowed=stop_data.boarding_allowed,
-            deboarding_allowed=stop_data.deboarding_allowed,
-            assume_time_diff_minutes=time_diff,
+            route_id=route_id,
+            stop_id=stop_info.stop_id,
+            sequence_no=current_seq,
+            boarding_allowed=stop_info.boarding_allowed,
+            deboarding_allowed=stop_info.deboarding_allowed,
+            assume_time_diff_minutes=time_gap,
         )
-        route_stops.append(rs)
+        new_entries.append(rs)
 
-    db.add_all(route_stops)
-    await db.commit()
+    db.add_all(new_entries)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "db_error",
+                "message": "Failed to save stops.",
+                "debug": str(e),
+            },
+        )
 
     return {
         "status": "success",
-        "route_id": new_route.id,
-        "stops_count": len(data.stops),
+        "route_id": route_id,
+        "added_count": len(new_entries),
+        "total_sequence": last_seq + len(new_entries),
     }
 
 
@@ -641,6 +869,74 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
     ]
 
 
+@router.get("/routes/{route_id}/full-report")
+async def get_route_and_trip_details(
+    route_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    # Notice the change from .stops to .route_stops
+    # and .trips to .scheduled_trips
+    stmt = (
+        select(schema.Route)
+        .options(
+            joinedload(schema.Route.route_stops).joinedload(schema.RouteStop.stop),
+            joinedload(schema.Route.scheduled_trips)
+            .joinedload(schema.ScheduledTrip.driver)  # Load the User
+            .joinedload(schema.User.driver_profile),  # Load the Profile from User
+            joinedload(schema.Route.scheduled_trips).joinedload(
+                schema.ScheduledTrip.vehicle
+            ),
+        )
+        .where(schema.Route.id == route_id)
+    )
+
+    result = await db.execute(stmt)
+    route = result.unique().scalar_one_or_none()
+
+    if not route:
+        raise HTTPException(status_code=404, detail="Route not found")
+
+    return {
+        "route_info": {
+            "name": route.name,
+            "code": route.code,
+            "stops": [
+                {
+                    "seq": rs.sequence_no,
+                    "name": rs.stop.name,
+                    "lat": float(rs.stop.lat),
+                    "lng": float(rs.stop.lng),
+                    "time_offset": rs.assume_time_diff_minutes,
+                }
+                for rs in route.route_stops  # route_stops is already sorted by sequence_no in your schema
+            ],
+        },
+        "trips": [
+            {
+                "trip_id": trip.id,
+                "status": trip.status,
+                "scheduled_start": trip.planned_start_at,  # Changed from scheduled_start_time to match your schema
+                "driver": {
+                    # Accessing via trip.driver.driver_profile
+                    "name": trip.driver.driver_profile.full_name
+                    if (trip.driver and trip.driver.driver_profile)
+                    else "Unassigned",
+                    "phone": trip.driver.driver_profile.phone
+                    if (trip.driver and trip.driver.driver_profile)
+                    else "N/A",
+                },
+                "vehicle": {
+                    "reg_no": trip.vehicle.registration_number
+                    if trip.vehicle
+                    else "Unassigned",
+                    "model": trip.vehicle.vehicle_model if trip.vehicle else "N/A",
+                    "capacity": trip.vehicle.seat_count if trip.vehicle else 0,
+                },
+            }
+            for trip in route.scheduled_trips
+        ],
+    }
+
+
 # ----------------------  trips routes -------------------
 
 
@@ -753,3 +1049,29 @@ async def record_passenger_no_show(
         raise HTTPException(status_code=404, detail="Booking record not found.")
 
     return {"status": "success", "message": f"Booking {booking_id} marked as No-Show."}
+
+
+# app/admin/router.py
+
+
+@router.post("/drivers/{driver_id}/setup-payout-account")
+async def setup_payout_account(
+    driver_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    account_id = await service.create_driver_linked_account(driver_id)
+    return {"status": "success", "razorpay_account_id": account_id}
+
+
+@router.post("/payouts/batch-process")
+async def batch_process_driver_payouts(
+    driver_id: str,
+    month: int = Query(..., ge=1, le=12),
+    year: int = Query(..., ge=2024),
+    db: AsyncSession = Depends(get_async_session),
+):
+    payout_service = RoutePayoutService(db)
+    summary = await payout_service.process_monthly_payouts_for_driver(
+        driver_id, month, year
+    )
+    return {"status": "batch_completed", "details": summary}

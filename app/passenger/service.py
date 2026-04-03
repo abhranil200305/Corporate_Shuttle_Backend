@@ -13,7 +13,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, cast, func, or_, select, Numeric
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -23,6 +23,7 @@ from app.db.schema import (
     BookingPaymentStatus,
     BookingRating,
     BookingStatus,
+    DriverProfile,
     PassengerProfile,
     Route,
     RouteFare,
@@ -42,6 +43,7 @@ from app.passenger.schemas import (
     FarePreviewRequest,
     PassengerProfileUpsertRequest,
     VerifyBookingPaymentRequest,
+    LegAvailableSeatsRequest
 )
 
 
@@ -213,6 +215,17 @@ class PassengerService:
                 selectinload(ScheduledTrip.trip_events).selectinload(TripEvent.stop),
             )
         )
+        result = await self.db.execute(stmt)
+        trip = result.scalar_one_or_none()
+        if trip is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "scheduled_trip_not_found",
+                    "message": "Scheduled trip not found.",
+                },
+            )
+        return trip
     
     async def _get_trip_obj_for_booking_update(self, trip_id: str) -> ScheduledTrip:
         stmt = (
@@ -251,17 +264,21 @@ class PassengerService:
                 TripBooking.id == booking_id,
                 TripBooking.passenger_user_id == passenger_user_id,
             )
-            .options(
+             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
+                selectinload(TripBooking.scan_events),
                 selectinload(TripBooking.scheduled_trip)
                 .selectinload(ScheduledTrip.route)
                 .selectinload(Route.route_stops)
                 .selectinload(RouteStop.stop),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.vehicle),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.driver),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
             )
         )
         result = await self.db.execute(stmt)
@@ -425,24 +442,6 @@ class PassengerService:
                 {
                     "route_stop_id": route_stop.id,
                     "sequence_no": route_stop.sequence_no,
-                    "boarding_allowed": route_stop.boarding_allowed,
-                    "deboarding_allowed": route_stop.deboarding_allowed,
-                    "stop": self._serialize_stop_brief(route_stop.stop),
-                }
-                for route_stop in sorted(route.route_stops, key=lambda item: item.sequence_no)
-            ],
-        }
-
-    def _serialize_route(self, route: Route) -> dict[str, Any]:
-        return {
-            "id": route.id,
-            "name": route.name,
-            "code": route.code,
-            "is_active": route.is_active,
-            "stops": [
-                {
-                    "route_stop_id": route_stop.id,
-                    "sequence_no": route_stop.sequence_no,
                     "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
                     "boarding_allowed": route_stop.boarding_allowed,
                     "deboarding_allowed": route_stop.deboarding_allowed,
@@ -499,6 +498,35 @@ class PassengerService:
                 "id": trip.driver.id,
                 "email": trip.driver.email,
             } if trip.driver is not None else None,
+        }
+    
+    async def _serialize_booking_detail(self, booking: TripBooking) -> dict[str, Any]:
+        return {
+            "id": booking.id,
+            "passenger_user_id": booking.passenger_user_id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "booking_status": booking.booking_status,
+            "fare_amount": booking.fare_amount,
+            "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "commission_percent_snapshot": booking.commission_percent_snapshot,
+            "commission_amount": booking.commission_amount,
+            "driver_payout_amount": booking.driver_payout_amount,
+            "transfer_status": booking.transfer_status,
+            "transfer_ready_at": booking.transfer_ready_at,
+            "transfer_processed_at": booking.transfer_processed_at,
+            "boarded_at": booking.boarded_at,
+            "completed_at": booking.completed_at,
+            "cancelled_at": booking.cancelled_at,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
+            "payments": [self._serialize_payment(payment) for payment in booking.payments],
+            "rating": self._serialize_rating(booking.rating),
+            "created_at": booking.created_at,
+            "updated_at": booking.updated_at,
         }
 
     def _serialize_trip_stops(self, trip: ScheduledTrip) -> list[dict[str, Any]]:
@@ -585,6 +613,281 @@ class PassengerService:
             "rating": self._serialize_rating(booking.rating),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
+        }
+    
+    async def _serialize_current_booking(self, booking: TripBooking) -> dict[str, Any]:
+        return {
+            "id": booking.id,
+            "passenger_user_id": booking.passenger_user_id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "booking_status": booking.booking_status,
+            "fare_amount": booking.fare_amount,
+            "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "boarded_at": booking.boarded_at,
+            "completed_at": booking.completed_at,
+            "cancelled_at": booking.cancelled_at,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
+            "created_at": booking.created_at,
+            "updated_at": booking.updated_at,
+        }
+    
+    def _get_sorted_route_stops(self, trip: ScheduledTrip) -> list[RouteStop]:
+        return sorted(trip.route.route_stops, key=lambda item: item.sequence_no)
+
+    def _build_route_stop_by_stop_id(self, trip: ScheduledTrip) -> dict[str, RouteStop]:
+        return {item.stop_id: item for item in self._get_sorted_route_stops(trip)}
+
+    def _get_route_stop_planned_time(
+        self,
+        *,
+        trip: ScheduledTrip,
+        target_sequence_no: int,
+    ) -> datetime:
+        cumulative_minutes = 0
+        for index, route_stop in enumerate(self._get_sorted_route_stops(trip)):
+            if index == 0:
+                cumulative_minutes = 0
+            else:
+                cumulative_minutes += max(int(route_stop.assume_time_diff_minutes or 0), 0)
+
+            if route_stop.sequence_no == target_sequence_no:
+                return trip.planned_start_at + timedelta(minutes=cumulative_minutes)
+
+        return trip.planned_start_at
+
+    def _get_current_progress_stop(
+        self,
+        trip: ScheduledTrip,
+    ) -> dict[str, Any] | None:
+        route_stop_by_stop_id = self._build_route_stop_by_stop_id(trip)
+
+        best_departed: tuple[int, TripEvent] | None = None
+        best_arrived: tuple[int, TripEvent] | None = None
+
+        for event in trip.trip_events:
+            route_stop = route_stop_by_stop_id.get(event.stop_id)
+            if route_stop is None:
+                continue
+
+            sequence_no = route_stop.sequence_no
+
+            if event.departure_time is not None:
+                if best_departed is None or sequence_no > best_departed[0]:
+                    best_departed = (sequence_no, event)
+            elif event.arrival_time is not None:
+                if best_arrived is None or sequence_no > best_arrived[0]:
+                    best_arrived = (sequence_no, event)
+
+        if best_departed is not None:
+            _, event = best_departed
+            return {
+                "stop": self._serialize_stop_brief(event.stop),
+                "event_status": "departed",
+                "actual_time": event.departure_time,
+            }
+
+        if best_arrived is not None:
+            _, event = best_arrived
+            return {
+                "stop": self._serialize_stop_brief(event.stop),
+                "event_status": "arrived",
+                "actual_time": event.arrival_time,
+            }
+
+        return None
+
+    def _get_estimated_time_for_sequence(
+        self,
+        *,
+        trip: ScheduledTrip,
+        target_sequence_no: int,
+    ) -> datetime:
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+        trip_event_map = self._build_trip_event_map(trip)
+
+        anchor_sequence_no: int | None = None
+        anchor_time: datetime | None = None
+
+        for route_stop in reversed(sorted_route_stops):
+            event = trip_event_map.get(route_stop.stop_id)
+            if event is None:
+                continue
+
+            if event.departure_time is not None:
+                anchor_sequence_no = route_stop.sequence_no
+                anchor_time = event.departure_time
+                break
+
+            if event.arrival_time is not None:
+                anchor_sequence_no = route_stop.sequence_no
+                anchor_time = event.arrival_time
+                break
+
+        if anchor_sequence_no is None or anchor_time is None:
+            return self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=target_sequence_no,
+            )
+
+        if target_sequence_no <= anchor_sequence_no:
+            return self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=target_sequence_no,
+            )
+
+        minutes_to_add = 0
+        started = False
+        for route_stop in sorted_route_stops:
+            if route_stop.sequence_no == anchor_sequence_no:
+                started = True
+                continue
+
+            if not started:
+                continue
+
+            minutes_to_add += max(int(route_stop.assume_time_diff_minutes or 0), 0)
+
+            if route_stop.sequence_no == target_sequence_no:
+                return anchor_time + timedelta(minutes=minutes_to_add)
+
+        return self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=target_sequence_no,
+        )
+
+    def _serialize_segment_stops(
+        self,
+        booking: TripBooking,
+    ) -> list[dict[str, Any]]:
+        trip = booking.scheduled_trip
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+        trip_event_map = self._build_trip_event_map(trip)
+
+        segment_route_stops = [
+            item
+            for item in sorted_route_stops
+            if booking.pickup_sequence_no_snapshot <= item.sequence_no <= booking.dropoff_sequence_no_snapshot
+        ]
+
+        boarding_scan_completed = any(
+            event.scan_type.value == "board" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.boarded_at is not None or booking.booking_status in (
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+        )
+
+        drop_scan_completed = any(
+            event.scan_type.value == "drop" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.completed_at is not None or booking.booking_status == BookingStatus.COMPLETED
+
+        items: list[dict[str, Any]] = []
+
+        for route_stop in segment_route_stops:
+            trip_event = trip_event_map.get(route_stop.stop_id)
+            planned_time = self._get_route_stop_planned_time(
+                trip=trip,
+                target_sequence_no=route_stop.sequence_no,
+            )
+            estimated_time = self._get_estimated_time_for_sequence(
+                trip=trip,
+                target_sequence_no=route_stop.sequence_no,
+            )
+
+            stop_status = "upcoming"
+
+            if trip_event is not None and trip_event.departure_time is not None:
+                stop_status = "departed"
+            elif trip_event is not None and trip_event.arrival_time is not None:
+                stop_status = "arrived"
+
+            if route_stop.sequence_no == booking.pickup_sequence_no_snapshot and boarding_scan_completed:
+                stop_status = "boarded_here"
+
+            if route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+                stop_status = "dropped_here"
+
+            if booking.scheduled_trip.status == ScheduledTripStatus.COMPLETED:
+                if route_stop.sequence_no < booking.dropoff_sequence_no_snapshot:
+                    stop_status = "passed"
+                elif route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+                    stop_status = "dropped_here"
+
+            items.append(
+                {
+                    "route_stop_id": route_stop.id,
+                    "sequence_no": route_stop.sequence_no,
+                    "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
+                    "is_pickup_stop": route_stop.sequence_no == booking.pickup_sequence_no_snapshot,
+                    "is_dropoff_stop": route_stop.sequence_no == booking.dropoff_sequence_no_snapshot,
+                    "stop_status": stop_status,
+                    "planned_time_at_stop": planned_time,
+                    "estimated_time_at_stop": estimated_time,
+                    "actual_arrival_time": None if trip_event is None else trip_event.arrival_time,
+                    "actual_departure_time": None if trip_event is None else trip_event.departure_time,
+                    "stop": self._serialize_stop_brief(route_stop.stop),
+                }
+            )
+
+        return items
+
+    def _serialize_current_trip_status(
+        self,
+        booking: TripBooking,
+    ) -> dict[str, Any]:
+        trip = booking.scheduled_trip
+        sorted_route_stops = self._get_sorted_route_stops(trip)
+
+        trip_from_stop = (
+            self._serialize_stop_brief(sorted_route_stops[0].stop)
+            if sorted_route_stops
+            else None
+        )
+        trip_to_stop = (
+            self._serialize_stop_brief(sorted_route_stops[-1].stop)
+            if sorted_route_stops
+            else None
+        )
+
+        boarding_scan_completed = any(
+            event.scan_type.value == "board" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.boarded_at is not None or booking.booking_status in (
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+        )
+
+        drop_scan_completed = any(
+            event.scan_type.value == "drop" and event.within_radius
+            for event in booking.scan_events
+        ) or booking.completed_at is not None or booking.booking_status == BookingStatus.COMPLETED
+
+        trip_completed = (
+            trip.status == ScheduledTripStatus.COMPLETED
+            or booking.booking_status == BookingStatus.COMPLETED
+            or trip.actual_end_at is not None
+        )
+
+        return {
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "booking_status": booking.booking_status,
+            "trip_status": trip.status,
+            "boarding_scan_completed": boarding_scan_completed,
+            "drop_scan_completed": drop_scan_completed,
+            "trip_completed": trip_completed,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "trip_from_stop": trip_from_stop,
+            "trip_to_stop": trip_to_stop,
+            "current_progress_stop": self._get_current_progress_stop(trip),
+            "segment_stops": self._serialize_segment_stops(booking),
         }
 
     # ------------------------------------------------------------------
@@ -837,6 +1140,56 @@ class PassengerService:
     async def get_scheduled_trip_detail(self, trip_id: str) -> dict[str, Any]:
         trip = await self._get_trip_obj(trip_id)
         return await self._serialize_trip(trip)
+    
+    async def get_scheduled_trip_driver_vehicle_info(
+        self,
+        trip_id: str,
+    ) -> dict[str, Any]:
+        trip_stmt = (
+            select(ScheduledTrip)
+            .where(ScheduledTrip.id == trip_id)
+            .options(
+                selectinload(ScheduledTrip.vehicle),
+                selectinload(ScheduledTrip.driver).selectinload(User.driver_profile),
+            )
+        )
+        trip_result = await self.db.execute(trip_stmt)
+        trip = trip_result.scalar_one_or_none()
+
+        if trip is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "scheduled_trip_not_found",
+                    "message": "Scheduled trip not found.",
+                },
+            )
+
+        rating_stmt = select(
+            cast(func.avg(BookingRating.driver_rating), Numeric(3, 2)),
+            func.count(BookingRating.id),
+        ).where(
+            BookingRating.driver_user_id == trip.driver_user_id
+        )
+        rating_result = await self.db.execute(rating_stmt)
+        avg_rating, rating_count = rating_result.one()
+
+        driver_profile = None
+        if trip.driver is not None:
+            driver_profile = trip.driver.driver_profile
+
+        return {
+            "scheduled_trip_id": trip.id,
+            "driver_user_id": trip.driver_user_id,
+            "driver_name": None if driver_profile is None else driver_profile.full_name,
+            "driver_average_rating": avg_rating,
+            "driver_rating_count": int(rating_count or 0),
+            "vehicle_registration_number": None if trip.vehicle is None else trip.vehicle.registration_number,
+            "vehicle_name": None if trip.vehicle is None else trip.vehicle.vehicle_name,
+            "vehicle_model": None if trip.vehicle is None else trip.vehicle.vehicle_model,
+            "vehicle_color": None if trip.vehicle is None else trip.vehicle.color,
+            "vehicle_total_seat": None if trip.vehicle.seat_count is None else trip.vehicle.seat_count
+        }
 
     async def preview_fare(self, payload: FarePreviewRequest) -> dict[str, Any]:
         route = await self._get_route_obj(payload.route_id)
@@ -862,6 +1215,60 @@ class PassengerService:
             "pickup_sequence_no": pickup_route_stop.sequence_no,
             "dropoff_sequence_no": dropoff_route_stop.sequence_no,
             "amount": fare.amount,
+        }
+    
+    async def get_leg_available_seats(
+        self,
+        current_user: User,
+        trip_id: str,
+        payload: LegAvailableSeatsRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        trip = await self._get_trip_obj(trip_id)
+
+        if payload.route_id != trip.route_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "route_trip_mismatch",
+                    "message": "Provided route does not match the scheduled trip.",
+                },
+            )
+
+        fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
+            route_id=payload.route_id,
+            pickup_stop_id=payload.pickup_stop_id,
+            dropoff_stop_id=payload.dropoff_stop_id,
+        )
+
+        seat_capacity = trip.vehicle.seat_count if trip.vehicle is not None else 0
+
+        overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        available_seats = max(seat_capacity - overlapping_active_bookings, 0)
+
+        trip_bookable = (
+            trip.status == ScheduledTripStatus.SCHEDULED
+            and trip.planned_start_at > utcnow()
+            and available_seats > 0
+        )
+
+        return {
+            "scheduled_trip_id": trip.id,
+            "route_id": trip.route_id,
+            "pickup_stop_id": payload.pickup_stop_id,
+            "dropoff_stop_id": payload.dropoff_stop_id,
+            "pickup_sequence_no": pickup_route_stop.sequence_no,
+            "dropoff_sequence_no": dropoff_route_stop.sequence_no,
+            "seat_capacity": seat_capacity,
+            "overlapping_active_bookings": overlapping_active_bookings,
+            "available_seats": available_seats,
+            "trip_bookable": trip_bookable,
         }
 
     # ------------------------------------------------------------------
@@ -1518,7 +1925,7 @@ class PassengerService:
             booking_id=booking_id,
             passenger_user_id=current_user.id,
         )
-        return self._serialize_booking(booking)
+        return await self._serialize_booking_detail(booking)
 
     async def cancel_booking(self, current_user: User, booking_id: str) -> dict[str, Any]:
         self.ensure_passenger(current_user)
@@ -1610,15 +2017,22 @@ class PassengerService:
                 .selectinload(RouteStop.stop),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.vehicle),
                 selectinload(TripBooking.scheduled_trip).selectinload(ScheduledTrip.driver),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
             )
             .order_by(ScheduledTrip.planned_start_at.asc())
         )
         result = await self.db.execute(stmt)
         bookings = result.scalars().unique().all()
 
+        items: list[dict[str, Any]] = []
+        for booking in bookings:
+            items.append(await self._serialize_current_booking(booking))
+
         return {
-            "items": [self._serialize_booking(booking) for booking in bookings],
-            "count": len(bookings),
+            "items": items,
+            "count": len(items),
         }
 
     async def list_history(self, current_user: User) -> dict[str, Any]:
@@ -1720,6 +2134,20 @@ class PassengerService:
             "qr_token": token,
             "payload": payload,
         }
+    
+    async def get_current_trip_status(
+        self,
+        current_user: User,
+        booking_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=current_user.id,
+        )
+
+        return self._serialize_current_trip_status(booking)
 
     # ------------------------------------------------------------------
     # rating

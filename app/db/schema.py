@@ -126,6 +126,7 @@ class ScheduledTripStatus(str, enum.Enum):
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
+    PREMATURE_END = "premature_end"
 
 
 class BookingStatus(str, enum.Enum):
@@ -826,6 +827,8 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
     )
 
     admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    premature_end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     route: Mapped["Route"] = relationship(
         back_populates="scheduled_trips",
