@@ -47,15 +47,18 @@ def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
 
     ext = Path(upload.filename).suffix or ".jpg"
     filename = f"{prefix}_{uuid.uuid4().hex}{ext}"
+
     file_path = UPLOAD_DIR / filename
+
+    # Ensure directory exists (safe)
+    file_path.parent.mkdir(parents=True, exist_ok=True)
 
     upload.file.seek(0)
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(upload.file, buffer)
 
-    # Store relative path w.r.t BASE_DIR
-    return str(file_path.relative_to(BASE_DIR))
-
+    # ✅ RETURN ABSOLUTE PATH
+    return str(file_path.resolve())
 
 # ------------------------------
 # Create Driver Profile
