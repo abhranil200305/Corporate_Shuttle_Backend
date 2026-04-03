@@ -1,5 +1,5 @@
 # app/driver/trips/cancel_trip.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import update
@@ -18,6 +18,7 @@ router = APIRouter(
 @router.post("/{trip_id}/cancel", status_code=200)
 async def cancel_trip(
     trip_id: str,
+    cancellation_reason: str | None = Form(None),
     current_driver: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
@@ -28,6 +29,7 @@ async def cancel_trip(
     - Only trips with status SCHEDULED can be cancelled.
     - Can cancel only if current time <= planned_start_at - 1 hour.
     - All passenger bookings for this trip are automatically cancelled.
+    - Driver can provide a cancellation reason.
     """
 
     # Fetch the trip assigned to this driver
@@ -68,17 +70,17 @@ async def cancel_trip(
 
     # --- CANCEL THE TRIP ---
     trip.status = ScheduledTripStatus.CANCELLED
+    if cancellation_reason:
+        trip.premature_end_reason = cancellation_reason  # store the reason
 
     # --- CANCEL ALL ACTIVE BOOKINGS ---
     await db.execute(
         update(TripBooking)
         .where(
             TripBooking.scheduled_trip_id == trip.id,
-            TripBooking.booking_status.in_([
-                BookingStatus.PENDING_PAYMENT,
-                BookingStatus.BOOKED,
-                BookingStatus.BOARDED
-            ])
+            TripBooking.booking_status.in_([BookingStatus.PENDING_PAYMENT,
+                                            BookingStatus.BOOKED,
+                                            BookingStatus.BOARDED])
         )
         .values(
             booking_status=BookingStatus.CANCELLED,
@@ -93,5 +95,6 @@ async def cancel_trip(
     return {
         "message": "Trip successfully cancelled. All active bookings have been cancelled.",
         "trip_id": trip.id,
-        "status": trip.status.value
+        "status": trip.status.value,
+        "cancellation_reason": trip.premature_end_reason
     }
