@@ -37,10 +37,10 @@ async def get_route_trip_details(
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    # ✅ Sort stops
+    # ✅ Sort stops by sequence
     route_stops = sorted(route.route_stops, key=lambda x: x.sequence_no)
 
-    # 2️⃣ Compute cumulative time
+    # 2️⃣ Compute cumulative time for planned arrival
     cumulative_time = 0
     stop_time_map = {}
 
@@ -63,14 +63,13 @@ async def get_route_trip_details(
         )
         .where(
             ScheduledTrip.route_id == route_id,
-            ScheduledTrip.driver_user_id == current_user.id  # 🔥 KEY FIX
+            ScheduledTrip.driver_user_id == current_user.id
         )
     )
-
     trips = trip_result.scalars().all()
 
     # 5️⃣ Build response
-    return {
+    response = {
         "route": {
             "id": route.id,
             "name": route.name,
@@ -142,7 +141,7 @@ async def get_route_trip_details(
                     for rs in route_stops
                 ],
 
-                # 🔁 Raw events
+                # 🔁 Raw trip events
                 "events": [
                     {
                         "stop_id": event.stop_id,
@@ -155,3 +154,5 @@ async def get_route_trip_details(
             for trip in trips
         ],
     }
+
+    return response
