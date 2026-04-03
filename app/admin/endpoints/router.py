@@ -1,12 +1,14 @@
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
+    BulkStopAddRequest,
     RouteCreate,
     RouteFareCreate,
     RouteStatusUpdate,
@@ -482,70 +484,70 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
 #     }
 
 
-@router.post("/routes/create")
-async def create_route(
-    data: RouteCreate, db: AsyncSession = Depends(get_async_session)
-):
-    # 1. PRE-CHECK: Look for duplicate Name or Code
-    # We use 'or_' because both must be unique
-    from sqlalchemy import or_
+# @router.post("/routes/create")
+# async def create_route(
+#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+# ):
+#     # 1. PRE-CHECK: Look for duplicate Name or Code
+#     # We use 'or_' because both must be unique
+#     from sqlalchemy import or_
 
-    stmt = select(schema.Route).where(
-        or_(
-            schema.Route.name == data.name.strip(),
-            schema.Route.code == data.code.strip(),
-        )
-    )
-    result = await db.execute(stmt)
-    existing_route = result.scalar_one_or_none()
+#     stmt = select(schema.Route).where(
+#         or_(
+#             schema.Route.name == data.name.strip(),
+#             schema.Route.code == data.code.strip(),
+#         )
+#     )
+#     result = await db.execute(stmt)
+#     existing_route = result.scalar_one_or_none()
 
-    if existing_route:
-        # Determine which one caused the conflict for a better error message
-        conflict_field = "Name" if existing_route.name == data.name.strip() else "Code"
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error": "duplicate_route",
-                "message": f"A route with this {conflict_field} already exists. Please use a unique value.",
-            },
-        )
+#     if existing_route:
+#         # Determine which one caused the conflict for a better error message
+#         conflict_field = "Name" if existing_route.name == data.name.strip() else "Code"
+#         raise HTTPException(
+#             status_code=400,
+#             detail={
+#                 "error": "duplicate_route",
+#                 "message": f"A route with this {conflict_field} already exists. Please use a unique value.",
+#             },
+#         )
 
-    # 2. Create the Route Entry
-    new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
-    db.add(new_route)
+#     # 2. Create the Route Entry
+#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
+#     db.add(new_route)
 
-    # We flush here to get the new_route.id for the RouteStops
-    await db.flush()
+#     # We flush here to get the new_route.id for the RouteStops
+#     await db.flush()
 
-    # 3. Map the sequence in RouteStop
-    route_stops = []
-    for index, stop_data in enumerate(data.stops):
-        # Logic: If it's the first stop, force 0. Otherwise, use provided time.
-        time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
+#     # 3. Map the sequence in RouteStop
+#     route_stops = []
+#     for index, stop_data in enumerate(data.stops):
+#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
+#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
 
-        rs = schema.RouteStop(
-            route_id=new_route.id,
-            stop_id=stop_data.stop_id,
-            sequence_no=index + 1,
-            boarding_allowed=stop_data.boarding_allowed,
-            deboarding_allowed=stop_data.deboarding_allowed,
-            assume_time_diff_minutes=time_diff,
-        )
-        route_stops.append(rs)
+#         rs = schema.RouteStop(
+#             route_id=new_route.id,
+#             stop_id=stop_data.stop_id,
+#             sequence_no=index + 1,
+#             boarding_allowed=stop_data.boarding_allowed,
+#             deboarding_allowed=stop_data.deboarding_allowed,
+#             assume_time_diff_minutes=time_diff,
+#         )
+#         route_stops.append(rs)
 
-    db.add_all(route_stops)
+#     db.add_all(route_stops)
 
-    try:
-        await db.commit()
-    except Exception:
-        await db.rollback()
-        raise HTTPException(status_code=500, detail="Failed to save route stops.")
+#     try:
+#         await db.commit()
+#     except Exception:
+#         await db.rollback()
+#         raise HTTPException(status_code=500, detail="Failed to save route stops.")
 
-    return {
-        "status": "success",
-        "route_id": new_route.id,
-        "stops_count": len(data.stops),
-    }
+#     return {
+#         "status": "success",
+#         "route_id": new_route.id,
+#         "stops_count": len(data.stops),
+#     }
 
 
 # @router.post("/routes/create")
@@ -611,6 +613,100 @@ async def create_route(
 #         "route_id": new_route.id,
 #         "total_stops_added": len(route_stops),
 #     }
+
+
+@router.post("/routes/create")
+async def create_route_identity(
+    data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+):
+    try:
+        new_route = schema.Route(name=data.name.strip(), code=data.code.strip().upper())
+        db.add(new_route)
+        await db.commit()
+        await db.refresh(new_route)
+
+        return {
+            "status": "success",
+            "message": "Route identity created. Now add stops.",
+            "data": {
+                "route_id": new_route.id,
+                "name": new_route.name,
+                "code": new_route.code,
+            },
+        }
+
+    except IntegrityError as e:
+        await db.rollback()
+        # This catches the 500 and explains WHY (Duplicate Name/Code)
+        error_info = str(e.orig)
+        detail_msg = "Route Name or Code already exists."
+        if "code" in error_info.lower():
+            detail_msg = f"The route code '{data.code}' is already in use."
+        elif "name" in error_info.lower():
+            detail_msg = f"The route name '{data.name}' is already in use."
+
+        raise HTTPException(
+            status_code=400, detail={"error": "duplicate_entry", "message": detail_msg}
+        )
+
+
+@router.post("/routes/{route_id}/stops")
+async def add_bulk_stops(
+    route_id: str,
+    data: BulkStopAddRequest,
+    db: AsyncSession = Depends(get_async_session),
+) -> dict:
+    # 1. Check if the route exists
+    route = await db.get(schema.Route, route_id)
+    if not route:
+        raise HTTPException(status_code=404, detail="Route ID not found.")
+
+    # 2. Find where the current sequence ends
+    seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
+        schema.RouteStop.route_id == route_id
+    )
+    result = await db.execute(seq_stmt)
+    last_seq = result.scalar() or 0
+
+    # 3. Create stop entries in order
+    new_entries = []
+    for i, stop_info in enumerate(data.stops):
+        current_seq = last_seq + i + 1
+
+        # If this is the absolute beginning of a route, force time to 0
+        time_gap = 0 if current_seq == 1 else stop_info.assume_time_diff_minutes
+
+        rs = schema.RouteStop(
+            route_id=route_id,
+            stop_id=stop_info.stop_id,
+            sequence_no=current_seq,
+            boarding_allowed=stop_info.boarding_allowed,
+            deboarding_allowed=stop_info.deboarding_allowed,
+            assume_time_diff_minutes=time_gap,
+        )
+        new_entries.append(rs)
+
+    db.add_all(new_entries)
+
+    try:
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "db_error",
+                "message": "Failed to save stops.",
+                "debug": str(e),
+            },
+        )
+
+    return {
+        "status": "success",
+        "route_id": route_id,
+        "added_count": len(new_entries),
+        "total_sequence": last_seq + len(new_entries),
+    }
 
 
 @router.get("/routes/all")
