@@ -888,6 +888,223 @@ class PassengerService:
 
     async def _fetch_razorpay_payment(self, payment_id: str) -> dict[str, Any]:
         return await self._razorpay_request(method="GET", path=f"/payments/{payment_id}")
+    
+    async def _fetch_razorpay_order_payments(self, order_id: str) -> list[dict[str, Any]]:
+        payload = await self._razorpay_request(
+            method="GET",
+            path=f"/orders/{order_id}/payments",
+        )
+
+        items = payload.get("items")
+        if not isinstance(items, list):
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "invalid_razorpay_order_payments_response",
+                    "message": "Razorpay order payments response did not contain a valid items list.",
+                },
+            )
+
+        return items
+
+    @staticmethod
+    def _select_best_razorpay_order_payment(
+        items: list[dict[str, Any]],
+        *,
+        expected_order_id: str,
+        expected_amount_subunits: int,
+    ) -> dict[str, Any] | None:
+        priority = {
+            "captured": 50,
+            "authorized": 40,
+            "created": 30,
+            "failed": 20,
+            "refunded": 10,
+        }
+
+        candidates: list[tuple[int, int, dict[str, Any]]] = []
+
+        for item in items:
+            order_id = str(item.get("order_id") or "").strip()
+            if order_id != expected_order_id:
+                continue
+
+            try:
+                amount = int(item.get("amount"))
+            except (TypeError, ValueError):
+                continue
+
+            if amount != expected_amount_subunits:
+                continue
+
+            status = str(item.get("status") or "").strip().lower()
+
+            try:
+                created_at = int(item.get("created_at") or 0)
+            except (TypeError, ValueError):
+                created_at = 0
+
+            candidates.append((priority.get(status, 0), created_at, item))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda row: (row[0], row[1]), reverse=True)
+        return candidates[0][2]
+
+    async def _mark_booking_paid_and_booked(
+        self,
+        booking: TripBooking,
+        payment: BookingPayment,
+        *,
+        razorpay_payment_id: str | None,
+        razorpay_signature: str | None = None,
+    ) -> None:
+        if razorpay_payment_id:
+            payment.razorpay_payment_id = razorpay_payment_id
+        if razorpay_signature:
+            payment.razorpay_signature = razorpay_signature
+
+        payment.status = BookingPaymentStatus.PAID
+        booking.booking_status = BookingStatus.BOOKED
+        booking.payment_hold_expires_at = None
+
+        self.db.add(payment)
+        self.db.add(booking)
+        await self.db.flush()
+
+    async def _mark_booking_paid_but_expired(
+        self,
+        booking: TripBooking,
+        payment: BookingPayment,
+        *,
+        razorpay_payment_id: str | None,
+    ) -> None:
+        if razorpay_payment_id:
+            payment.razorpay_payment_id = razorpay_payment_id
+
+        payment.status = BookingPaymentStatus.PAID
+        booking.booking_status = BookingStatus.CANCELLED
+        booking.cancelled_at = booking.cancelled_at or utcnow()
+        booking.payment_hold_expires_at = None
+
+        self.db.add(payment)
+        self.db.add(booking)
+        await self.db.flush()
+
+    async def reconcile_pending_booking_payment(
+        self,
+        booking: TripBooking,
+    ) -> str:
+        if booking.booking_status != BookingStatus.PENDING_PAYMENT:
+            return "skip_non_pending"
+
+        hold_expired = (
+            booking.payment_hold_expires_at is not None
+            and booking.payment_hold_expires_at <= utcnow()
+        )
+
+        payment_candidates = sorted(
+            [
+                payment
+                for payment in booking.payments
+                if payment.status in (BookingPaymentStatus.CREATED, BookingPaymentStatus.PAID)
+            ],
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+
+        if not payment_candidates:
+            if hold_expired:
+                await self._expire_pending_booking_hold(booking)
+                return "expired_without_local_payment"
+            return "pending_without_local_payment"
+
+        payment = payment_candidates[0]
+
+        if payment.status == BookingPaymentStatus.PAID:
+            if hold_expired:
+                await self._mark_booking_paid_but_expired(
+                    booking,
+                    payment,
+                    razorpay_payment_id=payment.razorpay_payment_id,
+                )
+                return "paid_after_hold_expiry"
+
+            await self._mark_booking_paid_and_booked(
+                booking,
+                payment,
+                razorpay_payment_id=payment.razorpay_payment_id,
+                razorpay_signature=payment.razorpay_signature,
+            )
+            return "promoted_local_paid"
+
+        expected_amount_subunits = self._to_subunits(payment.amount)
+
+        provider_items = await self._fetch_razorpay_order_payments(
+            payment.razorpay_order_id
+        )
+        provider_payment = self._select_best_razorpay_order_payment(
+            provider_items,
+            expected_order_id=payment.razorpay_order_id,
+            expected_amount_subunits=expected_amount_subunits,
+        )
+
+        if provider_payment is None:
+            if hold_expired:
+                await self._expire_pending_booking_hold(booking)
+                return "expired_without_provider_payment"
+            return "pending_without_provider_payment"
+
+        provider_status = str(provider_payment.get("status") or "").strip().lower()
+        provider_payment_id = str(provider_payment.get("id") or "").strip() or None
+
+        if provider_status == "captured":
+            if hold_expired:
+                await self._mark_booking_paid_but_expired(
+                    booking,
+                    payment,
+                    razorpay_payment_id=provider_payment_id,
+                )
+                return "captured_after_hold_expiry"
+
+            await self._mark_booking_paid_and_booked(
+                booking,
+                payment,
+                razorpay_payment_id=provider_payment_id,
+            )
+            return "booked_from_captured_payment"
+
+        if provider_status == "authorized":
+            if hold_expired:
+                await self._expire_pending_booking_hold(booking)
+                return "expired_with_authorized_payment"
+
+            if not provider_payment_id:
+                return "pending_authorized_without_payment_id"
+
+            captured_payment = await self._capture_razorpay_payment(
+                provider_payment_id,
+                expected_amount_subunits,
+            )
+            captured_status = str(captured_payment.get("status") or "").strip().lower()
+            captured_flag = bool(captured_payment.get("captured", False))
+
+            if captured_status == "captured" or captured_flag:
+                await self._mark_booking_paid_and_booked(
+                    booking,
+                    payment,
+                    razorpay_payment_id=provider_payment_id,
+                )
+                return "booked_after_capture"
+
+            return f"pending_after_capture_attempt_{captured_status or 'unknown'}"
+
+        if hold_expired:
+            await self._expire_pending_booking_hold(booking)
+            return f"expired_with_{provider_status or 'unknown'}_payment"
+
+        return f"pending_with_{provider_status or 'unknown'}_payment"
 
     async def _capture_razorpay_payment(self, payment_id: str, amount_subunits: int) -> dict[str, Any]:
         payload = {
