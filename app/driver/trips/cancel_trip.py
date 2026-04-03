@@ -2,9 +2,10 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import update
 from datetime import datetime, timedelta, timezone
 
-from app.db.schema import ScheduledTrip, ScheduledTripStatus, User
+from app.db.schema import ScheduledTrip, ScheduledTripStatus, TripBooking, BookingStatus, User
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user  
 
@@ -26,6 +27,7 @@ async def cancel_trip(
     Rules:
     - Only trips with status SCHEDULED can be cancelled.
     - Can cancel only if current time <= planned_start_at - 1 hour.
+    - All passenger bookings for this trip are automatically cancelled.
     """
 
     # Fetch the trip assigned to this driver
@@ -56,7 +58,6 @@ async def cancel_trip(
         if trip.planned_start_at.tzinfo is None
         else trip.planned_start_at
     )
-
     cancel_deadline = planned_start_at - timedelta(hours=1)
 
     if now_utc > cancel_deadline:
@@ -65,13 +66,32 @@ async def cancel_trip(
             detail="Cannot cancel trip less than 1 hour before planned start time."
         )
 
-    # Update trip status to CANCELLED
+    # --- CANCEL THE TRIP ---
     trip.status = ScheduledTripStatus.CANCELLED
+
+    # --- CANCEL ALL ACTIVE BOOKINGS ---
+    await db.execute(
+        update(TripBooking)
+        .where(
+            TripBooking.scheduled_trip_id == trip.id,
+            TripBooking.booking_status.in_([
+                BookingStatus.PENDING_PAYMENT,
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED
+            ])
+        )
+        .values(
+            booking_status=BookingStatus.CANCELLED,
+            cancelled_at=now_utc
+        )
+    )
+
+    # Commit all changes
     await db.commit()
     await db.refresh(trip)
 
     return {
-        "message": "Trip successfully cancelled",
+        "message": "Trip successfully cancelled. All active bookings have been cancelled.",
         "trip_id": trip.id,
         "status": trip.status.value
     }
