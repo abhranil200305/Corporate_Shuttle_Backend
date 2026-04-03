@@ -316,13 +316,13 @@ async def emergency_end_trip(
         raise HTTPException(400, "Reason is required for emergency end")
 
     trip.actual_end_at = now_utc()
-    trip.status = ScheduledTripStatus.CANCELLED  # Use CANCELLED or create PREMATURE_END if enum added
-    trip.admin_note = f"Emergency end reason: {reason}"
+    trip.status = ScheduledTripStatus.PREMATURE_END  # Use dedicated enum value
+    trip.premature_end_reason = reason  # Store in the correct column
 
     await session.commit()
     return {
         "message": "Trip ended prematurely",
         "trip_id": trip.id,
         "actual_end_at": to_ist(trip.actual_end_at),
-        "reason": reason
+        "reason": trip.premature_end_reason
     }
