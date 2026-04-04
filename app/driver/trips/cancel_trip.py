@@ -30,6 +30,7 @@ async def cancel_trip(
     - Can cancel only if current time <= planned_start_at - 1 hour.
     - All passenger bookings for this trip are automatically cancelled.
     - Driver can provide a cancellation reason.
+    - Booked passengers see status CANCELLED automatically.
     """
 
     # Fetch the trip assigned to this driver
@@ -71,22 +72,32 @@ async def cancel_trip(
     # --- CANCEL THE TRIP ---
     trip.status = ScheduledTripStatus.CANCELLED
     if cancellation_reason:
-        trip.premature_end_reason = cancellation_reason  # store the reason
+        trip.premature_end_reason = cancellation_reason  # store reason
 
     # --- CANCEL ALL ACTIVE BOOKINGS ---
-    await db.execute(
+    # Bookings that are PENDING_PAYMENT, BOOKED, or BOARDED
+    bookings_to_cancel_stmt = (
         update(TripBooking)
         .where(
             TripBooking.scheduled_trip_id == trip.id,
-            TripBooking.booking_status.in_([BookingStatus.PENDING_PAYMENT,
-                                            BookingStatus.BOOKED,
-                                            BookingStatus.BOARDED])
+            TripBooking.booking_status.in_([
+                BookingStatus.PENDING_PAYMENT,
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED
+            ])
         )
         .values(
             booking_status=BookingStatus.CANCELLED,
             cancelled_at=now_utc
         )
     )
+    await db.execute(bookings_to_cancel_stmt)
+
+    # --- OPTIONAL: Notify passengers ---
+    # You can trigger notifications here if you have a notify system
+    # for booking in trip.bookings:
+    #     if booking.booking_status in [BookingStatus.PENDING_PAYMENT, BookingStatus.BOOKED, BookingStatus.BOARDED]:
+    #         await send_push_notification(booking.passenger_user_id, "Trip Cancelled", "Your booked trip has been cancelled by the driver.")
 
     # Commit all changes
     await db.commit()
