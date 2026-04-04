@@ -15,7 +15,7 @@ from app.db.database import engine
 from app.driver import driver_kyc, vehicle
 from app.driver.driverprofile import router as driverprofile_router
 from app.driver.driverprofileshow import router as driverprofileshow_router
-from app.driver.trips import booking_details_service, route_trip_details, trip_details
+from app.driver.trips import booking_details_service, payout_details, route_trip_details, trip_details
 from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.jobs.payment_reconciler import payment_reconcile_loop
@@ -106,6 +106,12 @@ app.include_router(
 
 app.include_router(
     booking_details_service.router,
+    prefix="/driver/trips",
+    tags=["Driver Trips"],
+)
+
+app.include_router(
+    payout_details.router,
     prefix="/driver/trips",
     tags=["Driver Trips"],
 )
