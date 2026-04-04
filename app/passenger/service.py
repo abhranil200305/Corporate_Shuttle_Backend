@@ -35,6 +35,7 @@ from app.db.schema import (
     TripEvent,
     User,
     UserRole,
+    PlatformSettings
 )
 
 from app.passenger.schemas import (
@@ -145,6 +146,89 @@ class PassengerService:
     @classmethod
     def _get_payment_hold_expires_at(cls) -> datetime:
         return utcnow() + timedelta(minutes=cls._get_payment_hold_minutes())
+    
+    async def _get_platform_settings_obj(self) -> PlatformSettings | None:
+        stmt = (
+            select(PlatformSettings)
+            .where(PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        settings = result.scalar_one_or_none()
+
+        if settings is not None:
+            return settings
+
+        fallback_stmt = (
+            select(PlatformSettings)
+            .order_by(
+                PlatformSettings.updated_at.desc(),
+                PlatformSettings.created_at.desc(),
+            )
+            .limit(1)
+        )
+        fallback_result = await self.db.execute(fallback_stmt)
+        return fallback_result.scalar_one_or_none()
+
+    async def _get_current_commission_percent(self) -> Decimal:
+        settings = await self._get_platform_settings_obj()
+        if settings is None or settings.commission_percent is None:
+            return Decimal("0.00")
+
+        return self._quantize_money(Decimal(settings.commission_percent))
+
+    def _build_booking_commission_snapshot(
+        self,
+        *,
+        fare_amount: Decimal,
+        commission_percent: Decimal,
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        normalized_fare = self._quantize_money(Decimal(fare_amount))
+        normalized_commission_percent = self._quantize_money(Decimal(commission_percent))
+
+        commission_amount = self._quantize_money(
+            (normalized_fare * normalized_commission_percent) / Decimal("100")
+        )
+        driver_payout_amount = self._quantize_money(
+            normalized_fare - commission_amount
+        )
+
+        if driver_payout_amount < Decimal("0.00"):
+            driver_payout_amount = Decimal("0.00")
+
+        return (
+            normalized_commission_percent,
+            commission_amount,
+            driver_payout_amount,
+        )
+
+    async def _ensure_booking_commission_snapshot(
+        self,
+        booking: TripBooking,
+    ) -> None:
+        if (
+            booking.commission_percent_snapshot != Decimal("0.00")
+            or booking.commission_amount != Decimal("0.00")
+            or booking.driver_payout_amount != Decimal("0.00")
+        ):
+            return
+
+        commission_percent = await self._get_current_commission_percent()
+        (
+            commission_percent_snapshot,
+            commission_amount,
+            driver_payout_amount,
+        ) = self._build_booking_commission_snapshot(
+            fare_amount=booking.fare_amount,
+            commission_percent=commission_percent,
+        )
+
+        booking.commission_percent_snapshot = commission_percent_snapshot
+        booking.commission_amount = commission_amount
+        booking.driver_payout_amount = driver_payout_amount
+
+        self.db.add(booking)
+        await self.db.flush()
 
     async def _expire_pending_booking_hold(self, booking: TripBooking) -> None:
         if booking.booking_status != BookingStatus.PENDING_PAYMENT:
@@ -1433,6 +1517,8 @@ class PassengerService:
         razorpay_payment_id: str | None,
         razorpay_signature: str | None = None,
     ) -> None:
+        await self._ensure_booking_commission_snapshot(booking)
+
         if razorpay_payment_id:
             payment.razorpay_payment_id = razorpay_payment_id
         if razorpay_signature:
@@ -1453,6 +1539,8 @@ class PassengerService:
         *,
         razorpay_payment_id: str | None,
     ) -> None:
+        await self._ensure_booking_commission_snapshot(booking)
+
         if razorpay_payment_id:
             payment.razorpay_payment_id = razorpay_payment_id
 
@@ -1695,6 +1783,17 @@ class PassengerService:
                 },
             )
 
+        normalized_fare_amount = self._quantize_money(fare.amount)
+        current_commission_percent = await self._get_current_commission_percent()
+        (
+            commission_percent_snapshot,
+            commission_amount,
+            driver_payout_amount,
+        ) = self._build_booking_commission_snapshot(
+            fare_amount=normalized_fare_amount,
+            commission_percent=current_commission_percent,
+        )
+
         try:
             booking = TripBooking(
                 passenger_user_id=current_user.id,
@@ -1703,10 +1802,13 @@ class PassengerService:
                 pickup_stop_id=payload.pickup_stop_id,
                 dropoff_stop_id=payload.dropoff_stop_id,
                 booking_status=BookingStatus.PENDING_PAYMENT,
-                fare_amount=self._quantize_money(fare.amount),
+                fare_amount=normalized_fare_amount,
                 pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
                 dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                 payment_hold_expires_at=self._get_payment_hold_expires_at(),
+                commission_percent_snapshot=commission_percent_snapshot,
+                commission_amount=commission_amount,
+                driver_payout_amount=driver_payout_amount,
             )
             self.db.add(booking)
             await self.db.flush()
