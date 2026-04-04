@@ -16,7 +16,7 @@ from app.admin.structs.dto import (
     VehicleVerificationUpdate,
     VerificationUpdate,
 )
-from app.auth.dependencies import get_current_admin
+from app.auth.dependencies import get_current_admin, get_current_user
 from app.db import schema
 from app.db.database import get_async_session
 from app.payments.service import RoutePayoutService
@@ -995,6 +995,50 @@ async def cancel_trip_by_id(
     return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}
 
 
+# @router.get("/trips/{trip_id}")
+# async def get_specific_trip_status(
+#     trip_id: str, db: AsyncSession = Depends(get_async_session)
+# ):
+#     service = AdminService(db)
+#     trip = await service.get_trip_by_id(trip_id)
+
+#     if not trip:
+#         raise HTTPException(status_code=404, detail="Trip not found")
+
+#     return {
+#         "trip_id": trip.id,
+#         "status": trip.status,  # ACTIVE, COMPLETED, or CANCELLED
+#         "route": {"name": trip.route.name, "code": trip.route.code},
+#         "assignment": {
+#             # "driver": trip.driver.full_name,
+#             "driver": trip.driver.driver_profile.full_name
+#             if trip.driver and trip.driver.driver_profile
+#             else "No Driver Assigned",
+#             "vehicle": trip.vehicle.registration_number,
+#         },
+#         "timing": {
+#             "planned_start": trip.planned_start_at,
+#             "actual_start": trip.actual_start_at,
+#             "planned_end": trip.planned_end_at,
+#             "actual_end": trip.actual_end_at,
+#         },
+#         "occupancy": {
+#     "total_bookings": len(trip.bookings),
+#     "passengers": [
+#         {
+#             # Access passenger_profile instead of passenger directly
+#             "name": b.passenger.passenger_profile.full_name
+#             if b.passenger and b.passenger.passenger_profile
+#             else "Unknown Passenger",
+#             "status": b.booking_status
+#         }
+#         for b in trip.bookings
+#     ],
+# },
+#         "admin_note": trip.admin_note,
+#     }
+
+
 @router.get("/trips/{trip_id}")
 async def get_specific_trip_status(
     trip_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1007,10 +1051,10 @@ async def get_specific_trip_status(
 
     return {
         "trip_id": trip.id,
-        "status": trip.status,  # ACTIVE, COMPLETED, or CANCELLED
+        "status": trip.status,
         "route": {"name": trip.route.name, "code": trip.route.code},
         "assignment": {
-            # "driver": trip.driver.full_name,
+            # FIX: Access .driver_profile.full_name
             "driver": trip.driver.driver_profile.full_name
             if trip.driver and trip.driver.driver_profile
             else "No Driver Assigned",
@@ -1025,7 +1069,13 @@ async def get_specific_trip_status(
         "occupancy": {
             "total_bookings": len(trip.bookings),
             "passengers": [
-                {"name": b.passenger.full_name, "status": b.booking_status}
+                {
+                    # FIX: Access .passenger_profile.full_name
+                    "name": b.passenger.passenger_profile.full_name
+                    if b.passenger and b.passenger.passenger_profile
+                    else "Unknown Passenger",
+                    "status": b.booking_status,
+                }
                 for b in trip.bookings
             ],
         },
@@ -1084,3 +1134,138 @@ async def batch_process_driver_payouts(
         driver_id, month, year
     )
     return {"status": "batch_completed", "details": summary}
+
+
+@router.get("/driver-ratings")
+async def view_driver_ratings(db: AsyncSession = Depends(get_async_session)):
+    service = AdminService(db)
+    report = await service.get_driver_ratings_report()
+    return [
+        {
+            "driver_name": r.full_name if r else "N/A",
+            "email": r.email if r else "N/A",
+            "avg_rating": round(float(r.avg_driver_rating), 2),
+            "trip_quality": round(float(r.avg_trip_rating), 2),
+            "review_count": r.total_reviews if r else "N/A",
+        }
+        for r in report
+    ]
+
+
+@router.get("/incidents")
+async def view_all_incidents(db: AsyncSession = Depends(get_async_session)):
+    service = AdminService(db)
+    data = await service.get_flagged_incidents()
+
+    return {
+        "failed_trips": [
+            {
+                "id": t.id,
+                "status": t.status,
+                "reason": t.premature_end_reason or t.cancellation_reason,
+                "driver": t.driver.driver_profile.full_name
+                if t.driver.driver_profile
+                else t.driver.email,
+                "admin_note": t.admin_note,
+            }
+            for t in data["trips"]
+        ],
+        "passenger_complaints": [
+            {
+                "booking_id": r.booking_id,
+                "rating": r.driver_rating,
+                "comment": r.review_text,
+                "passenger": r.passenger.email,
+                "driver": r.driver.driver_profile.full_name
+                if r.driver.driver_profile
+                else r.driver.email,
+            }
+            for r in data["bad_reviews"]
+        ],
+    }
+
+
+@router.post("/resolve-trip/{trip_id}")
+async def resolve_trip_issue(
+    trip_id: str,
+    note: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    updated_trip = await service.update_admin_resolution(trip_id, note)
+    if not updated_trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+    return {"message": "Incident resolved", "admin_note": updated_trip.admin_note}
+
+
+# -------------------- support sections ---------------------------
+@router.get("/tickets")
+async def list_tickets(
+    status: Optional[schema.SupportStatus] = None,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    tickets = await service.get_all_support_tickets(status)
+    return [
+        {
+            "id": t.id,
+            "user": t.user.email,
+            "subject": t.subject,
+            "description": t.description,
+            "status": t.status,
+            "path": t.attachment_path,
+            "created_at": t.created_at,
+            "resolved_at_by_admin": t.resolved_at if t else "N/A",
+            "rejection_reason_by_admin": t.rejection_reason if t else "N/A",
+        }
+        for t in tickets
+    ]
+
+
+@router.post("/tickets/{ticket_id}/action")
+async def handle_ticket(
+    ticket_id: str,
+    action: str,  # 'resolve' or 'reject'
+    note: str = Body(..., embed=True),
+    current_admin: schema.User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return {"message": f"Ticket {action} successfully"}
+
+
+@router.get("/driver-performance")
+async def get_driver_ratings(db: AsyncSession = Depends(get_async_session)):
+    service = AdminService(db)
+    report = await service.get_driver_leaderboard()
+    return [
+        {
+            "driver_id": r.id,
+            "name": r.full_name,
+            "rating": round(float(r.avg_rating), 2),
+            "total_bookings_rated": r.total_reviews,
+        }
+        for r in report
+    ]
+
+
+# app/users/endpoints/router.py
+@router.post("/support/create")
+async def create_ticket(
+    subject: str = Body(...),
+    description: str = Body(...),
+    current_user: schema.User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    new_ticket = schema.SupportTicket(
+        user_id=current_user.id,
+        subject=subject,
+        description=description,
+        status=schema.SupportStatus.PENDING,
+    )
+    db.add(new_ticket)
+    await db.commit()
+    return {"message": "Ticket created. Support will contact you soon."}
