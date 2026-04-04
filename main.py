@@ -24,6 +24,7 @@ from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
 from app.driver.scan_events.scan import router as driver_scan_router
 from app.driver.trips.current_trip import router as driver_current_trip_router
+from app.driver.trips.current_trip import router as current_trip_router
 
 
 
@@ -87,6 +88,7 @@ app.include_router(driverprofileshow_router)
 app.include_router(passenger_route)
 app.include_router(vehicle.router)
 app.include_router(scheduled_trip_router)
+app.include_router(current_trip_router)
 app.include_router(driver_routes_router)
 app.include_router(support_router)
 app.include_router(cancel_trip.router, prefix="/driver", tags=["Driver"])
