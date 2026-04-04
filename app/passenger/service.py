@@ -25,17 +25,18 @@ from app.db.schema import (
     BookingStatus,
     DriverProfile,
     PassengerProfile,
+    PlatformSettings,
     Route,
     RouteFare,
     RouteStop,
     ScheduledTrip,
     ScheduledTripStatus,
     Stop,
+    SupportTicket,
     TripBooking,
     TripEvent,
     User,
     UserRole,
-    PlatformSettings
 )
 
 from app.passenger.schemas import (
@@ -108,7 +109,54 @@ class PassengerService:
             "image/gif": ".gif",
         }
         return mime_to_ext.get((content_type or "").lower(), ".jpg")
+    
+    @staticmethod
+    def _clean_support_text(value: str, *, field_name: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"invalid_{field_name}",
+                    "message": f"{field_name.replace('_', ' ').capitalize()} cannot be empty.",
+                },
+            )
+        return cleaned
 
+    @staticmethod
+    def _get_support_upload_dir() -> Path:
+        upload_dir = Path.cwd() / "uploads" / "support" / "passenger"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return upload_dir
+
+    @staticmethod
+    def _guess_support_attachment_extension(filename: str | None) -> str:
+        suffix = Path(filename or "").suffix.lower().strip()
+        if not suffix:
+            return ""
+        if len(suffix) > 12:
+            return ""
+        allowed = {
+            ".jpg", ".jpeg", ".png", ".webp", ".gif",
+            ".pdf", ".txt", ".doc", ".docx",
+        }
+        if suffix not in allowed:
+            return ""
+        return ".jpg" if suffix == ".jpeg" else suffix
+
+    def _serialize_support_ticket(self, ticket: SupportTicket) -> dict[str, Any]:
+        return {
+            "id": ticket.id,
+            "user_id": ticket.user_id,
+            "subject": ticket.subject,
+            "description": ticket.description,
+            "attachment_path": ticket.attachment_path,
+            "status": ticket.status,
+            "resolved_at": ticket.resolved_at,
+            "rejection_reason": ticket.rejection_reason,
+            "created_at": ticket.created_at,
+            "updated_at": ticket.updated_at,
+        }
 
     @staticmethod
     def _quantize_money(value: Decimal) -> Decimal:
@@ -2319,3 +2367,99 @@ class PassengerService:
             )
 
         return self._serialize_rating(booking.rating)
+    
+    async def create_support_ticket(
+        self,
+        current_user: User,
+        *,
+        subject: str,
+        description: str,
+        file: UploadFile | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        cleaned_subject = self._clean_support_text(subject, field_name="subject")
+        cleaned_description = self._clean_support_text(description, field_name="description")
+
+        attachment_path: str | None = None
+
+        if file is not None:
+            try:
+                content = await file.read()
+            finally:
+                await file.close()
+
+            if not content:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "empty_attachment",
+                        "message": "Attachment file is empty.",
+                    },
+                )
+
+            upload_dir = self._get_support_upload_dir()
+            extension = self._guess_support_attachment_extension(file.filename)
+            filename = f"support_ticket_{current_user.id}_{uuid4().hex}{extension}"
+
+            disk_path = upload_dir / filename
+            disk_path.write_bytes(content)
+
+            attachment_path = f"/uploads/support/passenger/{filename}"
+
+        ticket = SupportTicket(
+            user_id=current_user.id,
+            subject=cleaned_subject,
+            description=cleaned_description,
+            attachment_path=attachment_path,
+        )
+
+        self.db.add(ticket)
+        await self.db.commit()
+        await self.db.refresh(ticket)
+
+        return {
+            "message": "Support ticket created successfully.",
+            "ticket": self._serialize_support_ticket(ticket),
+        }
+
+    async def list_support_tickets(self, current_user: User) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        stmt = (
+            select(SupportTicket)
+            .where(SupportTicket.user_id == current_user.id)
+            .order_by(SupportTicket.created_at.desc())
+        )
+        result = await self.db.execute(stmt)
+        tickets = result.scalars().all()
+
+        return {
+            "items": [self._serialize_support_ticket(ticket) for ticket in tickets],
+            "count": len(tickets),
+        }
+
+    async def get_support_ticket(
+        self,
+        current_user: User,
+        ticket_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        stmt = select(SupportTicket).where(
+            SupportTicket.id == ticket_id,
+            SupportTicket.user_id == current_user.id,
+        )
+        result = await self.db.execute(stmt)
+        ticket = result.scalar_one_or_none()
+
+        if ticket is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "support_ticket_not_found",
+                    "message": "Support ticket not found.",
+                },
+            )
+
+        return self._serialize_support_ticket(ticket)

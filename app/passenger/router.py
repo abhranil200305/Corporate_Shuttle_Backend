@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, File, UploadFile
+from fastapi import APIRouter, Depends, Query, File, Form, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user
@@ -31,6 +31,9 @@ from app.passenger.schemas import (
     LegAvailableSeatsRequest,
     LegAvailableSeatsResponse,
     CurrentTripStatusResponse,
+    SupportTicketCreateResponse,
+    SupportTicketListResponse,
+    SupportTicketResponse,
 )
 from app.passenger.service import PassengerService
 

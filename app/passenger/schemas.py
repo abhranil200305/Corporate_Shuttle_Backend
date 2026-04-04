@@ -315,6 +315,28 @@ class CurrentTripStatusResponse(BaseModel):
     current_progress_stop: CurrentTripProgressStopResponse | None
     segment_stops: list[CurrentTripSegmentStopResponse]
 
+class SupportTicketResponse(BaseModel):
+    id: str
+    user_id: str
+    subject: str
+    description: str
+    attachment_path: str | None
+    status: str
+    resolved_at: datetime | None
+    rejection_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class SupportTicketListResponse(BaseModel):
+    items: list[SupportTicketResponse]
+    count: int
+
+
+class SupportTicketCreateResponse(BaseModel):
+    message: str
+    ticket: SupportTicketResponse
+    
 class BookingListResponse(BaseModel):
     items: list[TripBookingResponse]
     count: int
