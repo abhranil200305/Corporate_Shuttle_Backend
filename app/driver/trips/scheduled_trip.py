@@ -218,12 +218,14 @@ async def stop_action(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # Fetch trip
     trip = await session.get(ScheduledTrip, trip_id)
     if not trip or trip.driver_user_id != current_user.id:
         raise HTTPException(403, "Invalid trip")
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
+    # Fetch route stop
     result = await session.execute(
         select(RouteStop).where(
             RouteStop.route_id == trip.route_id,
@@ -234,6 +236,7 @@ async def stop_action(
     if not route_stop:
         raise HTTPException(400, "Stop not part of this route")
 
+    # Fetch trip event
     result = await session.execute(
         select(TripEvent).where(
             TripEvent.scheduled_trip_id == trip_id,
@@ -244,10 +247,12 @@ async def stop_action(
     if not event:
         raise HTTPException(404, "Trip event not found")
 
+    current_time = now_utc()
+
     if mode == "arrive":
         if event.arrival_time:
             raise HTTPException(400, "Already arrived")
-        event.arrival_time = now_utc()
+        event.arrival_time = current_time
         await session.commit()
         return {
             "message": "Arrived successfully",
@@ -255,12 +260,19 @@ async def stop_action(
             "stop_id": stop_id,
             "arrival_time": to_ist(event.arrival_time)
         }
+
     elif mode == "depart":
         if not event.arrival_time:
             raise HTTPException(400, "Arrive first")
         if event.departure_time:
             raise HTTPException(400, "Already departed")
-        event.departure_time = now_utc()
+
+        # Compute departure_time = arrival_time + assume_time_diff_minutes, but cannot be in future
+        assume_minutes = route_stop.assume_time_diff_minutes or 0
+        expected_departure_time = event.arrival_time + timedelta(minutes=assume_minutes)
+        # Take max of expected_departure_time and current_time to avoid null
+        event.departure_time = max(expected_departure_time, current_time)
+
         await session.commit()
         return {
             "message": "Departed successfully",
@@ -268,6 +280,7 @@ async def stop_action(
             "stop_id": stop_id,
             "departure_time": to_ist(event.departure_time)
         }
+
     else:
         raise HTTPException(400, "Invalid mode")
 
