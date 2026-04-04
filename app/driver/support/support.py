@@ -182,38 +182,60 @@ async def driver_view_support_ticket(
     current_user: User = Depends(get_current_user),
 ):
     """
-    Fetch a single support ticket for the current driver/passenger.
-    If ticket_id is provided in header, fetch that ticket.
-    Otherwise, return the latest submitted ticket for this user.
+    If ticket_id is provided → return that ticket
+    If not → return ALL tickets of the user
     """
+
+    # ============================
+    # CASE 1: Specific ticket
+    # ============================
     if ticket_id:
         result = await db.execute(
             select(SupportTicket).where(SupportTicket.id == ticket_id)
         )
         ticket = result.scalar_one_or_none()
+
         if not ticket:
             raise HTTPException(status_code=404, detail="Ticket not found")
-    else:
-        # Get latest ticket for current user
-        result = await db.execute(
-            select(SupportTicket)
-            .where(SupportTicket.user_id == current_user.id)
-            .order_by(SupportTicket.created_at.desc())
-        )
-        ticket = result.scalars().first()
-        if not ticket:
-            raise HTTPException(status_code=404, detail="No support tickets found")
 
-    if ticket.user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view this ticket")
+        if ticket.user_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not authorized")
 
-    return {
-        "id": ticket.id,
-        "subject": ticket.subject,
-        "description": ticket.description,
-        "status": ticket.status,
-        "attachment": ticket.attachment_path,
-        "created_at": ticket.created_at,
-        "resolved_at": ticket.resolved_at,
-        "rejection_reason": ticket.rejection_reason,
-    }
+        return {
+            "id": ticket.id,
+            "subject": ticket.subject,
+            "description": ticket.description,
+            "status": ticket.status,
+            "attachment": ticket.attachment_path,
+            "created_at": ticket.created_at,
+            "resolved_at": ticket.resolved_at,
+            "rejection_reason": ticket.rejection_reason,
+        }
+
+    # ============================
+    # CASE 2: All tickets
+    # ============================
+    result = await db.execute(
+        select(SupportTicket)
+        .where(SupportTicket.user_id == current_user.id)
+        .order_by(SupportTicket.created_at.desc())
+    )
+
+    tickets = result.scalars().all()
+
+    if not tickets:
+        raise HTTPException(status_code=404, detail="No support tickets found")
+
+    return [
+        {
+            "id": t.id,
+            "subject": t.subject,
+            "description": t.description,
+            "status": t.status,
+            "attachment": t.attachment_path,
+            "created_at": t.created_at,
+            "resolved_at": t.resolved_at,
+            "rejection_reason": t.rejection_reason,
+        }
+        for t in tickets
+    ]
