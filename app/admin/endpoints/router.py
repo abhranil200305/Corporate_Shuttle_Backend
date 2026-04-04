@@ -1066,6 +1066,10 @@ async def get_specific_trip_status(
             "planned_end": trip.planned_end_at,
             "actual_end": trip.actual_end_at,
         },
+        "cancelation": {
+            "cancellation_reason": trip.cancellation_reason if trip else "N/A",
+            "premature_end_reason": trip.premature_end_reason if trip else "N/A",
+        },
         "occupancy": {
             "total_bookings": len(trip.bookings),
             "passengers": [
