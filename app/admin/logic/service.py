@@ -231,19 +231,44 @@ class AdminService:
         return result.unique().scalars().all()
 
     async def cancel_trip(self, trip_id: str, reason: str):
+        # 1. Fetch the trip to check timing
         trip_stmt = select(schema.ScheduledTrip).where(
             schema.ScheduledTrip.id == trip_id
         )
         res = await self.db.execute(trip_stmt)
         trip = res.scalar_one_or_none()
 
-        if trip:
-            trip.status = schema.ScheduledTripStatus.CANCELLED
-            trip.admin_note = reason
-            # Important: You would usually trigger a refund logic here for all bookings
-            await self.db.commit()
-            return True
-        return False
+        if not trip:
+            return {"success": False, "error": "Trip not found"}
+
+        # 2. Enforce the One-Hour Rule
+        now = datetime.now(timezone.utc)
+        if now > (trip.planned_start_at - timedelta(hours=1)):
+            return {
+                "success": False,
+                "error": "Cannot cancel. Must be done at least 1 hour before start.",
+            }
+
+        # 3. Update the Trip Status
+        trip.status = schema.ScheduledTripStatus.CANCELLED
+        trip.cancellation_reason = reason
+        trip.admin_note = f"Admin Cancelled at {now}. Reason: {reason}"
+
+        # 4. Cancel all Bookings under this trip ID
+        # This performs a bulk update for efficiency
+        booking_update_stmt = (
+            update(schema.TripBooking)
+            .where(schema.TripBooking.scheduled_trip_id == trip_id)
+            .values(
+                booking_status="CANCELLED",  # Adjust to your specific Enum if needed
+                cancel_reason=f"Trip cancelled by admin: {reason}",
+            )
+        )
+        await self.db.execute(booking_update_stmt)
+
+        # 5. Commit both changes
+        await self.db.commit()
+        return {"success": True}
 
     # async def get_trip_by_id(self, trip_id: str):
     #     stmt = (

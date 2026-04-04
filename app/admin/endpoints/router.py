@@ -987,12 +987,32 @@ async def cancel_trip_by_id(
     db: AsyncSession = Depends(get_async_session),
 ):
     service = AdminService(db)
-    success = await service.cancel_trip(trip_id, reason)
+    result = await service.cancel_trip(trip_id, reason)
 
-    if not success:
-        raise HTTPException(status_code=404, detail="Trip not found in database.")
+    if not result["success"]:
+        # If it's a timing error, use 400. If it's a missing trip, use 404.
+        status_code = 404 if "not found" in result["error"] else 400
+        raise HTTPException(status_code=status_code, detail=result["error"])
 
-    return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}
+    return {
+        "status": "success",
+        "message": f"Trip {trip_id} has been cancelled successfully.",
+    }
+
+
+# @router.patch("/trips/{trip_id}/cancel")
+# async def cancel_trip_by_id(
+#     trip_id: str,
+#     reason: str = Body(..., embed=True),
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     service = AdminService(db)
+#     success = await service.cancel_trip(trip_id, reason)
+
+#     if not success:
+#         raise HTTPException(status_code=404, detail="Trip not found in database.")
+
+#     return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}
 
 
 # @router.get("/trips/{trip_id}")
@@ -1140,12 +1160,14 @@ async def batch_process_driver_payouts(
     return {"status": "batch_completed", "details": summary}
 
 
+# ---------------- drivers ratings -------------------------
 @router.get("/driver-ratings")
 async def view_driver_ratings(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
     report = await service.get_driver_ratings_report()
     return [
         {
+            "driver_id": r.id,
             "driver_name": r.full_name if r else "N/A",
             "email": r.email if r else "N/A",
             "avg_rating": round(float(r.avg_driver_rating), 2),
