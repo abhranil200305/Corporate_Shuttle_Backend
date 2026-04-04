@@ -1,5 +1,4 @@
 # app/driver/scan_events/scan.py
-
 from fastapi import APIRouter, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -10,6 +9,7 @@ import base64
 import json
 import hmac
 import hashlib
+import os
 
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
@@ -27,13 +27,16 @@ router = APIRouter(prefix="/driver/scan", tags=["Driver Scan"])
 
 
 # ============================================================
-# CONFIG (MOVE TO ENV LATER)
+# SECRET FROM ENV (IMPORTANT FIX)
 # ============================================================
-QR_SECRET = "YOUR_SECRET_KEY"
+QR_SECRET = os.getenv("OTP_HASH_SECRET")
+
+if not QR_SECRET:
+    raise RuntimeError("OTP_HASH_SECRET is not set in environment variables")
 
 
 # ============================================================
-# HELPER: Distance Calculation (Haversine)
+# HELPER: Distance (Haversine)
 # ============================================================
 def haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -44,12 +47,11 @@ def haversine(lat1, lon1, lat2, lon2):
     a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
     c = 2 * asin(sqrt(a))
 
-    km = 6371 * c
-    return km * 1000  # meters
+    return 6371 * c * 1000  # meters
 
 
 # ============================================================
-# HELPER: Decode & Verify QR
+# HELPER: Decode QR
 # ============================================================
 def decode_qr_token(qr_token: str):
     try:
@@ -80,16 +82,38 @@ def decode_qr_token(qr_token: str):
 async def scan_passenger(
     trip_id: str,
     qr_token: str = Form(...),
-    scan_type: ScanType = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
-
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
     # --------------------------------------------------------
-    # 1. Fetch Trip
+    # 1. Decode QR
     # --------------------------------------------------------
+    payload = decode_qr_token(qr_token)
+
+    qr_trip_id = payload.get("scheduled_trip_id")
+    booking_id = payload.get("booking_id")
+    passenger_id = payload.get("passenger_user_id")
+    scan_type = payload.get("scan_type")
+
+    if scan_type not in ["board", "drop"]:
+        raise HTTPException(400, "Invalid scan type in QR")
+
+    scan_type_enum = ScanType(scan_type)
+
+    # --------------------------------------------------------
+    # 2. Expiry Check
+    # --------------------------------------------------------
+    if datetime.now(timezone.utc).timestamp() > payload["expires_at"]:
+        raise HTTPException(400, "QR expired")
+
+    # --------------------------------------------------------
+    # 3. Trip Validation
+    # --------------------------------------------------------
+    if qr_trip_id != trip_id:
+        raise HTTPException(400, "QR does not belong to this trip")
+
     trip = await db.get(ScheduledTrip, trip_id)
     if not trip:
         raise HTTPException(404, "Trip not found")
@@ -98,27 +122,7 @@ async def scan_passenger(
         raise HTTPException(403, "Not your trip")
 
     # --------------------------------------------------------
-    # 2. Decode QR
-    # --------------------------------------------------------
-    payload = decode_qr_token(qr_token)
-
-    # --------------------------------------------------------
-    # 3. Expiry Check
-    # --------------------------------------------------------
-    if datetime.now(timezone.utc).timestamp() > payload["expires_at"]:
-        raise HTTPException(400, "QR expired")
-
-    # --------------------------------------------------------
-    # 4. Validate Trip Match
-    # --------------------------------------------------------
-    if payload["scheduled_trip_id"] != trip_id:
-        raise HTTPException(400, "QR does not belong to this trip")
-
-    booking_id = payload["booking_id"]
-    qr_payload_user_id = payload["passenger_user_id"]
-
-    # --------------------------------------------------------
-    # 5. Fetch Booking
+    # 4. Booking Validation
     # --------------------------------------------------------
     result = await db.execute(
         select(TripBooking).where(
@@ -131,72 +135,65 @@ async def scan_passenger(
     if not booking:
         raise HTTPException(404, "Booking not found")
 
-    # --------------------------------------------------------
-    # 6. Validate Passenger
-    # --------------------------------------------------------
-    if booking.passenger_user_id != qr_payload_user_id:
+    if booking.passenger_user_id != passenger_id:
         raise HTTPException(400, "Passenger mismatch")
 
     # --------------------------------------------------------
-    # 7. Prevent Duplicate Scan
+    # 5. Booking State Validation
     # --------------------------------------------------------
-    if scan_type == ScanType.BOARD and booking.booking_status == BookingStatus.BOARDED:
-        raise HTTPException(400, "Passenger already boarded")
+    if scan_type_enum == ScanType.BOARD:
+        if booking.booking_status != BookingStatus.BOOKED:
+            raise HTTPException(400, "Passenger not eligible for boarding")
 
-    if scan_type == ScanType.DROP and booking.booking_status == BookingStatus.COMPLETED:
-        raise HTTPException(400, "Trip already completed")
+    elif scan_type_enum == ScanType.DROP:
+        if booking.booking_status != BookingStatus.BOARDED:
+            raise HTTPException(400, "Passenger not boarded yet")
 
     # --------------------------------------------------------
-    # 8. Get Expected Stop
+    # 6. Stop Detection
     # --------------------------------------------------------
-    if scan_type == ScanType.BOARD:
-        stop_id = booking.pickup_stop_id
-    else:
-        stop_id = booking.dropoff_stop_id
+    stop_id = (
+        booking.pickup_stop_id
+        if scan_type_enum == ScanType.BOARD
+        else booking.dropoff_stop_id
+    )
 
     stop = await db.get(Stop, stop_id)
     if not stop:
         raise HTTPException(404, "Stop not found")
 
     # --------------------------------------------------------
-    # 9. Check Radius
+    # 7. Radius Check
     # --------------------------------------------------------
-    distance = haversine(
-        lat,
-        lng,
-        float(stop.lat),
-        float(stop.lng),
-    )
-
+    distance = haversine(lat, lng, float(stop.lat), float(stop.lng))
     within_radius = distance <= stop.radius_meters
 
     # --------------------------------------------------------
-    # 10. Save Scan Event (ALWAYS)
+    # 8. Save Scan Event
     # --------------------------------------------------------
     scan_event = TripScanEvent(
         scheduled_trip_id=trip_id,
         booking_id=booking_id,
         driver_user_id=current_user.id,
-        scan_type=scan_type,
+        scan_type=scan_type_enum,
         scan_lat=Decimal(str(lat)),
         scan_lng=Decimal(str(lng)),
         matched_stop_id=stop.id if within_radius else None,
         within_radius=within_radius,
-        qr_payload_user_id=qr_payload_user_id,
+        qr_payload_user_id=passenger_id,
     )
-
     db.add(scan_event)
 
     # --------------------------------------------------------
-    # 11. Update Booking Status (ONLY IF VALID)
+    # 9. Update Booking
     # --------------------------------------------------------
     if within_radius:
-        if scan_type == ScanType.BOARD:
+        if scan_type_enum == ScanType.BOARD:
             booking.booking_status = BookingStatus.BOARDED
             booking.boarded_at = datetime.now(timezone.utc)
             booking.boarded_near_stop_id = stop.id
 
-        elif scan_type == ScanType.DROP:
+        elif scan_type_enum == ScanType.DROP:
             booking.booking_status = BookingStatus.COMPLETED
             booking.completed_at = datetime.now(timezone.utc)
             booking.completed_near_stop_id = stop.id
@@ -205,9 +202,13 @@ async def scan_passenger(
 
     await db.commit()
 
+    # --------------------------------------------------------
+    # 10. Response
+    # --------------------------------------------------------
     return {
         "message": "Scan processed",
+        "scan_type": scan_type_enum.value,
         "within_radius": within_radius,
         "distance_meters": round(distance, 2),
-        "scan_type": scan_type.value,
+        "booking_status": booking.booking_status.value,
     }
