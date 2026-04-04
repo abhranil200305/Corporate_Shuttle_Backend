@@ -504,3 +504,29 @@ class AdminService:
         )
         result = await self.db.execute(stmt)
         return result.all()
+
+    async def get_all_reviews(self, min_rating: Optional[int] = None):
+        stmt = (
+            select(schema.BookingRating)
+            .options(
+                # Load the passenger's name
+                joinedload(schema.BookingRating.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                # Load the driver's name
+                joinedload(schema.BookingRating.driver).joinedload(
+                    schema.User.driver_profile
+                ),
+                # Load trip details
+                joinedload(schema.BookingRating.scheduled_trip).joinedload(
+                    schema.ScheduledTrip.route
+                ),
+            )
+            .order_by(schema.BookingRating.created_at.desc())
+        )
+
+        if min_rating:
+            stmt = stmt.where(schema.BookingRating.driver_rating <= min_rating)
+
+        result = await self.db.execute(stmt)
+        return result.scalars().all()
