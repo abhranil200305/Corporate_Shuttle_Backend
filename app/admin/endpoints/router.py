@@ -651,6 +651,65 @@ async def create_route_identity(
         )
 
 
+# @router.post("/routes/{route_id}/stops")
+# async def add_bulk_stops(
+#     route_id: str,
+#     data: BulkStopAddRequest,
+#     db: AsyncSession = Depends(get_async_session),
+# ) -> dict:
+#     # 1. Check if the route exists
+#     route = await db.get(schema.Route, route_id)
+#     if not route:
+#         raise HTTPException(status_code=404, detail="Route ID not found.")
+
+#     # 2. Find where the current sequence ends
+#     seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
+#         schema.RouteStop.route_id == route_id
+#     )
+#     result = await db.execute(seq_stmt)
+#     last_seq = result.scalar() or 0
+
+#     # 3. Create stop entries in order
+#     new_entries = []
+#     for i, stop_info in enumerate(data.stops):
+#         current_seq = last_seq + i + 1
+
+#         # If this is the absolute beginning of a route, force time to 0
+#         time_gap = 0 if current_seq == 1 else stop_info.assume_time_diff_minutes
+
+#         rs = schema.RouteStop(
+#             route_id=route_id,
+#             stop_id=stop_info.stop_id,
+#             sequence_no=current_seq,
+#             boarding_allowed=stop_info.boarding_allowed,
+#             deboarding_allowed=stop_info.deboarding_allowed,
+#             assume_time_diff_minutes=time_gap,
+#         )
+#         new_entries.append(rs)
+
+#     db.add_all(new_entries)
+
+#     try:
+#         await db.commit()
+#     except Exception as e:
+#         await db.rollback()
+#         raise HTTPException(
+#             status_code=500,
+#             detail={
+#                 "error": "db_error",
+#                 "message": "Failed to save stops.",
+#                 "debug": str(e),
+#             },
+#         )
+
+#     return {
+#         "status": "success",
+#         "route_id": route_id,
+#         "added_count": len(new_entries),
+#         "total_sequence": last_seq + len(new_entries),
+#     }
+
+
 @router.post("/routes/{route_id}/stops")
 async def add_bulk_stops(
     route_id: str,
@@ -661,6 +720,27 @@ async def add_bulk_stops(
     route = await db.get(schema.Route, route_id)
     if not route:
         raise HTTPException(status_code=404, detail="Route ID not found.")
+
+    # --- NEW CHECK: DUPLICATES IN REQUEST ---
+    input_stop_ids = [s.stop_id for s in data.stops]
+    if len(input_stop_ids) != len(set(input_stop_ids)):
+        raise HTTPException(
+            status_code=400, detail="Duplicate Stop IDs found in the request."
+        )
+
+    # --- NEW CHECK: DUPLICATES IN DATABASE ---
+    existing_stops_stmt = select(schema.RouteStop.stop_id).where(
+        schema.RouteStop.route_id == route_id
+    )
+    existing_result = await db.execute(existing_stops_stmt)
+    existing_stop_ids = set(existing_result.scalars().all())
+
+    for stop_id in input_stop_ids:
+        if stop_id in existing_stop_ids:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Stop ID {stop_id} is already added to this route.",
+            )
 
     # 2. Find where the current sequence ends
     seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
@@ -689,6 +769,16 @@ async def add_bulk_stops(
 
     db.add_all(new_entries)
 
+    # --- NEW CHECK: MINIMUM 2 STOPS LOGIC ---
+    total_sequence = last_seq + len(new_entries)
+
+    # Update isActive based on total stop count
+    if total_sequence < 2:
+        route.is_active = False
+    else:
+        # Optional: auto-enable if it meets the criteria
+        route.is_active = True
+
     try:
         await db.commit()
     except Exception as e:
@@ -702,11 +792,12 @@ async def add_bulk_stops(
             },
         )
 
+    # Returning exact same names for frontend compatibility
     return {
         "status": "success",
         "route_id": route_id,
         "added_count": len(new_entries),
-        "total_sequence": last_seq + len(new_entries),
+        "total_sequence": total_sequence,
     }
 
 
@@ -1263,21 +1354,6 @@ async def handle_ticket(
     return {"message": f"Ticket {action} successfully"}
 
 
-@router.get("/driver-performance")
-async def get_driver_ratings(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    report = await service.get_driver_leaderboard()
-    return [
-        {
-            "driver_id": r.id,
-            "name": r.full_name,
-            "rating": round(float(r.avg_rating), 2),
-            "total_bookings_rated": r.total_reviews,
-        }
-        for r in report
-    ]
-
-
 # app/users/endpoints/router.py
 @router.post("/support/create")
 async def create_ticket(
@@ -1295,3 +1371,31 @@ async def create_ticket(
     db.add(new_ticket)
     await db.commit()
     return {"message": "Ticket created. Support will contact you soon."}
+
+
+@router.get("/reviews")
+async def view_all_reviews(
+    low_only: bool = False, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    # If low_only is true, only show 1 and 2 star reviews
+    reviews = await service.get_all_reviews(min_rating=2 if low_only else None)
+
+    return [
+        {
+            "id": r.id,
+            "ratings": {"trip": r.trip_rating, "driver": r.driver_rating},
+            "feedback": r.review_text,
+            "passenger": r.passenger.passenger_profile.full_name
+            if r.passenger.passenger_profile
+            else r.passenger.email,
+            "driver": r.driver.driver_profile.full_name
+            if r.driver.driver_profile
+            else r.driver.email,
+            "trip_details": {
+                "route": r.scheduled_trip.route.name,
+                "date": r.scheduled_trip.planned_start_at,
+            },
+        }
+        for r in reviews
+    ]
