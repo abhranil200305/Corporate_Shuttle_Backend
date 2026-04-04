@@ -1,24 +1,25 @@
 # app/driver/support/support.py
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import update
-from typing import Optional, List
+from typing import Optional
 from datetime import datetime, timezone
-from pathlib import Path
 import shutil
 import uuid
+from pathlib import Path as FSPath
+from fastapi import Header
+
 
 from app.db.database import get_async_session
 from app.db.schema import SupportTicket, SupportStatus, User, UserRole
-from app.auth.dependencies import get_current_user  # adjust if your path is different
+from app.auth.dependencies import get_current_user  # adjust path if needed
 
 router = APIRouter(prefix="/support", tags=["Support"])
 
-UPLOAD_DIR = Path("uploads/support")
+# File upload directory
+UPLOAD_DIR = FSPath("uploads/support")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-
 
 # ============================================================
 # CREATE SUPPORT TICKET
@@ -35,15 +36,12 @@ async def create_support_ticket(
         raise HTTPException(status_code=400, detail="Subject and description required")
 
     file_path = None
-
     if attachment:
         file_ext = attachment.filename.split(".")[-1]
         filename = f"{uuid.uuid4()}.{file_ext}"
         file_location = UPLOAD_DIR / filename
-
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(attachment.file, buffer)
-
         file_path = str(file_location)
 
     ticket = SupportTicket(
@@ -53,15 +51,11 @@ async def create_support_ticket(
         attachment_path=file_path,
         status=SupportStatus.PENDING,
     )
-
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
 
-    return {
-        "message": "Support ticket created successfully",
-        "ticket_id": ticket.id,
-    }
+    return {"message": "Support ticket created successfully", "ticket_id": ticket.id}
 
 
 # ============================================================
@@ -77,7 +71,6 @@ async def get_my_tickets(
         .where(SupportTicket.user_id == current_user.id)
         .order_by(SupportTicket.created_at.desc())
     )
-
     tickets = result.scalars().all()
 
     return [
@@ -106,7 +99,6 @@ async def get_all_tickets(
         raise HTTPException(status_code=403, detail="Admin only")
 
     query = select(SupportTicket).order_by(SupportTicket.created_at.desc())
-
     if status:
         query = query.where(SupportTicket.status == status)
 
@@ -139,18 +131,14 @@ async def resolve_ticket(
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Admin only")
 
-    result = await db.execute(
-        select(SupportTicket).where(SupportTicket.id == ticket_id)
-    )
+    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
     ticket = result.scalar_one_or_none()
-
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     ticket.status = SupportStatus.RESOLVED
     ticket.resolved_by_admin_id = current_user.id
     ticket.resolved_at = datetime.now(timezone.utc)
-
     await db.commit()
 
     return {"message": "Ticket resolved successfully"}
@@ -169,11 +157,8 @@ async def reject_ticket(
     if current_user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403, detail="Admin only")
 
-    result = await db.execute(
-        select(SupportTicket).where(SupportTicket.id == ticket_id)
-    )
+    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
     ticket = result.scalar_one_or_none()
-
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
@@ -181,33 +166,44 @@ async def reject_ticket(
     ticket.rejection_reason = reason
     ticket.resolved_by_admin_id = current_user.id
     ticket.resolved_at = datetime.now(timezone.utc)
-
     await db.commit()
 
     return {"message": "Ticket rejected successfully"}
 
+
 # ============================================================
-# DRIVER - GET SINGLE SUPPORT TICKET
+# DRIVER - GET SINGLE SUPPORT TICKET (ticket_id from header)
 # ============================================================
-@router.get("/driver/view/{ticket_id}")
+
+@router.get("/driver/view")
 async def driver_view_support_ticket(
-    ticket_id: str,
+    ticket_id: Optional[str] = Header(None, description="Support ticket ID"),
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
     """
-    Retrieve a single support ticket for the current driver/passenger.
-    Only the ticket owner can view it.
+    Fetch a single support ticket for the current driver/passenger.
+    If ticket_id is provided in header, fetch that ticket.
+    Otherwise, return the latest submitted ticket for this user.
     """
-    result = await db.execute(
-        select(SupportTicket).where(SupportTicket.id == ticket_id)
-    )
-    ticket = result.scalar_one_or_none()
+    if ticket_id:
+        result = await db.execute(
+            select(SupportTicket).where(SupportTicket.id == ticket_id)
+        )
+        ticket = result.scalar_one_or_none()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="Ticket not found")
+    else:
+        # Get latest ticket for current user
+        result = await db.execute(
+            select(SupportTicket)
+            .where(SupportTicket.user_id == current_user.id)
+            .order_by(SupportTicket.created_at.desc())
+        )
+        ticket = result.scalars().first()
+        if not ticket:
+            raise HTTPException(status_code=404, detail="No support tickets found")
 
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-
-    # Only the driver/passenger who created the ticket can view it
     if ticket.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not authorized to view this ticket")
 
