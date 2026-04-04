@@ -968,6 +968,13 @@ async def monitor_all_trips(
             "planned_start": t.planned_start_at if t else "N/A",
             "status": t.status if t else "N/A",
             "bookings_count": len(t.bookings) if t else "N/A",
+            "cancellation_reason": t.cancellation_reason
+            if t.cancellation_reason
+            else None,
+            "premature_end_reason": t.premature_end_reason
+            if t.premature_end_reason
+            else None,
+            "admin_note": t.admin_note if t.admin_note else None,
         }
         for t in trips
     ]
