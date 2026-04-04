@@ -1,5 +1,5 @@
 from decimal import Decimal
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -79,3 +79,9 @@ class RouteStopInput(BaseModel):
 
 class BulkStopAddRequest(BaseModel):
     stops: List[RouteStopInput]
+
+
+class RatingCreate(BaseModel):
+    trip_rating: int = Field(ge=1, le=5)
+    driver_rating: int = Field(ge=1, le=5)
+    review_text: Optional[str] = None
