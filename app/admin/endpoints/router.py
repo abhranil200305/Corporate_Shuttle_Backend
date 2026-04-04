@@ -860,6 +860,8 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
     return [
         {
             "fare_id": f.id,
+            "pickup_stop_id": f.pickup_stop_id,
+            "dropoff_stop_id": f.dropoff_stop_id,
             "from": f.pickup_stop.name,
             "to": f.dropoff_stop.name,
             "amount": float(f.amount),
