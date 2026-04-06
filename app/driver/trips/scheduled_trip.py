@@ -161,22 +161,31 @@ async def start_trip(
     if trip.status != ScheduledTripStatus.SCHEDULED:
         raise HTTPException(400, "Trip already started")
 
-    if trip.status != ScheduledTripStatus.SCHEDULED:
-        raise HTTPException(400, "Trip already started")
-
     current_time = now_utc()
 
+    # ❌ Cannot start before planned time
     if current_time < trip.planned_start_at:
-         raise HTTPException(
-        400,
+        raise HTTPException(
+            400,
             f"Cannot start before planned time ({to_ist(trip.planned_start_at)})"
-    )
-    # ❌ NEW: Cannot start after trip already ended
+        )
+
+    # ✅ NEW: 15 min grace window logic
+    grace_limit = trip.planned_start_at + timedelta(minutes=15)
+
+    if current_time > grace_limit:
+        raise HTTPException(
+            400,
+            f"Start window expired. Allowed till {to_ist(grace_limit)}"
+        )
+
+    # ❌ Cannot start after trip already ended
     if current_time > trip.planned_end_at:
         raise HTTPException(
-        400,
-        f"Cannot start trip after planned end time ({to_ist(trip.planned_end_at)})"
-    )
+            400,
+            f"Cannot start trip after planned end time ({to_ist(trip.planned_end_at)})"
+        )
+
     # =========================
     # GET FIRST STOP
     # =========================
