@@ -1018,6 +1018,13 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    refund_retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    refund_attempt_count: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+
     boarded_near_stop_id: Mapped[str | None] = mapped_column(
         String(36),
         ForeignKey("stops.id", ondelete="SET NULL"),
