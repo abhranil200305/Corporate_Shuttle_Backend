@@ -345,6 +345,9 @@ async def end_trip(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # =========================
+    # FETCH TRIP
+    # =========================
     trip = await session.get(ScheduledTrip, trip_id)
 
     if not trip or trip.driver_user_id != current_user.id:
@@ -353,18 +356,45 @@ async def end_trip(
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
+    # =========================
+    # GET LAST STOP
+    # =========================
     result = await session.execute(
         select(RouteStop)
         .where(RouteStop.route_id == trip.route_id)
         .order_by(RouteStop.sequence_no.desc())
     )
     last_stop_rs = result.scalars().first()
+
+    if not last_stop_rs:
+        raise HTTPException(400, "No stops found for route")
+
     last_stop = await session.get(Stop, last_stop_rs.stop_id)
 
+    if not last_stop:
+        raise HTTPException(400, "Last stop not found")
+
+    current_time = now_utc()
+
+    # =========================
+    # TIME VALIDATION
+    # =========================
+    if current_time < trip.planned_end_at:
+        raise HTTPException(
+            400,
+            f"Cannot end trip before planned end time ({to_ist(trip.planned_end_at)})"
+        )
+
+    # =========================
+    # GEO VALIDATION
+    # =========================
     if not is_within_radius(last_stop, lat, lng):
         raise HTTPException(400, "Use emergency end")
 
-    trip.actual_end_at = now_utc()
+    # =========================
+    # UPDATE TRIP
+    # =========================
+    trip.actual_end_at = current_time
     trip.ended_near_stop_id = last_stop.id
     trip.ended_at_lat = lat
     trip.ended_at_long = lng
@@ -372,8 +402,10 @@ async def end_trip(
 
     await session.commit()
 
-    return {"message": "Trip completed", "time": to_ist(trip.actual_end_at)}
-
+    return {
+        "message": "Trip completed",
+        "time": to_ist(trip.actual_end_at)
+    }
 
 # ============================================================
 # EMERGENCY END (MERGED)
