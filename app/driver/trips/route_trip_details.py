@@ -17,7 +17,7 @@ router = APIRouter()
 async def get_route_trip_details(
     route_id: str,
     db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),  # ✅ AUTH
+    current_user: User = Depends(get_current_user),
 ):
     # 🔒 Allow only driver
     if current_user.role != "driver":
@@ -37,10 +37,10 @@ async def get_route_trip_details(
     if not route:
         raise HTTPException(status_code=404, detail="Route not found")
 
-    # ✅ Sort stops by sequence
+    # ✅ Sort stops
     route_stops = sorted(route.route_stops, key=lambda x: x.sequence_no)
 
-    # 2️⃣ Compute cumulative time for planned arrival
+    # 2️⃣ Compute cumulative time
     cumulative_time = 0
     stop_time_map = {}
 
@@ -48,12 +48,12 @@ async def get_route_trip_details(
         cumulative_time += rs.assume_time_diff_minutes or 0
         stop_time_map[rs.stop.id] = cumulative_time
 
-    # 3️⃣ Create fare map
+    # 3️⃣ Fare map
     fare_map = {}
     for fare in route.fares:
         fare_map[(fare.pickup_stop_id, fare.dropoff_stop_id)] = float(fare.amount)
 
-    # 4️⃣ Get ONLY this driver's trips
+    # 4️⃣ Driver trips
     trip_result = await db.execute(
         select(ScheduledTrip)
         .options(
@@ -68,16 +68,20 @@ async def get_route_trip_details(
     )
     trips = trip_result.scalars().all()
 
-    # 5️⃣ Build response
+    # 5️⃣ Response
     response = {
         "route": {
             "id": route.id,
             "name": route.name,
             "stops": [
                 {
-                    "sequence": rs.sequence_no,
                     "stop_id": rs.stop.id,
-                    "stop_name": rs.stop.name,
+                    "name": rs.stop.name,
+                    "lat": float(rs.stop.lat),
+                    "lng": float(rs.stop.lng),
+                    "sequence": rs.sequence_no,
+                    "boarding_allowed": rs.boarding_allowed,
+                    "deboarding_allowed": rs.deboarding_allowed,
                 }
                 for rs in route_stops
             ],
@@ -91,14 +95,16 @@ async def get_route_trip_details(
                 "actual_start": trip.actual_start_at,
                 "actual_end": trip.actual_end_at,
 
-                # 🚀 Stops with timing + fares
+                # 🚀 Stops
                 "stops": [
                     {
                         "sequence": rs.sequence_no,
                         "stop_id": rs.stop.id,
-                        "stop_name": rs.stop.name,
+                        "name": rs.stop.name,
+                        "lat": float(rs.stop.lat),
+                        "lng": float(rs.stop.lng),
 
-                        # 🕒 Planned Time
+                        # 🕒 Planned
                         "planned_arrival_time": (
                             trip.planned_start_at + timedelta(
                                 minutes=stop_time_map.get(rs.stop.id, 0)
@@ -107,7 +113,7 @@ async def get_route_trip_details(
                             else None
                         ),
 
-                        # 📍 Actual Time
+                        # 📍 Actual
                         "actual_arrival_time": next(
                             (
                                 e.arrival_time
@@ -125,7 +131,7 @@ async def get_route_trip_details(
                             None,
                         ),
 
-                        # 💰 Fare from this stop → next stops
+                        # 💰 Fares
                         "fares": [
                             {
                                 "to_stop_id": next_rs.stop.id,
@@ -141,7 +147,7 @@ async def get_route_trip_details(
                     for rs in route_stops
                 ],
 
-                # 🔁 Raw trip events
+                # 🔁 Events
                 "events": [
                     {
                         "stop_id": event.stop_id,
