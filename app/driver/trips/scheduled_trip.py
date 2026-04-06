@@ -429,6 +429,13 @@ async def emergency_end_trip(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # Validate reason length
+    if len(reason.strip()) < 100:
+        raise HTTPException(
+            status_code=400,
+            detail="Reason must be at least 100 characters long."
+        )
+
     trip = await session.get(ScheduledTrip, trip_id)
 
     if not trip or trip.driver_user_id != current_user.id:
