@@ -1,5 +1,5 @@
 # app/driver/scan_events/scan.py
-from fastapi import APIRouter, Depends, HTTPException, Form
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from datetime import datetime, timezone
@@ -10,6 +10,8 @@ import json
 import hmac
 import hashlib
 import os
+
+from pydantic import BaseModel
 
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
@@ -27,7 +29,16 @@ router = APIRouter(prefix="/driver/scan", tags=["Driver Scan"])
 
 
 # ============================================================
-# SECRET FROM ENV (IMPORTANT FIX)
+# REQUEST BODY (JSON instead of Form)
+# ============================================================
+class ScanRequest(BaseModel):
+    qr_token: str
+    lat: float
+    lng: float
+
+
+# ============================================================
+# SECRET FROM ENV
 # ============================================================
 QR_SECRET = os.getenv("OTP_HASH_SECRET")
 
@@ -51,27 +62,46 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
+# HELPER: Fix Base64 Padding
+# ============================================================
+def add_padding(s: str) -> str:
+    return s + '=' * (-len(s) % 4)
+
+
+# ============================================================
 # HELPER: Decode QR
 # ============================================================
 def decode_qr_token(qr_token: str):
     try:
-        encoded_payload, signature = qr_token.split(".")
+        qr_token = qr_token.strip()
 
-        payload_bytes = base64.urlsafe_b64decode(encoded_payload + "==")
+        print("QR TOKEN LENGTH:", len(qr_token))
+        print("RAW TOKEN:", qr_token)
+
+        # Split safely
+        encoded_payload, signature = qr_token.rsplit(".", 1)
+
+        # Decode
+        payload_bytes = base64.urlsafe_b64decode(add_padding(encoded_payload))
         payload = json.loads(payload_bytes)
 
+        # Signature check
         expected_signature = hmac.new(
             QR_SECRET.encode(),
             payload_bytes,
             hashlib.sha256
         ).hexdigest()
 
+        print("EXPECTED:", expected_signature)
+        print("RECEIVED:", signature)
+
         if not hmac.compare_digest(signature, expected_signature):
             raise HTTPException(400, "Invalid QR signature")
 
         return payload
 
-    except Exception:
+    except Exception as e:
+        print("DECODE ERROR:", str(e))
         raise HTTPException(400, "Invalid QR format")
 
 
@@ -81,12 +111,14 @@ def decode_qr_token(qr_token: str):
 @router.post("/{trip_id}/scan")
 async def scan_passenger(
     trip_id: str,
-    qr_token: str = Form(...),
-    lat: float = Form(...),
-    lng: float = Form(...),
+    data: ScanRequest,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    qr_token = data.qr_token
+    lat = data.lat
+    lng = data.lng
+
     # --------------------------------------------------------
     # 1. Decode QR
     # --------------------------------------------------------
@@ -95,7 +127,8 @@ async def scan_passenger(
     qr_trip_id = payload.get("scheduled_trip_id")
     booking_id = payload.get("booking_id")
     passenger_id = payload.get("passenger_user_id")
-    scan_type = payload.get("scan_type")
+
+    scan_type = payload.get("scan_type", "board")
 
     if scan_type not in ["board", "drop"]:
         raise HTTPException(400, "Invalid scan type in QR")
