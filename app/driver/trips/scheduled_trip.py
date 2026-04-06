@@ -171,6 +171,12 @@ async def start_trip(
         400,
             f"Cannot start before planned time ({to_ist(trip.planned_start_at)})"
     )
+    # ❌ NEW: Cannot start after trip already ended
+    if current_time > trip.planned_end_at:
+        raise HTTPException(
+        400,
+        f"Cannot start trip after planned end time ({to_ist(trip.planned_end_at)})"
+    )
     # =========================
     # GET FIRST STOP
     # =========================
