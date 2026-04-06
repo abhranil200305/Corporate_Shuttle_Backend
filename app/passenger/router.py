@@ -246,3 +246,34 @@ async def get_rating(
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingRatingResponse:
     return await service.get_rating(current_user, booking_id)
+
+@router.post("/support", response_model=SupportTicketCreateResponse)
+async def create_support_ticket(
+    subject: str = Form(...),
+    description: str = Form(...),
+    file: UploadFile | None = File(default=None),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> SupportTicketCreateResponse:
+    return await service.create_support_ticket(
+        current_user,
+        subject=subject,
+        description=description,
+        file=file,
+    )
+
+@router.get("/support", response_model=SupportTicketListResponse)
+async def list_support_tickets(
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> SupportTicketListResponse:
+    return await service.list_support_tickets(current_user)
+
+
+@router.get("/support/{ticket_id}", response_model=SupportTicketResponse)
+async def get_support_ticket(
+    ticket_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> SupportTicketResponse:
+    return await service.get_support_ticket(current_user, ticket_id)
