@@ -19,6 +19,7 @@ from app.driver.trips import booking_details_service, payout_details, route_trip
 from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.jobs.payment_reconciler import payment_reconcile_loop
+from app.jobs.cancelled_booking_refund_reconciler import cancelled_booking_refund_loop
 from app.passenger.router import router as passenger_route
 from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
@@ -48,12 +49,23 @@ async def lifespan(app: FastAPI):
     )
     app.state.payment_reconcile_task = reconcile_task
 
+    cancelled_booking_refund_task = asyncio.create_task(
+        cancelled_booking_refund_loop(),
+        name="cancelled-booking-refund-loop",
+    )
+    app.state.cancelled_booking_refund_task = cancelled_booking_refund_task
+
     try:
         yield
     finally:
         reconcile_task.cancel()
+        cancelled_booking_refund_task.cancel()
+
         with suppress(asyncio.CancelledError):
             await reconcile_task
+
+        with suppress(asyncio.CancelledError):
+            await cancelled_booking_refund_task
 
 
 app = FastAPI(

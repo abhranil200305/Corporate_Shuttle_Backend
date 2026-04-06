@@ -291,6 +291,7 @@ class RoutePayoutService:
         method: str,
         path: str,
         json_payload: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         key_id = self._get_razorpay_key_id()
         key_secret = self._get_razorpay_key_secret()
@@ -298,7 +299,12 @@ class RoutePayoutService:
         url = f"{base_url}{path}"
 
         async with httpx.AsyncClient(auth=(key_id, key_secret), timeout=20.0) as client:
-            response = await client.request(method=method, url=url, json=json_payload)
+            response = await client.request(
+                method=method,
+                url=url,
+                json=json_payload,
+                headers=headers,
+            )
 
         if response.status_code >= 400:
             try:
@@ -359,6 +365,204 @@ class RoutePayoutService:
             path=f"/payments/{razorpay_payment_id}/transfers",
             json_payload=payload,
         )
+    
+    async def _fetch_razorpay_payment(
+        self,
+        razorpay_payment_id: str,
+    ) -> dict[str, Any]:
+        return await self._razorpay_request(
+            method="GET",
+            path=f"/payments/{razorpay_payment_id}",
+        )
+
+    async def _create_payment_refund(
+        self,
+        *,
+        razorpay_payment_id: str,
+        amount_subunits: int,
+        idempotency_key: str,
+        reverse_all: bool,
+        receipt: str,
+        notes: dict[str, str],
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "amount": amount_subunits,
+            "receipt": receipt,
+            "notes": notes,
+        }
+
+        if reverse_all:
+            payload["reverse_all"] = True
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"/payments/{razorpay_payment_id}/refund",
+            json_payload=payload,
+            headers={
+                "X-Refund-Idempotency": idempotency_key,
+            },
+        )
+
+    @staticmethod
+    def _is_provider_payment_fully_refunded(
+        provider_payment: dict[str, Any],
+        *,
+        expected_amount_subunits: int,
+    ) -> bool:
+        provider_status = str(provider_payment.get("status") or "").strip().lower()
+        refund_status = str(provider_payment.get("refund_status") or "").strip().lower()
+
+        try:
+            amount_refunded = int(provider_payment.get("amount_refunded") or 0)
+        except (TypeError, ValueError):
+            amount_refunded = 0
+
+        return (
+            provider_status == "refunded"
+            or refund_status == "full"
+            or amount_refunded >= expected_amount_subunits
+        )
+
+    async def _mark_cancelled_booking_refunded_locally(
+        self,
+        *,
+        booking: TripBooking,
+        payment: BookingPayment,
+        mark_transfer_reversed: bool,
+    ) -> None:
+        payment.status = BookingPaymentStatus.REFUNDED
+        self.db.add(payment)
+
+        if mark_transfer_reversed and booking.transfer is not None:
+            booking.transfer.status = BookingTransferStatus.REVERSED
+            booking.transfer.reversed_at = booking.transfer.reversed_at or utcnow()
+            booking.transfer.failure_reason = None
+
+            booking.transfer_status = TransferStatus.REVERSED
+
+            self.db.add(booking.transfer)
+            self.db.add(booking)
+
+        await self.db.flush()
+
+    async def reconcile_cancelled_booking_refund(
+        self,
+        booking: TripBooking,
+    ) -> str:
+        if booking.booking_status != BookingStatus.CANCELLED:
+            return "skip_non_cancelled"
+
+        try:
+            source_payment = self._select_paid_source_payment(booking)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            if detail.get("error") == "paid_source_payment_not_found":
+                return "skip_no_paid_source_payment"
+            raise
+
+        if not source_payment.razorpay_payment_id:
+            return "skip_missing_payment_id"
+
+        expected_amount_subunits = self._to_subunits(source_payment.amount)
+
+        provider_payment = await self._fetch_razorpay_payment(
+            source_payment.razorpay_payment_id
+        )
+
+        transfer_was_processed = bool(
+            booking.transfer is not None
+            and booking.transfer.status == BookingTransferStatus.PROCESSED
+        )
+
+        if self._is_provider_payment_fully_refunded(
+            provider_payment,
+            expected_amount_subunits=expected_amount_subunits,
+        ):
+            await self._mark_cancelled_booking_refunded_locally(
+                booking=booking,
+                payment=source_payment,
+                mark_transfer_reversed=transfer_was_processed,
+            )
+            return "already_refunded_on_provider"
+
+        provider_status = str(provider_payment.get("status") or "").strip().lower()
+        captured_flag = bool(provider_payment.get("captured", False))
+
+        if provider_status != "captured" and not captured_flag:
+            return f"skip_provider_payment_{provider_status or 'unknown'}"
+
+        idempotency_key = f"booking_refund_{source_payment.id.replace('-', '_')}"
+        receipt = f"booking_refund_{booking.id.replace('-', '')[:24]}"
+
+        try:
+            refund_response = await self._create_payment_refund(
+                razorpay_payment_id=source_payment.razorpay_payment_id,
+                amount_subunits=expected_amount_subunits,
+                idempotency_key=idempotency_key,
+                reverse_all=transfer_was_processed,
+                receipt=receipt,
+                notes={
+                    "booking_id": booking.id,
+                    "scheduled_trip_id": booking.scheduled_trip_id,
+                    "reason": "cancelled_booking_auto_refund",
+                },
+            )
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, dict) else {}
+            provider_status_code = detail.get("provider_status_code")
+
+            refreshed_provider_payment = await self._fetch_razorpay_payment(
+                source_payment.razorpay_payment_id
+            )
+
+            if self._is_provider_payment_fully_refunded(
+                refreshed_provider_payment,
+                expected_amount_subunits=expected_amount_subunits,
+            ):
+                await self._mark_cancelled_booking_refunded_locally(
+                    booking=booking,
+                    payment=source_payment,
+                    mark_transfer_reversed=transfer_was_processed,
+                )
+                return "refund_already_processed_after_error"
+
+            if provider_status_code == 409:
+                return "refund_in_progress"
+
+            raise
+
+        refund_status = str(refund_response.get("status") or "").strip().lower()
+
+        if refund_status == "processed":
+            await self._mark_cancelled_booking_refunded_locally(
+                booking=booking,
+                payment=source_payment,
+                mark_transfer_reversed=transfer_was_processed,
+            )
+            return "refund_processed"
+
+        if refund_status == "pending":
+            return "refund_pending"
+
+        if refund_status == "failed":
+            return "refund_failed"
+
+        refreshed_provider_payment = await self._fetch_razorpay_payment(
+            source_payment.razorpay_payment_id
+        )
+
+        if self._is_provider_payment_fully_refunded(
+            refreshed_provider_payment,
+            expected_amount_subunits=expected_amount_subunits,
+        ):
+            await self._mark_cancelled_booking_refunded_locally(
+                booking=booking,
+                payment=source_payment,
+                mark_transfer_reversed=transfer_was_processed,
+            )
+            return "refund_processed_after_fetch"
+
+        return f"refund_{refund_status or 'unknown'}"
 
     # ---------------------------------------------------------
     # public trigger
