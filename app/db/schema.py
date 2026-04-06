@@ -1124,6 +1124,11 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
             name="ck_trip_bookings_dropoff_after_pickup",
         ),
         Index("ix_trip_bookings_trip_status", "scheduled_trip_id", "booking_status"),
+        Index(
+            "ix_trip_bookings_status_refund_retry_after",
+            "booking_status",
+            "refund_retry_after",
+        ),
     )
 
 
