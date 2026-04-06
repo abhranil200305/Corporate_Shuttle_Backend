@@ -377,16 +377,16 @@ async def end_trip(
     current_time = now_utc()
 
     # =========================
-    # TIME VALIDATION
+    # CASE 1: EARLY END → EMERGENCY
     # =========================
     if current_time < trip.planned_end_at:
         raise HTTPException(
             400,
-            f"Cannot end trip before planned end time ({to_ist(trip.planned_end_at)})"
+            "Trip cannot be ended before planned time. Use emergency end."
         )
 
     # =========================
-    # GEO VALIDATION
+    # CASE 2: NORMAL END (ON TIME / LATE)
     # =========================
     if not is_within_radius(last_stop, lat, lng):
         raise HTTPException(400, "Use emergency end")
