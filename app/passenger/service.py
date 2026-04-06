@@ -2114,8 +2114,8 @@ class PassengerService:
                 detail={
                     "error": "cancellation_window_closed",
                     "message": "Booking can only be cancelled up to 1 hour before the scheduled trip start time.",
-                    "scheduled_trip_start_at": booking.scheduled_trip.planned_start_at,
-                    "cancel_cutoff_at": cancel_cutoff_at,
+                    "scheduled_trip_start_at": booking.scheduled_trip.planned_start_at.isoformat(),
+                    "cancel_cutoff_at": cancel_cutoff_at.isoformat(),
                 },
             )
 
