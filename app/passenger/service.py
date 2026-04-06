@@ -2084,12 +2084,38 @@ class PassengerService:
             passenger_user_id=current_user.id,
         )
 
-        if booking.booking_status != BookingStatus.PENDING_PAYMENT:
+        if booking.booking_status != BookingStatus.BOOKED:
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "cancel_not_allowed",
-                    "message": "Only pending-payment bookings can be cancelled in the current implementation.",
+                    "message": "Only paid booked bookings can be cancelled.",
+                },
+            )
+
+        has_paid_payment = any(
+            payment.status == BookingPaymentStatus.PAID
+            and payment.razorpay_payment_id
+            for payment in booking.payments
+        )
+        if not has_paid_payment:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paid_payment_not_found",
+                    "message": "This booking does not have a paid payment eligible for cancellation.",
+                },
+            )
+
+        cancel_cutoff_at = booking.scheduled_trip.planned_start_at - timedelta(hours=1)
+        if utcnow() > cancel_cutoff_at:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "cancellation_window_closed",
+                    "message": "Booking can only be cancelled up to 1 hour before the scheduled trip start time.",
+                    "scheduled_trip_start_at": booking.scheduled_trip.planned_start_at,
+                    "cancel_cutoff_at": cancel_cutoff_at,
                 },
             )
 
