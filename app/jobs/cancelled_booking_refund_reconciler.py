@@ -5,7 +5,7 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import func, or_, select, text
 from sqlalchemy.orm import selectinload
 
 from app.db.database import AsyncSessionLocal, engine
@@ -74,8 +74,18 @@ async def _fetch_cancelled_booking_ids(limit: int) -> list[str]:
             .where(
                 TripBooking.booking_status == BookingStatus.CANCELLED,
                 paid_payment_exists,
+                or_(
+                    TripBooking.refund_retry_after.is_(None),
+                    TripBooking.refund_retry_after <= utcnow(),
+                ),
             )
-            .order_by(TripBooking.created_at.asc())
+            .order_by(
+                func.coalesce(
+                    TripBooking.refund_retry_after,
+                    TripBooking.created_at,
+                ).asc(),
+                TripBooking.created_at.asc(),
+            )
             .limit(limit)
         )
 

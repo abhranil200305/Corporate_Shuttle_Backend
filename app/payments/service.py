@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -422,6 +422,27 @@ class RoutePayoutService:
             or refund_status == "full"
             or amount_refunded >= expected_amount_subunits
         )
+    
+    async def _schedule_cancelled_booking_refund_retry(
+        self,
+        *,
+        booking: TripBooking,
+        delay_minutes: int,
+    ) -> None:
+        booking.refund_attempt_count = int(booking.refund_attempt_count or 0) + 1
+        booking.refund_retry_after = utcnow() + timedelta(minutes=delay_minutes)
+
+        self.db.add(booking)
+        await self.db.flush()
+
+    async def _clear_cancelled_booking_refund_retry(
+        self,
+        *,
+        booking: TripBooking,
+    ) -> None:
+        booking.refund_retry_after = None
+        self.db.add(booking)
+        await self.db.flush()
 
     async def _mark_cancelled_booking_refunded_locally(
         self,
@@ -432,6 +453,9 @@ class RoutePayoutService:
     ) -> None:
         payment.status = BookingPaymentStatus.REFUNDED
         self.db.add(payment)
+
+        booking.refund_retry_after = None
+        self.db.add(booking)
 
         if mark_transfer_reversed and booking.transfer is not None:
             booking.transfer.status = BookingTransferStatus.REVERSED
@@ -451,6 +475,12 @@ class RoutePayoutService:
     ) -> str:
         if booking.booking_status != BookingStatus.CANCELLED:
             return "skip_non_cancelled"
+
+        if (
+            booking.refund_retry_after is not None
+            and booking.refund_retry_after > utcnow()
+        ):
+            return "skip_retry_not_due"
 
         try:
             source_payment = self._select_paid_source_payment(booking)
@@ -489,7 +519,11 @@ class RoutePayoutService:
         captured_flag = bool(provider_payment.get("captured", False))
 
         if provider_status != "captured" and not captured_flag:
-            return f"skip_provider_payment_{provider_status or 'unknown'}"
+            await self._schedule_cancelled_booking_refund_retry(
+                booking=booking,
+                delay_minutes=10,
+            )
+            return f"retry_provider_payment_{provider_status or 'unknown'}"
 
         idempotency_key = f"booking_refund_{source_payment.id.replace('-', '_')}"
         receipt = f"booking_refund_{booking.id.replace('-', '')[:24]}"
@@ -527,7 +561,18 @@ class RoutePayoutService:
                 return "refund_already_processed_after_error"
 
             if provider_status_code == 409:
+                await self._schedule_cancelled_booking_refund_retry(
+                    booking=booking,
+                    delay_minutes=5,
+                )
                 return "refund_in_progress"
+
+            if provider_status_code in {408, 429, 500, 502, 503, 504}:
+                await self._schedule_cancelled_booking_refund_retry(
+                    booking=booking,
+                    delay_minutes=10,
+                )
+                return "refund_retry_scheduled_after_provider_error"
 
             raise
 
@@ -542,9 +587,17 @@ class RoutePayoutService:
             return "refund_processed"
 
         if refund_status == "pending":
+            await self._schedule_cancelled_booking_refund_retry(
+                booking=booking,
+                delay_minutes=5,
+            )
             return "refund_pending"
 
         if refund_status == "failed":
+            await self._schedule_cancelled_booking_refund_retry(
+                booking=booking,
+                delay_minutes=30,
+            )
             return "refund_failed"
 
         refreshed_provider_payment = await self._fetch_razorpay_payment(
@@ -562,6 +615,10 @@ class RoutePayoutService:
             )
             return "refund_processed_after_fetch"
 
+        await self._schedule_cancelled_booking_refund_retry(
+            booking=booking,
+            delay_minutes=15,
+        )
         return f"refund_{refund_status or 'unknown'}"
 
     # ---------------------------------------------------------
