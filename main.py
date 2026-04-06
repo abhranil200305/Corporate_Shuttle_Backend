@@ -28,6 +28,8 @@ from app.driver.scan_events.scan import router as driver_scan_router
 from app.driver.trips.current_trip import router as driver_current_trip_router
 from app.driver.trips.current_trip import router as current_trip_router
 from app.driver.stats.driver_stats import router as driver_stats_router
+from app.driver.ratings.driver_ratings import router as driver_ratings_router
+
 
 
 
@@ -119,6 +121,7 @@ app.include_router(support_router)
 app.include_router(cancel_trip.router, prefix="/driver", tags=["Driver"])
 app.include_router(driver_scan_router)
 app.include_router(driver_stats_router)
+app.include_router(driver_ratings_router)
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",
