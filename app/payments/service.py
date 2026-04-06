@@ -812,4 +812,88 @@ class RoutePayoutService:
             results.append({"booking_id": booking.id, "status": "failed", "error": str(e)})
             
         return results
+      
+    async def create_linked_account(
+        self,
+        *,
+        email: str,
+        phone: str,
+        full_name: str,
+        city: str = "Kolkata",
+        state: str = "West Bengal",
+        country: str = "IN",
+    ) -> dict[str, Any]:
+        cleaned_email = (email or "").strip()
+        cleaned_phone = (phone or "").strip()
+        cleaned_full_name = (full_name or "").strip()
+
+        if not cleaned_email:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_email",
+                    "message": "Driver email is required to create a linked account.",
+                },
+            )
+
+        if not cleaned_phone:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_phone",
+                    "message": "Driver phone is required to create a linked account.",
+                },
+            )
+
+        if not cleaned_full_name:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_full_name",
+                    "message": "Driver full name is required to create a linked account.",
+                },
+            )
+
+        payload = {
+            "type": "route",
+            "email": cleaned_email,
+            "contact": cleaned_phone,
+            "profile": {
+                "name": cleaned_full_name,
+                "addresses": {
+                    "permanent": {
+                        "city": city,
+                        "state": state,
+                        "country": country,
+                    }
+                },
+            },
+            "legal_business_name": cleaned_full_name,
+            "business_type": "individual",
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path="/accounts",
+            json_payload=payload,
+        )
+
+    async def fetch_linked_account(
+        self,
+        linked_account_id: str,
+    ) -> dict[str, Any]:
+        cleaned_linked_account_id = (linked_account_id or "").strip()
+        if not cleaned_linked_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_linked_account_id",
+                    "message": "Linked account id is required.",
+                },
+            )
+
+        return await self._razorpay_request(
+            method="GET",
+            path=f"/accounts/{cleaned_linked_account_id}",
+        )
   

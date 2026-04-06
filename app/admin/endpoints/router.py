@@ -15,6 +15,13 @@ from app.admin.structs.dto import (
     StopCreate,
     VehicleVerificationUpdate,
     VerificationUpdate,
+    BulkPayoutTriggerRequest,
+    DriverLinkedAccountUpdate,
+    DriverPayoutDetailsUpsert,
+    DriverPayoutEligibilityUpdate,
+    PayoutSettingsUpdate,
+    TriggerBookingPayoutRequest,
+    TriggerDriverMonthlyPayoutRequest,
 )
 from app.auth.dependencies import get_current_admin, get_current_user
 from app.db import schema
@@ -1399,3 +1406,221 @@ async def view_all_reviews(
         }
         for r in reviews
     ]
+
+# ============================================================
+# Admin payout management by Anubhab Dey
+# ============================================================
+
+
+@router.get("/payouts/settings")
+async def get_payout_settings(
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_payout_settings()
+
+
+@router.patch("/payouts/settings")
+async def patch_payout_settings(
+    payload: PayoutSettingsUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.update_payout_settings(payload.commission_percent)
+
+
+@router.get("/payouts/drivers")
+async def list_driver_payout_profiles(
+    linked_account_status: Optional[schema.LinkedAccountStatus] = Query(default=None),
+    is_payout_eligible: Optional[bool] = Query(default=None),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_driver_payout_profiles(
+        linked_account_status=linked_account_status,
+        is_payout_eligible=is_payout_eligible,
+    )
+
+
+@router.get("/payouts/drivers/{driver_user_id}")
+async def get_driver_payout_profile(
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_driver_payout_profile(driver_user_id)
+
+
+@router.put("/payouts/drivers/{driver_user_id}/details")
+async def upsert_driver_payout_details(
+    driver_user_id: str,
+    payload: DriverPayoutDetailsUpsert,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.upsert_driver_payout_details(driver_user_id, payload)
+
+
+@router.patch("/payouts/drivers/{driver_user_id}/linked-account")
+async def patch_driver_linked_account(
+    driver_user_id: str,
+    payload: DriverLinkedAccountUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.update_driver_linked_account(driver_user_id, payload)
+
+
+@router.patch("/payouts/drivers/{driver_user_id}/eligibility")
+async def patch_driver_payout_eligibility(
+    driver_user_id: str,
+    payload: DriverPayoutEligibilityUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.update_driver_payout_eligibility(driver_user_id, payload)
+
+
+@router.get("/payouts/bookings")
+async def list_payout_bookings(
+    driver_user_id: Optional[str] = Query(default=None),
+    passenger_user_id: Optional[str] = Query(default=None),
+    booking_status: Optional[schema.BookingStatus] = Query(default=None),
+    transfer_status: Optional[schema.TransferStatus] = Query(default=None),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_payout_bookings(
+        driver_user_id=driver_user_id,
+        passenger_user_id=passenger_user_id,
+        booking_status=booking_status,
+        transfer_status=transfer_status,
+        month=month,
+        year=year,
+    )
+
+
+@router.get("/payouts/bookings/{booking_id}")
+async def get_payout_booking_detail(
+    booking_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_payout_booking_detail(booking_id)
+
+
+@router.post("/payouts/bookings/{booking_id}/trigger")
+async def trigger_booking_payout(
+    booking_id: str,
+    payload: TriggerBookingPayoutRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.trigger_booking_payout(
+        booking_id=booking_id,
+        linked_account_id=payload.linked_account_id,
+        require_completed=payload.require_completed,
+    )
+
+
+@router.post("/payouts/drivers/{driver_user_id}/trigger-monthly")
+async def trigger_driver_monthly_payouts(
+    driver_user_id: str,
+    payload: TriggerDriverMonthlyPayoutRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.trigger_driver_monthly_payouts(
+        driver_user_id=driver_user_id,
+        month=payload.month,
+        year=payload.year,
+        linked_account_id=payload.linked_account_id,
+    )
+
+
+@router.post("/payouts/bulk-trigger")
+async def trigger_bulk_payouts(
+    payload: BulkPayoutTriggerRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.trigger_bulk_payouts(payload)
+
+
+@router.get("/payouts/transfers")
+async def list_booking_transfers(
+    driver_user_id: Optional[str] = Query(default=None),
+    status: Optional[schema.BookingTransferStatus] = Query(default=None),
+    month: Optional[int] = Query(default=None, ge=1, le=12),
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_booking_transfers(
+        driver_user_id=driver_user_id,
+        status=status,
+        month=month,
+        year=year,
+    )
+
+
+@router.get("/payouts/transfers/{transfer_id}")
+async def get_booking_transfer_detail(
+    transfer_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_booking_transfer_detail(transfer_id)
+
+
+@router.get("/payouts/refunds")
+async def list_refund_queue(
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_refund_queue()
+
+
+@router.post("/payouts/refunds/{booking_id}/reconcile")
+async def reconcile_cancelled_booking_refund(
+    booking_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.reconcile_cancelled_booking_refund(booking_id)
+
+
+@router.get("/payouts/dashboard")
+async def get_payout_dashboard(
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_payout_dashboard()
+
+@router.post("/payouts/drivers/{driver_user_id}/create-linked-account")
+async def create_and_save_driver_linked_account(
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.create_and_save_driver_linked_account(driver_user_id)
+
+
+@router.post("/payouts/drivers/{driver_user_id}/sync-linked-account")
+async def sync_driver_linked_account(
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.sync_driver_linked_account(driver_user_id)
+
+
+@router.get("/payouts/drivers/{driver_user_id}/linked-account/provider")
+async def get_driver_linked_account_provider_detail(
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_driver_linked_account_provider_detail(driver_user_id)
