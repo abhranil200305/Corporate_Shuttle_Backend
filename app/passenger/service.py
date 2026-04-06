@@ -1925,31 +1925,12 @@ class PassengerService:
             passenger_user_id=current_user.id,
         )
 
-        if booking.booking_status != BookingStatus.PENDING_PAYMENT:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "booking_not_pending_payment",
-                    "message": "This booking is not awaiting payment verification.",
-                },
-            )
-        
-        if (
-            booking.payment_hold_expires_at is not None
-            and booking.payment_hold_expires_at <= utcnow()
-        ):
-            await self._expire_pending_booking_hold(booking)
-            await self.db.commit()
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "payment_hold_expired",
-                    "message": "Payment hold expired. Booking was cancelled and the seat was released.",
-                },
-            )
-
         payment = next(
-            (item for item in booking.payments if item.razorpay_order_id == payload.razorpay_order_id),
+            (
+                item
+                for item in booking.payments
+                if item.razorpay_order_id == payload.razorpay_order_id
+            ),
             None,
         )
         if payment is None:
@@ -2001,7 +1982,24 @@ class PassengerService:
             fetched_status = str(captured_payment.get("status", "")).lower()
             fetched_captured = bool(captured_payment.get("captured", False))
 
+        hold_expired = (
+            booking.booking_status == BookingStatus.PENDING_PAYMENT
+            and booking.payment_hold_expires_at is not None
+            and booking.payment_hold_expires_at <= utcnow()
+        )
+
         if fetched_status != "captured" or not fetched_captured:
+            if hold_expired:
+                await self._expire_pending_booking_hold(booking)
+                await self.db.commit()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "payment_hold_expired",
+                        "message": "Payment hold expired. Booking was cancelled and the seat was released.",
+                    },
+                )
+
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -2011,15 +2009,62 @@ class PassengerService:
                 },
             )
 
-        payment.razorpay_payment_id = payload.razorpay_payment_id
-        payment.razorpay_signature = payload.razorpay_signature
-        payment.status = BookingPaymentStatus.PAID
+        if booking.booking_status == BookingStatus.CANCELLED:
+            await self._mark_booking_paid_but_expired(
+                booking,
+                payment,
+                razorpay_payment_id=payload.razorpay_payment_id,
+            )
+            payment.razorpay_signature = payload.razorpay_signature
+            self.db.add(payment)
+            await self.db.commit()
 
-        booking.booking_status = BookingStatus.BOOKED
-        booking.payment_hold_expires_at = None
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_already_cancelled",
+                    "message": "Payment was captured, but this booking is already cancelled.",
+                },
+            )
 
-        self.db.add(payment)
-        self.db.add(booking)
+        if booking.booking_status in {
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+            BookingStatus.MISSED,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_not_verifiable",
+                    "message": "This booking is not in a verifiable state.",
+                    "booking_status": booking.booking_status,
+                },
+            )
+
+        if hold_expired:
+            await self._mark_booking_paid_but_expired(
+                booking,
+                payment,
+                razorpay_payment_id=payload.razorpay_payment_id,
+            )
+            payment.razorpay_signature = payload.razorpay_signature
+            self.db.add(payment)
+            await self.db.commit()
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_captured_after_hold_expiry",
+                    "message": "Payment was captured after the payment hold expired, so the booking is cancelled.",
+                },
+            )
+
+        await self._mark_booking_paid_and_booked(
+            booking,
+            payment,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            razorpay_signature=payload.razorpay_signature,
+        )
         await self.db.commit()
 
         booking = await self._get_booking_obj(
