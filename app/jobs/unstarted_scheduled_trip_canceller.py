@@ -9,11 +9,12 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from app.db.database import AsyncSessionLocal, engine
-from app.db.schema import ScheduledTrip, ScheduledTripStatus, TripBooking
-from app.driver.trips.scheduled_trip import (
-    build_unstarted_trip_cancellation_reason,
-    cancel_scheduled_trip_and_bookings,
-    get_trip_start_grace_minutes,
+from app.db.schema import (
+    BookingPaymentStatus,
+    BookingStatus,
+    ScheduledTrip,
+    ScheduledTripStatus,
+    TripBooking,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,15 @@ def _get_lock_key() -> int:
         return 82024003
 
 
+def _get_start_grace_minutes() -> int:
+    raw = os.getenv("TRIP_START_GRACE_MINUTES", "15").strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return 15
+    return max(1, value)
+
+
 def _seconds_until_next_minute() -> float:
     now = utcnow()
     elapsed = now.second + (now.microsecond / 1_000_000)
@@ -56,8 +66,16 @@ def _seconds_until_next_minute() -> float:
     return remaining if remaining > 0 else 60.0
 
 
-async def _fetch_overdue_scheduled_trip_ids(limit: int) -> list[str]:
-    cutoff = utcnow() - timedelta(minutes=get_trip_start_grace_minutes())
+def _build_cancellation_reason() -> str:
+    grace_minutes = _get_start_grace_minutes()
+    return (
+        f"Auto-cancelled because the driver did not start the trip within "
+        f"{grace_minutes} minutes after the planned start time."
+    )
+
+
+async def _fetch_overdue_trip_ids(limit: int) -> list[str]:
+    cutoff = utcnow() - timedelta(minutes=_get_start_grace_minutes())
 
     async with AsyncSessionLocal() as db:
         stmt = (
@@ -74,7 +92,7 @@ async def _fetch_overdue_scheduled_trip_ids(limit: int) -> list[str]:
         return list(result.scalars().all())
 
 
-async def _process_trip_id(trip_id: str) -> str:
+async def _cancel_trip_and_bookings(trip_id: str) -> str:
     async with AsyncSessionLocal() as db:
         stmt = (
             select(ScheduledTrip)
@@ -88,7 +106,6 @@ async def _process_trip_id(trip_id: str) -> str:
             )
             .with_for_update(skip_locked=True)
         )
-
         result = await db.execute(stmt)
         trip = result.scalar_one_or_none()
 
@@ -97,27 +114,54 @@ async def _process_trip_id(trip_id: str) -> str:
             return "skip_missing_or_locked"
 
         late_start_deadline = trip.planned_start_at + timedelta(
-            minutes=get_trip_start_grace_minutes()
+            minutes=_get_start_grace_minutes()
         )
 
         if utcnow() <= late_start_deadline:
             await db.rollback()
             return "skip_not_yet_overdue"
 
-        try:
-            cancelled_booking_count = await cancel_scheduled_trip_and_bookings(
-                db,
-                trip,
-                cancellation_reason=build_unstarted_trip_cancellation_reason(),
-            )
-            await db.commit()
-            return f"cancelled_trip_bookings={cancelled_booking_count}"
-        except Exception:
-            await db.rollback()
-            raise
+        current_time = utcnow()
+
+        trip.status = ScheduledTripStatus.CANCELLED
+        trip.cancellation_reason = _build_cancellation_reason()
+        db.add(trip)
+
+        cancelled_booking_count = 0
+        failed_created_payment_count = 0
+
+        for booking in trip.bookings:
+            if booking.booking_status in {
+                BookingStatus.CANCELLED,
+                BookingStatus.COMPLETED,
+                BookingStatus.MISSED,
+            }:
+                continue
+
+            booking.booking_status = BookingStatus.CANCELLED
+            booking.cancelled_at = booking.cancelled_at or current_time
+            booking.payment_hold_expires_at = None
+            booking.refund_retry_after = None
+            db.add(booking)
+
+            for payment in booking.payments:
+                if payment.status == BookingPaymentStatus.CREATED:
+                    payment.status = BookingPaymentStatus.FAILED
+                    db.add(payment)
+                    failed_created_payment_count += 1
+
+            cancelled_booking_count += 1
+
+        await db.commit()
+
+        return (
+            f"cancelled_trip"
+            f"_bookings={cancelled_booking_count}"
+            f"_failed_created_payments={failed_created_payment_count}"
+        )
 
 
-async def cancel_unstarted_scheduled_trips_once() -> None:
+async def cancel_unstarted_trips_once() -> None:
     lock_key = _get_lock_key()
     batch_size = _get_batch_size()
 
@@ -138,13 +182,13 @@ async def cancel_unstarted_scheduled_trips_once() -> None:
         total_processed = 0
 
         while True:
-            trip_ids = await _fetch_overdue_scheduled_trip_ids(batch_size)
+            trip_ids = await _fetch_overdue_trip_ids(batch_size)
             if not trip_ids:
                 break
 
             for trip_id in trip_ids:
                 try:
-                    outcome = await _process_trip_id(trip_id)
+                    outcome = await _cancel_trip_and_bookings(trip_id)
                     total_processed += 1
                     logger.info(
                         "unstarted_trip_cancel trip_id=%s outcome=%s",
@@ -166,12 +210,12 @@ async def cancel_unstarted_scheduled_trips_once() -> None:
 async def unstarted_trip_cancel_loop() -> None:
     logger.info("unstarted_trip_cancel loop started")
     try:
-        await cancel_unstarted_scheduled_trips_once()
+        await cancel_unstarted_trips_once()
 
         while True:
             await asyncio.sleep(_seconds_until_next_minute())
             try:
-                await cancel_unstarted_scheduled_trips_once()
+                await cancel_unstarted_trips_once()
             except Exception:
                 logger.exception("unstarted_trip_cancel tick failed")
     except asyncio.CancelledError:
