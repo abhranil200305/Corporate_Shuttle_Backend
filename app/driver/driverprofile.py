@@ -8,6 +8,9 @@ from pathlib import Path
 import shutil
 import uuid
 from typing import Optional
+from sqlalchemy import select
+from app.db.schema import BookingRating
+
 
 from app.db.schema import DriverProfile, User, DriverVerificationStatus
 from app.db.database import get_async_session
@@ -33,6 +36,8 @@ class DriverProfileResponse(BaseModel):
     phone: str
     profile_picture_path: Optional[str]
     verification_status: DriverVerificationStatus
+    average_rating: Optional[float]
+    total_reviews: int
 
     class Config:
         from_attributes = True  # ✅ Pydantic v2
@@ -119,8 +124,11 @@ async def get_my_driver_profile(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Get logged-in driver's profile"""
+    """Get logged-in driver's profile WITH rating"""
 
+    # -------------------------
+    # Fetch profile
+    # -------------------------
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
@@ -129,7 +137,31 @@ async def get_my_driver_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    return profile
+    # -------------------------
+    # Fetch ratings
+    # -------------------------
+    rating_result = await db.execute(
+        select(BookingRating.driver_rating)
+        .where(BookingRating.driver_user_id == current_user.id)
+    )
+
+    ratings = rating_result.scalars().all()
+
+    if ratings:
+        avg_rating = round(sum(ratings) / len(ratings), 2)
+        total_reviews = len(ratings)
+    else:
+        avg_rating = None
+        total_reviews = 0
+
+    # -------------------------
+    # Return merged response
+    # -------------------------
+    return {
+        **profile.__dict__,
+        "average_rating": avg_rating,
+        "total_reviews": total_reviews,
+    }
 
 
 # ------------------------------
