@@ -41,10 +41,10 @@ class ScanRequest(BaseModel):
 # ============================================================
 # SECRET
 # ============================================================
-QR_SECRET = os.getenv("OTP_HASH_SECRET")
+QR_SECRET = os.getenv("PASSENGER_QR_SECRET")
 
 if not QR_SECRET:
-    raise RuntimeError("OTP_HASH_SECRET is not set")
+    raise RuntimeError("PASSENGER_QR_SECRET is not set")
 
 
 # ============================================================
