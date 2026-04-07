@@ -11,7 +11,7 @@ from sqlalchemy import text
 
 from app.admin.endpoints.router import router as admin_router
 from app.auth import router as auth_router
-from app.db.database import engine
+from app.db.database import dispose_database_engine, ping_database
 from app.driver import driver_kyc, vehicle
 from app.driver.driverprofile import router as driverprofile_router
 from app.driver.driverprofileshow import router as driverprofileshow_router
@@ -45,11 +45,13 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 async def lifespan(app: FastAPI):
     app.state.ws_hub = WSHub()
     try:
-        async with engine.begin() as conn:
-            await conn.execute(text("SELECT 1"))
+        await ping_database(retries=3, delay_seconds=1.0)
         print("✅ Database connected successfully")
     except Exception as e:
         print("❌ Database connection failed:", e)
+        # fail fast so the app does not boot into a half-broken state
+        await dispose_database_engine()
+        raise
          
     reconcile_task = asyncio.create_task(
         payment_reconcile_loop(app.state.ws_hub),
@@ -94,6 +96,9 @@ async def lifespan(app: FastAPI):
 
         with suppress(asyncio.CancelledError):
             await driver_trip_reminder_task
+        
+        await dispose_database_engine()
+        print("✅ Database engine disposed")
 
 
 app = FastAPI(
