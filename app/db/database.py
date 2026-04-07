@@ -26,8 +26,8 @@ DATABASE_URL = os.getenv(
 engine = create_async_engine(
     DATABASE_URL,
     echo=True,           # turn off in production
-    pool_size=5,         # persistent connections
-    max_overflow=2,      # temporary connections
+    pool_size=20,        # persistent connections
+    max_overflow=10,      # temporary connections
     pool_timeout=30,     # wait before failing
     pool_pre_ping=True,  # automatically reconnect dead connections
 )
