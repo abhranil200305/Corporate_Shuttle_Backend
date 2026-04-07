@@ -1632,12 +1632,15 @@ async def get_booking_rating(
     }
 
 
+
+# app/admin/endpoints/router.py
+
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
     limit: int = 50,
     status: schema.BookingStatus = None,
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_async_session)
 ):
     service = AdminService(db)
     bookings = await service.fetch_detailed_transactions(skip, limit, status)
@@ -1648,127 +1651,61 @@ async def get_all_transactions(
         audit_payout = b.fare_amount - b.commission_amount
         is_payout_correct = audit_payout == b.driver_payout_amount
 
-        report.append(
-            {
-                "booking_id": b.id,
-                "timestamp": b.created_at,
-                "status": b.booking_status,
-                "passenger": {
-                    "name": b.passenger.passenger_profile.full_name
-                    if b.passenger.passenger_profile
-                    else "N/A",
-                    "email": b.passenger.email,
+        report.append({
+            "booking_id": b.id,
+            "timestamp": b.created_at,
+            "status": b.booking_status,
+            "passenger": {
+                "name": b.passenger.passenger_profile.full_name if b.passenger.passenger_profile else "N/A",
+                "email": b.passenger.email,
+            },
+            "trip_details": {
+                "route_name": b.route.name if b.route else "N/A",
+                "pickup": {
+                    "id": b.pickup_stop_id,
+                    "name": b.pickup_stop.name if b.pickup_stop else "N/A"
                 },
-                "trip_details": {
-                    "route_name": b.route.name if b.route else "N/A",
-                    "pickup": {
-                        "id": b.pickup_stop_id,
-                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-# app/admin/endpoints/router.py
-
-
-@router.get("/user/{user_id}/bookings/detailed")
-async def get_user_bookings_detailed(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
-):
-    service = AdminService(db)
-    bookings = await service.fetch_user_bookings_with_details(user_id)
-
-    if not bookings:
-        return {"user_id": user_id, "total_bookings": 0, "history": []}
-
-    history = []
-    for b in bookings:
-        history.append(
-            {
-                "booking_id": b.id,
-                "date": b.created_at,
-                "status": b.booking_status,
-                "route": b.route.name if b.route else "Unknown Route",
-                "stops": {
-                    "pickup": {
-                        "id": b.pickup_stop_id,
-                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-                        "seq": b.pickup_sequence_no_snapshot,
-                    },
-                    "dropoff": {
-                        "id": b.dropoff_stop_id,
-                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-                    },
-                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
-                    if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile)
-                    else "Unknown",
+                "dropoff": {
+                    "id": b.dropoff_stop_id,
+                    "name": b.dropoff_stop.name if b.dropoff_stop else "N/A"
                 },
-                "financials": {
-                    "total_fare": float(b.fare_amount),
-                    "commission_percent": float(b.commission_percent_snapshot),
-                    "admin_earned": float(b.commission_amount),
-                    "driver_payout": float(b.driver_payout_amount),
-                    "audit_passed": is_payout_correct,
-                },
-                # NEW: Refund/Cancellation Audit Logic
-                "refund_info": {
-                    "is_refunded": b.booking_status in ["cancelled", "refunded"],
-                    "reason": b.cancellation_reason
-                    if hasattr(b, "cancellation_reason")
-                    else "No reason provided",
-                    "cancelled_by": b.cancelled_by
-                    if hasattr(b, "cancelled_by")
-                    else "N/A",
-                    "cancelled_at": b.cancelled_at,
+                "driver_name": b.scheduled_trip.driver.driver_profile.full_name 
+                               if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile) else "Unknown",
+            },
+            "financials": {
+                "total_fare": float(b.fare_amount),
+                "commission_percent": float(b.commission_percent_snapshot),
+                "admin_earned": float(b.commission_amount),
+                "driver_payout": float(b.driver_payout_amount),
+                "audit_passed": is_payout_correct,
+            },
+            # NEW: Refund/Cancellation Audit Logic
+            "refund_info": {
+                "is_refunded": b.booking_status in ["cancelled", "refunded"],
+                "reason": b.cancellation_reason if hasattr(b, 'cancellation_reason') else "No reason provided",
+                "cancelled_by": b.cancelled_by if hasattr(b, 'cancelled_by') else "N/A",
+                "cancelled_at": b.cancelled_at
+            } if b.booking_status in ["cancelled", "refunded"] else None,
+            
+            "payment_gateway": [
+                {
+                    "razorpay_order_id": p.razorpay_order_id,
+                    "razorpay_payment_id": p.razorpay_payment_id,
+                    "payment_status": p.status,
                 }
-                if b.booking_status in ["cancelled", "refunded"]
-                else None,
-                "payment_gateway": [
-                    {
-                        "razorpay_order_id": p.razorpay_order_id,
-                        "razorpay_payment_id": p.razorpay_payment_id,
-                        "payment_status": p.status,
-                    }
-                    for p in b.payments
-                ],
-                "security_scans": [
-                    {
-                        "type": s.scan_type,
-                        "time": s.created_at,
-                        "at_correct_stop": s.within_radius,
-                    }
-                    for s in b.scan_events
-                ],
-            }
-        )
+                for p in b.payments
+            ],
+            "security_scans": [
+                {
+                    "type": s.scan_type,
+                    "time": s.created_at,
+                    "at_correct_stop": s.within_radius,
+                }
+                for s in b.scan_events
+            ],
+        })
 
     return {"total_count": len(report), "data": report}
-                        "seq": b.dropoff_sequence_no_snapshot,
-                    },
-                },
-                "financials": {
-                    "fare": float(b.fare_amount),
-                    "payment_id": b.payments[0].razorpay_payment_id
-                    if b.payments
-                    else None,
-                    "payment_status": b.payments[0].status if b.payments else "unpaid",
-                },
-                # Refund & Cancellation Logic
-                "audit_note": {
-                    "cancelled_by": b.cancelled_by
-                    if hasattr(b, "cancelled_by")
-                    else "N/A",
-                    "reason": b.cancellation_reason
-                    if hasattr(b, "cancellation_reason")
-                    else "N/A",
-                    "refund_status": b.transfer_status
-                    if b.booking_status == "cancelled"
-                    else "N/A",
-                }
-                if b.booking_status in ["cancelled", "refunded"]
-                else None,
-            }
-        )
-
-    return {"user_id": user_id, "total_bookings": len(history), "history": history}
-
-
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
