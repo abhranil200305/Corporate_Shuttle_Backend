@@ -1632,17 +1632,15 @@ async def get_booking_rating(
     }
 
 
-
-
-
 # app/admin/endpoints/router.py
+
 
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
     limit: int = 50,
     status: schema.BookingStatus = None,
-    db: AsyncSession = Depends(get_async_session)
+    db: AsyncSession = Depends(get_async_session),
 ):
     service = AdminService(db)
     bookings = await service.fetch_detailed_transactions(skip, limit, status)
@@ -1660,9 +1658,9 @@ async def get_all_transactions(
                 "status": b.booking_status,
                 "passenger": {
                     "name": b.passenger.passenger_profile.full_name
-                    if b.passenger.passenger_profile
+                    if (b.passenger and b.passenger.passenger_profile)
                     else "N/A",
-                    "email": b.passenger.email,
+                    "email": b.passenger.email if b.passenger else "N/A",
                 },
                 "trip_details": {
                     "route_name": b.route.name if b.route else "N/A",
@@ -1675,7 +1673,11 @@ async def get_all_transactions(
                         "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
                     },
                     "driver_name": b.scheduled_trip.driver.driver_profile.full_name
-                    if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile)
+                    if (
+                        b.scheduled_trip
+                        and b.scheduled_trip.driver
+                        and b.scheduled_trip.driver.driver_profile
+                    )
                     else "Unknown",
                 },
                 "financials": {
@@ -1685,16 +1687,11 @@ async def get_all_transactions(
                     "driver_payout": float(b.driver_payout_amount),
                     "audit_passed": is_payout_correct,
                 },
-                # NEW: Refund/Cancellation Audit Logic
                 "refund_info": {
                     "is_refunded": b.booking_status in ["cancelled", "refunded"],
-                    "reason": b.cancellation_reason
-                    if hasattr(b, "cancellation_reason")
-                    else "No reason provided",
-                    "cancelled_by": b.cancelled_by
-                    if hasattr(b, "cancelled_by")
-                    else "N/A",
-                    "cancelled_at": b.cancelled_at,
+                    "reason": getattr(b, "cancellation_reason", "No reason provided"),
+                    "cancelled_by": getattr(b, "cancelled_by", "N/A"),
+                    "cancelled_at": getattr(b, "cancelled_at", None),
                 }
                 if b.booking_status in ["cancelled", "refunded"]
                 else None,
