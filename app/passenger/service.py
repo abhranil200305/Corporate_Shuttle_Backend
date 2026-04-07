@@ -48,14 +48,21 @@ from app.passenger.schemas import (
     LegAvailableSeatsRequest
 )
 
+from app.notifications.hub import WSHub
+from app.notifications.service import NotificationService
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
 class PassengerService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        ws_hub: WSHub | None = None,
+    ) -> None:
         self.db = db
+        self.ws_hub = ws_hub
 
     # ------------------------------------------------------------------
     # role guard
@@ -1021,6 +1028,54 @@ class PassengerService:
             "current_progress_stop": self._get_current_progress_stop(trip),
             "segment_stops": self._serialize_segment_stops(booking),
         }
+    
+    def _get_notification_service(self) -> NotificationService:
+        return NotificationService(
+            db=self.db,
+            ws_hub=self.ws_hub,
+        )
+
+    @staticmethod
+    def _build_booking_notification_data(
+        booking: TripBooking,
+        *,
+        refresh: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "booking_status": booking.booking_status.value,
+            "refresh": refresh or ["bookings_list", "booking_detail"],
+        }
+
+    @staticmethod
+    def _build_support_ticket_notification_data(
+        ticket: SupportTicket,
+    ) -> dict[str, Any]:
+        return {
+            "ticket_id": ticket.id,
+            "status": ticket.status.value,
+            "refresh": ["support_tickets", "support_ticket_detail"],
+        }
+
+    async def _notify_user(
+        self,
+        *,
+        user_id: str,
+        title: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        notification_service = self._get_notification_service()
+        await notification_service.notify_user(
+            user_id=user_id,
+            title=title,
+            message=message,
+            data=data or {},
+        )
 
     # ------------------------------------------------------------------
     # profile
@@ -2181,6 +2236,17 @@ class PassengerService:
         ):
             await self._expire_pending_booking_hold(booking)
             await self.db.commit()
+
+            await self._notify_user(
+                user_id=current_user.id,
+                title="Booking cancelled",
+                message="Your payment window expired, so the seat was released.",
+                data=self._build_booking_notification_data(
+                    booking,
+                    refresh=["bookings_list", "booking_detail"],
+                ),
+            )
+
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -2200,11 +2266,11 @@ class PassengerService:
 
         if payment.status == BookingPaymentStatus.PAID:
             await self._mark_booking_paid_and_booked(
-                booking,
-                payment,
-                razorpay_payment_id=payment.razorpay_payment_id or payload.razorpay_payment_id,
-                razorpay_signature=payment.razorpay_signature or payload.razorpay_signature,
-            )
+            booking,
+            payment,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            razorpay_signature=payload.razorpay_signature,
+        )
             await self.db.commit()
 
             booking = await self._get_booking_obj(
@@ -2212,8 +2278,18 @@ class PassengerService:
                 passenger_user_id=current_user.id,
             )
 
+            await self._notify_user(
+                user_id=current_user.id,
+                title="Payment verified",
+                message="Your booking is confirmed.",
+                data=self._build_booking_notification_data(
+                    booking,
+                    refresh=["bookings_list", "booking_detail", "current_booking"],
+                ),
+            )
+
             return {
-                "message": "Payment already verified successfully.",
+                "message": "Payment verified successfully.",
                 "booking": self._serialize_booking(booking),
             }
 
@@ -2398,6 +2474,16 @@ class PassengerService:
         booking = await self._get_booking_obj(
             booking_id=booking.id,
             passenger_user_id=current_user.id,
+        )
+
+        await self._notify_user(
+            user_id=current_user.id,
+            title="Booking cancelled",
+            message="Your booking has been cancelled successfully.",
+            data=self._build_booking_notification_data(
+                booking,
+                refresh=["bookings_list", "booking_detail", "history"],
+            ),
         )
 
         return {
@@ -2712,6 +2798,13 @@ class PassengerService:
         self.db.add(ticket)
         await self.db.commit()
         await self.db.refresh(ticket)
+
+        await self._notify_user(
+            user_id=current_user.id,
+            title="Support ticket created",
+            message="Your support request has been recorded.",
+            data=self._build_support_ticket_notification_data(ticket),
+        )
 
         return {
             "message": "Support ticket created successfully.",

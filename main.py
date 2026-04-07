@@ -51,19 +51,19 @@ async def lifespan(app: FastAPI):
         print("❌ Database connection failed:", e)
          
     reconcile_task = asyncio.create_task(
-        payment_reconcile_loop(),
+        payment_reconcile_loop(app.state.ws_hub),
         name="payment-reconcile-loop",
     )
     app.state.payment_reconcile_task = reconcile_task
 
     cancelled_booking_refund_task = asyncio.create_task(
-        cancelled_booking_refund_loop(),
+        cancelled_booking_refund_loop(app.state.ws_hub),
         name="cancelled-booking-refund-loop",
     )
     app.state.cancelled_booking_refund_task = cancelled_booking_refund_task
 
     unstarted_trip_cancel_task = asyncio.create_task(
-        unstarted_trip_cancel_loop(),
+        unstarted_trip_cancel_loop(app.state.ws_hub),
         name="unstarted-trip-cancel-loop",
     )
     app.state.unstarted_trip_cancel_task = unstarted_trip_cancel_task

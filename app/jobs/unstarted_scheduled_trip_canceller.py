@@ -16,6 +16,8 @@ from app.db.schema import (
     ScheduledTripStatus,
     TripBooking,
 )
+from app.notifications.hub import WSHub
+from app.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +94,10 @@ async def _fetch_overdue_trip_ids(limit: int) -> list[str]:
         return list(result.scalars().all())
 
 
-async def _cancel_trip_and_bookings(trip_id: str) -> str:
+async def _cancel_trip_and_bookings(
+    trip_id: str,
+    ws_hub: WSHub | None = None,
+) -> str:
     async with AsyncSessionLocal() as db:
         stmt = (
             select(ScheduledTrip)
@@ -127,6 +132,7 @@ async def _cancel_trip_and_bookings(trip_id: str) -> str:
         trip.cancellation_reason = _build_cancellation_reason()
         db.add(trip)
 
+        affected_bookings: list[TripBooking] = []
         cancelled_booking_count = 0
         failed_created_payment_count = 0
 
@@ -150,9 +156,36 @@ async def _cancel_trip_and_bookings(trip_id: str) -> str:
                     db.add(payment)
                     failed_created_payment_count += 1
 
+            affected_bookings.append(booking)
             cancelled_booking_count += 1
 
         await db.commit()
+
+        notification_service = NotificationService(db=db, ws_hub=ws_hub)
+
+        for booking in affected_bookings:
+            await notification_service.notify_user(
+                user_id=booking.passenger_user_id,
+                title="Trip cancelled",
+                message=trip.cancellation_reason or "Your scheduled trip was cancelled.",
+                data={
+                    "booking_id": booking.id,
+                    "scheduled_trip_id": booking.scheduled_trip_id,
+                    "booking_status": booking.booking_status.value,
+                    "refresh": ["bookings_list", "booking_detail", "history"],
+                },
+            )
+
+        await notification_service.notify_user(
+            user_id=trip.driver_user_id,
+            title="Trip auto-cancelled",
+            message=trip.cancellation_reason or "The trip was auto-cancelled.",
+            data={
+                "scheduled_trip_id": trip.id,
+                "trip_status": trip.status.value,
+                "refresh": ["driver_trips"],
+            },
+        )
 
         return (
             f"cancelled_trip"
@@ -161,7 +194,9 @@ async def _cancel_trip_and_bookings(trip_id: str) -> str:
         )
 
 
-async def cancel_unstarted_trips_once() -> None:
+async def cancel_unstarted_trips_once(
+    ws_hub: WSHub | None = None,
+) -> None:
     lock_key = _get_lock_key()
     batch_size = _get_batch_size()
 
@@ -188,7 +223,7 @@ async def cancel_unstarted_trips_once() -> None:
 
             for trip_id in trip_ids:
                 try:
-                    outcome = await _cancel_trip_and_bookings(trip_id)
+                    outcome = await _cancel_trip_and_bookings(trip_id, ws_hub=ws_hub)
                     total_processed += 1
                     logger.info(
                         "unstarted_trip_cancel trip_id=%s outcome=%s",
@@ -207,15 +242,17 @@ async def cancel_unstarted_trips_once() -> None:
         logger.info("unstarted_trip_cancel done processed=%s", total_processed)
 
 
-async def unstarted_trip_cancel_loop() -> None:
+async def unstarted_trip_cancel_loop(
+    ws_hub: WSHub | None = None,
+) -> None:
     logger.info("unstarted_trip_cancel loop started")
     try:
-        await cancel_unstarted_trips_once()
+        await cancel_unstarted_trips_once(ws_hub=ws_hub)
 
         while True:
             await asyncio.sleep(_seconds_until_next_minute())
             try:
-                await cancel_unstarted_trips_once()
+                await cancel_unstarted_trips_once(ws_hub=ws_hub)
             except Exception:
                 logger.exception("unstarted_trip_cancel tick failed")
     except asyncio.CancelledError:

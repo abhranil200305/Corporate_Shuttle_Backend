@@ -25,14 +25,21 @@ from app.db.schema import (
     TripBooking,
 )
 
+from app.notifications.hub import WSHub
+from app.notifications.service import NotificationService
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
 class RoutePayoutService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(
+        self,
+        db: AsyncSession,
+        ws_hub: WSHub | None = None,
+    ) -> None:
         self.db = db
+        self.ws_hub = ws_hub
 
     # ---------------------------------------------------------
     # basic helpers
@@ -91,6 +98,38 @@ class RoutePayoutService:
             return raw.rsplit("/", 1)[0]
 
         return raw
+    
+    def _get_notification_service(self) -> NotificationService:
+        return NotificationService(
+            db=self.db,
+            ws_hub=self.ws_hub,
+        )
+
+    async def _notify_user(
+        self,
+        *,
+        user_id: str,
+        title: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        notification_service = self._get_notification_service()
+        await notification_service.notify_user(
+            user_id=user_id,
+            title=title,
+            message=message,
+            data=data or {},
+        )
+
+    @staticmethod
+    def _build_transfer_notification_data(booking: TripBooking) -> dict[str, Any]:
+        return {
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "transfer_status": booking.transfer_status.value,
+            "transfer_id": None if booking.transfer is None else booking.transfer.id,
+            "refresh": ["driver_payouts"],
+        }
     
     # ---------------------------------------------------------
     # db fetch helpers
@@ -773,6 +812,14 @@ class RoutePayoutService:
         self.db.add(booking.transfer)
         self.db.add(booking)
         await self.db.commit()
+
+        if mapped_transfer_status == BookingTransferStatus.PROCESSED:
+            await self._notify_user(
+                user_id=booking.scheduled_trip.driver_user_id,
+                title="Payout processed",
+                message="A booking payout has been processed to your linked account.",
+                data=self._build_transfer_notification_data(booking),
+            )
 
         return {
             "message": "Transfer trigger executed.",

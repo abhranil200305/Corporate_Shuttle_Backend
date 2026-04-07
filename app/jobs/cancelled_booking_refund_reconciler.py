@@ -15,6 +15,8 @@ from app.db.schema import (
     BookingStatus,
     TripBooking,
 )
+from app.notifications.hub import WSHub
+from app.notifications.service import NotificationService
 from app.payments.service import RoutePayoutService
 
 logger = logging.getLogger(__name__)
@@ -93,9 +95,41 @@ async def _fetch_cancelled_booking_ids(limit: int) -> list[str]:
         return list(result.scalars().all())
 
 
-async def _process_booking_id(booking_id: str) -> str:
+async def _notify_refund_outcome(
+    *,
+    db,
+    ws_hub: WSHub | None,
+    booking: TripBooking,
+    outcome: str,
+) -> None:
+    if outcome not in {
+        "already_refunded_on_provider",
+        "refund_already_processed_after_error",
+        "refund_processed",
+        "refund_processed_after_fetch",
+    }:
+        return
+
+    notification_service = NotificationService(db=db, ws_hub=ws_hub)
+    await notification_service.notify_user(
+        user_id=booking.passenger_user_id,
+        title="Refund processed",
+        message="Your booking refund has been processed.",
+        data={
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "booking_status": booking.booking_status.value,
+            "refresh": ["bookings_list", "booking_detail", "history"],
+        },
+    )
+
+
+async def _process_booking_id(
+    booking_id: str,
+    ws_hub: WSHub | None = None,
+) -> str:
     async with AsyncSessionLocal() as db:
-        service = RoutePayoutService(db)
+        service = RoutePayoutService(db, ws_hub=ws_hub)
 
         stmt = (
             select(TripBooking)
@@ -121,13 +155,22 @@ async def _process_booking_id(booking_id: str) -> str:
         try:
             outcome = await service.reconcile_cancelled_booking_refund(booking)
             await db.commit()
+
+            await _notify_refund_outcome(
+                db=db,
+                ws_hub=ws_hub,
+                booking=booking,
+                outcome=outcome,
+            )
             return outcome
         except Exception:
             await db.rollback()
             raise
 
 
-async def reconcile_cancelled_booking_refunds_once() -> None:
+async def reconcile_cancelled_booking_refunds_once(
+    ws_hub: WSHub | None = None,
+) -> None:
     lock_key = _get_lock_key()
     batch_size = _get_batch_size()
 
@@ -154,7 +197,7 @@ async def reconcile_cancelled_booking_refunds_once() -> None:
 
             for booking_id in booking_ids:
                 try:
-                    outcome = await _process_booking_id(booking_id)
+                    outcome = await _process_booking_id(booking_id, ws_hub=ws_hub)
                     total_processed += 1
                     logger.info(
                         "cancelled_booking_refund booking_id=%s outcome=%s",
@@ -173,15 +216,17 @@ async def reconcile_cancelled_booking_refunds_once() -> None:
         logger.info("cancelled_booking_refund done processed=%s", total_processed)
 
 
-async def cancelled_booking_refund_loop() -> None:
+async def cancelled_booking_refund_loop(
+    ws_hub: WSHub | None = None,
+) -> None:
     logger.info("cancelled_booking_refund loop started")
     try:
-        await reconcile_cancelled_booking_refunds_once()
+        await reconcile_cancelled_booking_refunds_once(ws_hub=ws_hub)
 
         while True:
             await asyncio.sleep(_seconds_until_next_minute())
             try:
-                await reconcile_cancelled_booking_refunds_once()
+                await reconcile_cancelled_booking_refunds_once(ws_hub=ws_hub)
             except Exception:
                 logger.exception("cancelled_booking_refund tick failed")
     except asyncio.CancelledError:
