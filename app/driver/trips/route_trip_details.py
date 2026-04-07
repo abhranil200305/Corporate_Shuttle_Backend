@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from app.db.database import get_async_session
 from app.db.schema import Route, ScheduledTrip, RouteStop, User
+
 from app.auth.dependencies import get_current_user
 
 router = APIRouter()
@@ -40,13 +41,12 @@ async def get_route_trip_details(
     # ✅ Sort stops
     route_stops = sorted(route.route_stops, key=lambda x: x.sequence_no)
 
-    # 2️⃣ Compute cumulative time
+    # 2️⃣ Compute cumulative time for planned arrival
     cumulative_time = 0
     stop_time_map = {}
-
     for rs in route_stops:
-        cumulative_time += rs.assume_time_diff_minutes or 0
         stop_time_map[rs.stop.id] = cumulative_time
+        cumulative_time += rs.assume_time_diff_minutes or 0
 
     # 3️⃣ Fare map
     fare_map = {}
@@ -113,6 +113,9 @@ async def get_route_trip_details(
                             else None
                         ),
 
+                        # ⏱ Assumed time from previous stop
+                        "assume_time_diff_minutes": rs.assume_time_diff_minutes or 0,
+
                         # 📍 Actual
                         "actual_arrival_time": next(
                             (
@@ -136,9 +139,7 @@ async def get_route_trip_details(
                             {
                                 "to_stop_id": next_rs.stop.id,
                                 "to_stop_name": next_rs.stop.name,
-                                "amount": fare_map.get(
-                                    (rs.stop.id, next_rs.stop.id)
-                                ),
+                                "amount": fare_map.get((rs.stop.id, next_rs.stop.id)),
                             }
                             for next_rs in route_stops
                             if next_rs.sequence_no > rs.sequence_no
