@@ -7,13 +7,37 @@ from sqlalchemy import desc, func, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.db import schema
+from app.notifications.service import NotificationService
 from app.payments.service import RoutePayoutService
-
+from app.notifications.hub import WSHub
 
 class AdminService:
-    def __init__(self, db):
+    def __init__(self, db,ws_hub: WSHub | None = None):
         self.db = db
+        self.notifications = NotificationService(db, ws_hub)
 
+    # async def send_user_notification(self, user_id: str, title: str, message: str, data: dict = None):
+    #     return await self.notifications.notify_user(
+    #         user_id=user_id,
+    #         title=title,
+    #         message=message,
+    #         data=data or {"type": "admin_alert"}
+    #     )
+
+    # app/services/notification_service.py
+
+    async def send_user_notification(db, user_id: str, title: str, message: str, type: str):
+     new_notif = schema.Notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        notification_type=type, # e.g., "TRIP_CANCELLED", "PAYOUT_PROCESSED"
+        is_read=False
+     )
+     db.add(new_notif)
+    # If you have a WebSocket Manager, trigger it here:
+    # await manager.send_personal_message(user_id, {"title": title, "message": message})
+    
     async def fetch_detailed_drivers(self):
         stmt = (
             select(schema.User)
