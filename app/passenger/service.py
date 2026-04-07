@@ -1750,6 +1750,74 @@ class PassengerService:
                 },
             )
 
+    def _build_payment_order_response(
+        self,
+        *,
+        booking: TripBooking,
+        razorpay_order_id: str,
+        currency: str = "INR",
+        receipt: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": "razorpay",
+            "razorpay_key_id": self._get_razorpay_key_id(),
+            "razorpay_order_id": razorpay_order_id,
+            "amount": booking.fare_amount,
+            "amount_subunits": self._to_subunits(booking.fare_amount),
+            "currency": currency or "INR",
+            "receipt": receipt,
+        }
+
+    async def _build_create_booking_response(
+        self,
+        *,
+        booking_id: str,
+        passenger_user_id: str,
+        message: str,
+        payment_order: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=passenger_user_id,
+        )
+        return {
+            "message": message,
+            "booking": self._serialize_booking(booking),
+            "payment_order": payment_order,
+        }
+
+    def _get_latest_booking_payment(
+        self,
+        booking: TripBooking,
+    ) -> BookingPayment | None:
+        if not booking.payments:
+            return None
+        return max(booking.payments, key=lambda item: item.created_at)
+
+    async def _create_payment_attempt_for_booking(
+        self,
+        booking: TripBooking,
+    ) -> tuple[BookingPayment, dict[str, Any]]:
+        booking.payment_hold_expires_at = self._get_payment_hold_expires_at()
+        self.db.add(booking)
+        await self.db.flush()
+
+        order_payload = await self._create_razorpay_order(
+            booking=booking,
+            amount=booking.fare_amount,
+        )
+
+        payment = BookingPayment(
+            booking_id=booking.id,
+            razorpay_order_id=order_payload["id"],
+            amount=booking.fare_amount,
+            status=BookingPaymentStatus.CREATED,
+        )
+        self.db.add(payment)
+        await self.db.flush()
+
+        return payment, order_payload
+
     # ------------------------------------------------------------------
     # bookings
     # ------------------------------------------------------------------
@@ -1789,32 +1857,149 @@ class PassengerService:
                     "message": "This scheduled trip can no longer be booked.",
                 },
             )
-        
-        await self._expire_stale_pending_bookings_for_trip(trip.id)
 
-        existing_stmt = select(TripBooking).where(
-            TripBooking.passenger_user_id == current_user.id,
-            TripBooking.scheduled_trip_id == trip.id,
-            TripBooking.booking_status.in_(
-                (BookingStatus.PENDING_PAYMENT, BookingStatus.BOOKED, BookingStatus.BOARDED)
-            ),
-        )
-        existing_result = await self.db.execute(existing_stmt)
-        existing_booking = existing_result.scalar_one_or_none()
-        if existing_booking is not None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "duplicate_booking",
-                    "message": "Passenger already has a booking for this scheduled trip.",
-                },
-            )
+        await self._expire_stale_pending_bookings_for_trip(trip.id)
 
         fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
             route_id=trip.route_id,
             pickup_stop_id=payload.pickup_stop_id,
             dropoff_stop_id=payload.dropoff_stop_id,
         )
+
+        existing_stmt = (
+            select(TripBooking)
+            .where(
+                TripBooking.passenger_user_id == current_user.id,
+                TripBooking.scheduled_trip_id == trip.id,
+                TripBooking.booking_status.in_(
+                    (
+                        BookingStatus.PENDING_PAYMENT,
+                        BookingStatus.BOOKED,
+                        BookingStatus.BOARDED,
+                    )
+                ),
+            )
+            .options(selectinload(TripBooking.payments))
+            .with_for_update()
+        )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_booking = existing_result.scalar_one_or_none()
+
+        if existing_booking is not None:
+            same_segment = (
+                existing_booking.pickup_stop_id == payload.pickup_stop_id
+                and existing_booking.dropoff_stop_id == payload.dropoff_stop_id
+            )
+
+            if not same_segment:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "duplicate_booking",
+                        "message": "Passenger already has a booking for this scheduled trip.",
+                    },
+                )
+
+            if existing_booking.booking_status in (
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED,
+            ):
+                await self.db.commit()
+                return await self._build_create_booking_response(
+                    booking_id=existing_booking.id,
+                    passenger_user_id=current_user.id,
+                    message="Booking already exists.",
+                    payment_order=None,
+                )
+
+            latest_payment = self._get_latest_booking_payment(existing_booking)
+
+            if latest_payment is not None and latest_payment.status == BookingPaymentStatus.PAID:
+                await self._mark_booking_paid_and_booked(
+                    existing_booking,
+                    latest_payment,
+                    razorpay_payment_id=latest_payment.razorpay_payment_id,
+                    razorpay_signature=latest_payment.razorpay_signature,
+                )
+                await self.db.commit()
+
+                return await self._build_create_booking_response(
+                    booking_id=existing_booking.id,
+                    passenger_user_id=current_user.id,
+                    message="Booking already exists and payment is already verified.",
+                    payment_order=None,
+                )
+
+            if latest_payment is not None and latest_payment.status == BookingPaymentStatus.CREATED:
+                expected_amount_subunits = self._to_subunits(latest_payment.amount)
+
+                provider_items = await self._fetch_razorpay_order_payments(
+                    latest_payment.razorpay_order_id
+                )
+                provider_payment = self._select_best_razorpay_order_payment(
+                    provider_items,
+                    expected_order_id=latest_payment.razorpay_order_id,
+                    expected_amount_subunits=expected_amount_subunits,
+                )
+
+                if provider_payment is not None:
+                    provider_status = str(provider_payment.get("status") or "").strip().lower()
+                    provider_payment_id = str(provider_payment.get("id") or "").strip() or None
+
+                    if provider_status == "captured":
+                        await self._mark_booking_paid_and_booked(
+                            existing_booking,
+                            latest_payment,
+                            razorpay_payment_id=provider_payment_id,
+                        )
+                        await self.db.commit()
+
+                        return await self._build_create_booking_response(
+                            booking_id=existing_booking.id,
+                            passenger_user_id=current_user.id,
+                            message="Booking already exists and payment is already verified.",
+                            payment_order=None,
+                        )
+
+                    if provider_status not in {"failed", "refunded"}:
+                        await self.db.commit()
+                        return await self._build_create_booking_response(
+                            booking_id=existing_booking.id,
+                            passenger_user_id=current_user.id,
+                            message="Booking already exists. Payment is pending.",
+                            payment_order=self._build_payment_order_response(
+                                booking=existing_booking,
+                                razorpay_order_id=latest_payment.razorpay_order_id,
+                            ),
+                        )
+
+                    latest_payment.status = BookingPaymentStatus.FAILED
+                    if provider_payment_id:
+                        latest_payment.razorpay_payment_id = provider_payment_id
+                    self.db.add(latest_payment)
+                    await self.db.flush()
+
+            try:
+                _, order_payload = await self._create_payment_attempt_for_booking(existing_booking)
+                await self.db.commit()
+            except HTTPException:
+                await self.db.rollback()
+                raise
+            except Exception:
+                await self.db.rollback()
+                raise
+
+            return await self._build_create_booking_response(
+                booking_id=existing_booking.id,
+                passenger_user_id=current_user.id,
+                message="Booking already exists. A new payment attempt has been created.",
+                payment_order=self._build_payment_order_response(
+                    booking=existing_booking,
+                    razorpay_order_id=order_payload["id"],
+                    currency=order_payload.get("currency", "INR"),
+                    receipt=order_payload.get("receipt"),
+                ),
+            )
 
         overlapping_active_booking_count = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
@@ -1878,6 +2063,50 @@ class PassengerService:
 
         except IntegrityError:
             await self.db.rollback()
+
+            existing_stmt = (
+                select(TripBooking)
+                .where(
+                    TripBooking.passenger_user_id == current_user.id,
+                    TripBooking.scheduled_trip_id == trip.id,
+                    TripBooking.booking_status.in_(
+                        (
+                            BookingStatus.PENDING_PAYMENT,
+                            BookingStatus.BOOKED,
+                            BookingStatus.BOARDED,
+                        )
+                    ),
+                )
+                .options(selectinload(TripBooking.payments))
+            )
+            existing_result = await self.db.execute(existing_stmt)
+            existing_booking = existing_result.scalar_one_or_none()
+
+            if (
+                existing_booking is not None
+                and existing_booking.pickup_stop_id == payload.pickup_stop_id
+                and existing_booking.dropoff_stop_id == payload.dropoff_stop_id
+            ):
+                latest_payment = self._get_latest_booking_payment(existing_booking)
+
+                payment_order = None
+                if (
+                    existing_booking.booking_status == BookingStatus.PENDING_PAYMENT
+                    and latest_payment is not None
+                    and latest_payment.status == BookingPaymentStatus.CREATED
+                ):
+                    payment_order = self._build_payment_order_response(
+                        booking=existing_booking,
+                        razorpay_order_id=latest_payment.razorpay_order_id,
+                    )
+
+                return await self._build_create_booking_response(
+                    booking_id=existing_booking.id,
+                    passenger_user_id=current_user.id,
+                    message="Booking already exists.",
+                    payment_order=payment_order,
+                )
+
             raise HTTPException(
                 status_code=409,
                 detail={
@@ -1885,7 +2114,7 @@ class PassengerService:
                     "message": "Passenger already has a booking for this scheduled trip.",
                 },
             )
-        
+
         except HTTPException:
             await self.db.rollback()
             raise
@@ -1893,24 +2122,17 @@ class PassengerService:
             await self.db.rollback()
             raise
 
-        booking = await self._get_booking_obj(
+        return await self._build_create_booking_response(
             booking_id=booking.id,
             passenger_user_id=current_user.id,
+            message="Booking created. Payment is pending.",
+            payment_order=self._build_payment_order_response(
+                booking=booking,
+                razorpay_order_id=order_payload["id"],
+                currency=order_payload.get("currency", "INR"),
+                receipt=order_payload.get("receipt"),
+            ),
         )
-        
-        return {
-            "message": "Booking created. Payment is pending.",
-            "booking": self._serialize_booking(booking),
-            "payment_order": {
-                "provider": "razorpay",
-                "razorpay_key_id": self._get_razorpay_key_id(),
-                "razorpay_order_id": order_payload["id"],
-                "amount": booking.fare_amount,
-                "amount_subunits": self._to_subunits(booking.fare_amount),
-                "currency": order_payload.get("currency", "INR"),
-                "receipt": order_payload.get("receipt"),
-            },
-        }
 
     async def verify_booking_payment(
         self,
@@ -1926,13 +2148,47 @@ class PassengerService:
         )
 
         payment = next(
-            (
-                item
-                for item in booking.payments
-                if item.razorpay_order_id == payload.razorpay_order_id
-            ),
+            (item for item in booking.payments if item.razorpay_order_id == payload.razorpay_order_id),
             None,
         )
+
+        if (
+            payment is not None
+            and payment.status == BookingPaymentStatus.PAID
+            and booking.booking_status in (
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED,
+                BookingStatus.COMPLETED,
+            )
+        ):
+            return {
+                "message": "Payment already verified successfully.",
+                "booking": self._serialize_booking(booking),
+            }
+
+        if booking.booking_status != BookingStatus.PENDING_PAYMENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_not_pending_payment",
+                    "message": "This booking is not awaiting payment verification.",
+                },
+            )
+
+        if (
+            booking.payment_hold_expires_at is not None
+            and booking.payment_hold_expires_at <= utcnow()
+        ):
+            await self._expire_pending_booking_hold(booking)
+            await self.db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_hold_expired",
+                    "message": "Payment hold expired. Booking was cancelled and the seat was released.",
+                },
+            )
+
         if payment is None:
             raise HTTPException(
                 status_code=404,
@@ -1941,6 +2197,25 @@ class PassengerService:
                     "message": "Payment order was not found for this booking.",
                 },
             )
+
+        if payment.status == BookingPaymentStatus.PAID:
+            await self._mark_booking_paid_and_booked(
+                booking,
+                payment,
+                razorpay_payment_id=payment.razorpay_payment_id or payload.razorpay_payment_id,
+                razorpay_signature=payment.razorpay_signature or payload.razorpay_signature,
+            )
+            await self.db.commit()
+
+            booking = await self._get_booking_obj(
+                booking_id=booking.id,
+                passenger_user_id=current_user.id,
+            )
+
+            return {
+                "message": "Payment already verified successfully.",
+                "booking": self._serialize_booking(booking),
+            }
 
         self._verify_razorpay_signature(
             order_id=payload.razorpay_order_id,
@@ -1982,80 +2257,29 @@ class PassengerService:
             fetched_status = str(captured_payment.get("status", "")).lower()
             fetched_captured = bool(captured_payment.get("captured", False))
 
-        hold_expired = (
-            booking.booking_status == BookingStatus.PENDING_PAYMENT
-            and booking.payment_hold_expires_at is not None
-            and booking.payment_hold_expires_at <= utcnow()
-        )
+        if fetched_status in {"failed", "refunded"}:
+            payment.razorpay_payment_id = payload.razorpay_payment_id
+            payment.razorpay_signature = payload.razorpay_signature
+            payment.status = BookingPaymentStatus.FAILED
+            self.db.add(payment)
+            await self.db.commit()
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_failed",
+                    "message": "Payment failed. Retry by creating payment again for the same booking.",
+                    "provider_status": fetched_status,
+                },
+            )
 
         if fetched_status != "captured" or not fetched_captured:
-            if hold_expired:
-                await self._expire_pending_booking_hold(booking)
-                await self.db.commit()
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "payment_hold_expired",
-                        "message": "Payment hold expired. Booking was cancelled and the seat was released.",
-                    },
-                )
-
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "payment_not_captured",
                     "message": "Payment is not in captured state yet.",
                     "provider_status": fetched_status,
-                },
-            )
-
-        if booking.booking_status == BookingStatus.CANCELLED:
-            await self._mark_booking_paid_but_expired(
-                booking,
-                payment,
-                razorpay_payment_id=payload.razorpay_payment_id,
-            )
-            payment.razorpay_signature = payload.razorpay_signature
-            self.db.add(payment)
-            await self.db.commit()
-
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "booking_already_cancelled",
-                    "message": "Payment was captured, but this booking is already cancelled.",
-                },
-            )
-
-        if booking.booking_status in {
-            BookingStatus.BOARDED,
-            BookingStatus.COMPLETED,
-            BookingStatus.MISSED,
-        }:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "booking_not_verifiable",
-                    "message": "This booking is not in a verifiable state.",
-                    "booking_status": booking.booking_status,
-                },
-            )
-
-        if hold_expired:
-            await self._mark_booking_paid_but_expired(
-                booking,
-                payment,
-                razorpay_payment_id=payload.razorpay_payment_id,
-            )
-            payment.razorpay_signature = payload.razorpay_signature
-            self.db.add(payment)
-            await self.db.commit()
-
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "payment_captured_after_hold_expiry",
-                    "message": "Payment was captured after the payment hold expired, so the booking is cancelled.",
                 },
             )
 
