@@ -32,6 +32,7 @@ from app.driver.stats.driver_stats import router as driver_stats_router
 from app.driver.ratings.driver_ratings import router as driver_ratings_router
 from app.notifications import router as notifications_router
 from app.notifications.hub import WSHub
+from app.driver.trips.route_stops import router as trip_stops_router
 
 
 
@@ -141,6 +142,7 @@ app.include_router(cancel_trip.router, prefix="/driver", tags=["Driver"])
 app.include_router(driver_scan_router)
 app.include_router(driver_stats_router)
 app.include_router(driver_ratings_router)
+app.include_router(trip_stops_router)
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",

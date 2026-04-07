@@ -312,19 +312,25 @@ async def start_trip(
 @router.post("/{trip_id}/stop-action")
 async def stop_action(
     trip_id: str,
+    request: Request,  # ✅ Added for NotificationService
     stop_id: str = Form(...),
     mode: str = Form(...),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # -------------------------------
+    # Fetch trip
+    # -------------------------------
     trip = await session.get(ScheduledTrip, trip_id)
-
     if not trip or trip.driver_user_id != current_user.id:
         raise HTTPException(403, "Invalid trip")
 
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
+    # -------------------------------
+    # Fetch route stop
+    # -------------------------------
     result = await session.execute(
         select(RouteStop).where(
             RouteStop.route_id == trip.route_id,
@@ -333,6 +339,12 @@ async def stop_action(
     )
     route_stop = result.scalar_one_or_none()
 
+    if not route_stop:
+        raise HTTPException(400, "Stop not found")
+
+    # -------------------------------
+    # Fetch trip event
+    # -------------------------------
     result = await session.execute(
         select(TripEvent).where(
             TripEvent.scheduled_trip_id == trip_id,
@@ -341,12 +353,17 @@ async def stop_action(
     )
     event = result.scalar_one_or_none()
 
+    if not event:
+        raise HTTPException(400, "Trip event not found")
+
     current_time = now_utc()
 
+    # -------------------------------
+    # Arrival / Departure Logic
+    # -------------------------------
     if mode == "arrive":
         if event.arrival_time:
             raise HTTPException(400, "Already arrived")
-
         event.arrival_time = current_time
 
     elif mode == "depart":
@@ -358,11 +375,61 @@ async def stop_action(
 
         if current_time < min_time:
             raise HTTPException(400, "Cannot depart early")
-
         event.departure_time = current_time
 
     else:
         raise HTTPException(400, "Invalid mode")
+
+    # -------------------------------
+    # Notifications
+    # -------------------------------
+    notification_service = NotificationService(
+        db=session,
+        ws_hub=request.app.state.ws_hub
+    )
+
+    # Get active bookings
+    result = await session.execute(
+        select(TripBooking).where(
+            TripBooking.scheduled_trip_id == trip_id,
+            TripBooking.booking_status.in_([BookingStatus.BOOKED, BookingStatus.BOARDED])
+        )
+    )
+    bookings = result.scalars().all()
+
+    for booking in bookings:
+        # Passenger boarding notifications
+        if mode == "arrive" and booking.boarding_stop_id == stop_id:
+            await notification_service.notify_user(
+                user_id=booking.passenger_user_id,
+                title="Bus Arrived",
+                message=f"Bus has arrived at your boarding stop.",
+                data={"trip_id": trip.id, "stop_id": stop_id}
+            )
+        # Departure notifications
+        if mode == "depart" and booking.drop_stop_id == stop_id:
+            await notification_service.notify_user(
+                user_id=booking.passenger_user_id,
+                title="Next Stop Approaching",
+                message=f"Bus is leaving your drop stop.",
+                data={"trip_id": trip.id, "stop_id": stop_id}
+            )
+        # Missed boarding
+        if booking.boarding_stop_id < stop_id and not booking.boarded:
+            await notification_service.notify_user(
+                user_id=booking.passenger_user_id,
+                title="Missed Boarding",
+                message="You missed your boarding stop!",
+                data={"trip_id": trip.id, "stop_id": stop_id}
+            )
+        # Missed drop
+        if booking.drop_stop_id < stop_id and booking.boarded:
+            await notification_service.notify_user(
+                user_id=booking.passenger_user_id,
+                title="Missed Drop",
+                message="Bus passed your drop stop!",
+                data={"trip_id": trip.id, "stop_id": stop_id}
+            )
 
     await session.commit()
 
