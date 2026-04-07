@@ -57,19 +57,21 @@ class AdminService:
         return result.scalars().first()
 
     async def fetch_passenger_by_id(self, user_id: str):
-        """Fetches one passenger by ID."""
         stmt = (
             select(schema.User)
-            .filter(
-                schema.User.id == user_id, schema.User.role == schema.UserRole.PASSENGER
-            )
             .options(
                 joinedload(schema.User.passenger_profile),
-                joinedload(schema.User.passenger_bookings),
+                # This part is the key:
+                joinedload(schema.User.passenger_bookings).options(
+                    joinedload(schema.TripBooking.pickup_stop),
+                    joinedload(schema.TripBooking.dropoff_stop),
+                ),
             )
+            .where(schema.User.id == user_id, schema.User.role == "passenger")
         )
+
         result = await self.db.execute(stmt)
-        return result.scalars().first()
+        return result.unique().scalar_one_or_none()
 
     async def fetch_inactive_users(self, months: int = 3):
         threshold_date = datetime.now(timezone.utc) - timedelta(days=months * 30)
@@ -530,7 +532,7 @@ class AdminService:
 
         result = await self.db.execute(stmt)
         return result.scalars().all()
-    
+
     # ============================================================
     # payout management, by Anubhab Dey
     # ============================================================
@@ -654,7 +656,9 @@ class AdminService:
         driver = scheduled_trip.driver if scheduled_trip else None
         passenger = booking.passenger
 
-        driver_profile = driver.driver_profile if driver and driver.driver_profile else None
+        driver_profile = (
+            driver.driver_profile if driver and driver.driver_profile else None
+        )
         passenger_profile = (
             passenger.passenger_profile
             if passenger and passenger.passenger_profile
@@ -668,7 +672,9 @@ class AdminService:
             "driver_user_id": scheduled_trip.driver_user_id if scheduled_trip else None,
             "driver_name": driver_profile.full_name if driver_profile else None,
             "passenger_user_id": booking.passenger_user_id,
-            "passenger_name": passenger_profile.full_name if passenger_profile else None,
+            "passenger_name": passenger_profile.full_name
+            if passenger_profile
+            else None,
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
@@ -712,7 +718,9 @@ class AdminService:
             "booking_status": booking.booking_status if booking else None,
             "completed_at": booking.completed_at if booking else None,
             "cancelled_at": booking.cancelled_at if booking else None,
-            "trip_driver_user_id": scheduled_trip.driver_user_id if scheduled_trip else None,
+            "trip_driver_user_id": scheduled_trip.driver_user_id
+            if scheduled_trip
+            else None,
         }
 
     async def get_payout_settings(self):
@@ -773,7 +781,9 @@ class AdminService:
                 if payout is not None
                 else schema.LinkedAccountStatus.NOT_CREATED
             )
-            current_eligible = payout.is_payout_eligible if payout is not None else False
+            current_eligible = (
+                payout.is_payout_eligible if payout is not None else False
+            )
 
             if (
                 linked_account_status is not None
