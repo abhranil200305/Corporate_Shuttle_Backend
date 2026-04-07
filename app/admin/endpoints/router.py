@@ -1632,7 +1632,6 @@ async def get_booking_rating(
     }
 
 
-# app/admin/endpoints/router.py
 
 
 
