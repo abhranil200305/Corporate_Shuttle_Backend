@@ -1,6 +1,7 @@
 # app/notifications/router.py
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
@@ -20,6 +21,9 @@ from app.notifications.service import NotificationService
 
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
+
+WS_PING_INTERVAL_SECONDS = 15
+WS_PONG_TIMEOUT_SECONDS = 30
 
 
 def _get_ws_hub_from_app(app: Any):
@@ -109,40 +113,44 @@ async def _authenticate_ws_user(token: str) -> User:
             ) from exc
 
 
+async def _heartbeat_loop(
+    *,
+    hub,
+    user_id: str,
+    connection_id: str,
+) -> None:
+    while True:
+        await asyncio.sleep(WS_PING_INTERVAL_SECONDS)
+
+        is_stale = await hub.is_stale(
+            user_id,
+            connection_id,
+            timeout_seconds=WS_PONG_TIMEOUT_SECONDS,
+        )
+        if is_stale:
+            await hub.close_and_unregister(
+                user_id,
+                connection_id,
+                code=1001,
+            )
+            return
+
+        ping_sent = await hub.send_ping(user_id, connection_id)
+        if not ping_sent:
+            return
+
+
 @router.websocket("/ws")
 async def notifications_ws(websocket: WebSocket) -> None:
+    token = (websocket.query_params.get("token") or "").strip()
+
     await websocket.accept()
 
-    try:
-        auth_payload = await websocket.receive_json()
-    except Exception:
+    if not token:
         await websocket.send_json(
             {
-                "error": "invalid_ws_auth_payload",
-                "message": "Expected initial auth JSON payload.",
-            }
-        )
-        await websocket.close(code=1008)
-        return
-
-    if not isinstance(auth_payload, dict):
-        await websocket.send_json(
-            {
-                "error": "invalid_ws_auth_payload",
-                "message": "Expected initial auth JSON object.",
-            }
-        )
-        await websocket.close(code=1008)
-        return
-
-    message_type = str(auth_payload.get("type") or "").strip().lower()
-    token = str(auth_payload.get("token") or "").strip()
-
-    if message_type != "auth" or not token:
-        await websocket.send_json(
-            {
-                "error": "invalid_ws_auth_payload",
-                "message": "First websocket message must be {\"type\":\"auth\",\"token\":\"...\"}.",
+                "error": "missing_ws_token",
+                "message": "WebSocket token query parameter is required.",
             }
         )
         await websocket.close(code=1008)
@@ -164,6 +172,15 @@ async def notifications_ws(websocket: WebSocket) -> None:
     hub = _get_ws_hub_from_app(websocket.app)
     connection_id = await hub.register(current_user.id, websocket)
 
+    heartbeat_task = asyncio.create_task(
+        _heartbeat_loop(
+            hub=hub,
+            user_id=current_user.id,
+            connection_id=connection_id,
+        ),
+        name=f"notifications-heartbeat-{connection_id}",
+    )
+
     try:
         await websocket.send_json(
             {
@@ -181,7 +198,15 @@ async def notifications_ws(websocket: WebSocket) -> None:
             incoming_type = str(incoming.get("type") or "").strip().lower()
 
             if incoming_type == "ping":
-                await websocket.send_json({"type": "pong"})
+                await hub.send_to_connection(
+                    current_user.id,
+                    connection_id,
+                    {"type": "pong"},
+                )
+                continue
+
+            if incoming_type == "pong":
+                await hub.mark_pong(current_user.id, connection_id)
                 continue
 
             if incoming_type == "mark_read":
@@ -193,11 +218,13 @@ async def notifications_ws(websocket: WebSocket) -> None:
                             user_id=current_user.id,
                             notification_id=notification_id,
                         )
-                    await websocket.send_json(
+                    await hub.send_to_connection(
+                        current_user.id,
+                        connection_id,
                         {
                             "message": "Notification marked as read.",
                             "notification_id": notification_id,
-                        }
+                        },
                     )
                 continue
 
@@ -209,4 +236,10 @@ async def notifications_ws(websocket: WebSocket) -> None:
         except Exception:
             pass
     finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
+
         await hub.unregister(current_user.id, connection_id)
