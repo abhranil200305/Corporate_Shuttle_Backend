@@ -255,12 +255,12 @@ async def get_passenger_details(
                     "created_at": b.created_at,
                     "pickup_stop": {
                         "id": b.pickup_stop.id,
-                        "name": b.pickup_stop.stop_name,  # Assuming stop_name is the field
+                        "name": b.pickup_stop.name,  # Assuming stop_name is the field
                         "sequence": b.pickup_sequence_no_snapshot,
                     },
                     "dropoff_stop": {
-                        "id": b.dropoff_stop.id,
-                        "name": b.dropoff_stop.stop_name,
+                        "id": b.pickup_stop.id,
+                        "name": b.pickup_stop.name,
                         "sequence": b.dropoff_sequence_no_snapshot,
                     },
                 }
