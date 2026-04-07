@@ -1,6 +1,15 @@
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    UploadFile,
+)
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1409,6 +1418,190 @@ async def view_all_reviews(
     ]
 
 
+@router.get("/{user_id}/full_details")
+async def get_complete_user_audit(
+    user_id: str = Path(..., description="The UUID of the user"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    # 1. Fetch User with every possible related record
+    stmt = (
+        select(schema.User)
+        .options(
+            # Profiles
+            joinedload(schema.User.passenger_profile),
+            joinedload(schema.User.driver_profile),
+            # Driver Assets & Money
+            joinedload(schema.User.vehicle),
+            joinedload(schema.User.payout_details),
+            # Recent Activity (Passenger side)
+            joinedload(schema.User.passenger_bookings).options(
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.rating),
+            ),
+            # FIX: Removed .limit(10) from here
+            joinedload(schema.User.driven_trips),
+            # Ratings received as driver
+            joinedload(schema.User.ratings_received_as_driver),
+        )
+        .where(schema.User.id == user_id)
+    )
+
+    result = await db.execute(stmt)
+    user = result.unique().scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # 2. Calculate Driver Rating Average
+    avg_rating = 0.0
+    if user.ratings_received_as_driver:
+        avg_rating = sum(
+            r.driver_rating for r in user.ratings_received_as_driver
+        ) / len(user.ratings_received_as_driver)
+
+    # 3. Construct the response (Handle slicing in Python)
+    return {
+        "identity": {
+            "id": user.id,
+            "email": user.email,
+            "role": user.role,
+            "status": "ACTIVE" if user.is_active else "BANNED",
+            "joined_on": user.created_at,
+        },
+        "financial_summary": {
+            "payout_status": user.payout_details.linked_account_status
+            if user.payout_details
+            else "N/A",
+            "razorpay_account": user.payout_details.razorpay_linked_account_id
+            if user.payout_details
+            else None,
+            "is_eligible_for_funds": user.payout_details.is_payout_eligible
+            if user.payout_details
+            else False,
+        },
+        "performance_metrics": {
+            "driver_avg_rating": round(avg_rating, 2),
+            "total_trips_driven": len(user.driven_trips),
+            "total_bookings_made": len(user.passenger_bookings),
+        },
+        "recent_bookings": [
+            {
+                "booking_id": b.id,
+                "status": b.booking_status,
+                "amount": b.fare_amount,
+                "payment_status": b.payments[0].status
+                if b.payments
+                else "NO_PAYMENT_INITIATED",
+                "booked_at": b.created_at,
+            }
+            for b in user.passenger_bookings[:5]
+        ],
+        # Added this to show the driven trips you were trying to limit
+        "recent_driven_trips": [
+            {"trip_id": t.id, "status": t.status, "started_at": t.actual_start_at}
+            for t in user.driven_trips[:10]  # Sliced in Python
+        ],
+        "compliance_check": {
+            "aadhaar": user.driver_profile.aadhaar_number
+            if user.driver_profile
+            else None,
+            "license": user.driver_profile.driving_license_number
+            if user.driver_profile
+            else None,
+            "vehicle_reg": user.vehicle.registration_number if user.vehicle else None,
+            "verification": user.driver_profile.verification_status
+            if user.driver_profile
+            else "N/A",
+        },
+    }
+
+
+@router.get("/{user_id}/transaction_history")
+async def get_user_transaction_history(
+    user_id: str = Path(..., description="User UUID"),
+    db: AsyncSession = Depends(get_async_session),
+):
+    # 1. Get Payments (User as Passenger)
+    # We join TripBooking to ensure the payment belongs to this user
+    payment_stmt = (
+        select(schema.BookingPayment)
+        .join(schema.TripBooking)
+        .where(schema.TripBooking.passenger_user_id == user_id)
+        .options(joinedload(schema.BookingPayment.booking))
+        .order_by(schema.BookingPayment.created_at.desc())
+    )
+
+    # 2. Get Payouts (User as Driver)
+    transfer_stmt = (
+        select(schema.BookingTransfer)
+        .where(schema.BookingTransfer.driver_user_id == user_id)
+        .options(joinedload(schema.BookingTransfer.booking))
+        .order_by(schema.BookingTransfer.created_at.desc())
+    )
+
+    payments_res = await db.execute(payment_stmt)
+    transfers_res = await db.execute(transfer_stmt)
+
+    payments = payments_res.scalars().all()
+    transfers = transfers_res.scalars().all()
+
+    return {
+        "user_id": user_id,
+        "summary": {
+            "total_spent": sum(p.amount for p in payments if p.status == "paid"),
+            "total_earned": sum(t.amount for t in transfers if t.status == "processed"),
+        },
+        "outbound_payments": [
+            {
+                "transaction_id": p.razorpay_payment_id,
+                "order_id": p.razorpay_order_id,
+                "amount": p.amount,
+                "status": p.status,
+                "date": p.created_at,
+                "booking_id": p.booking_id,
+            }
+            for p in payments
+        ],
+        "inbound_payouts": [
+            {
+                "transfer_id": t.razorpay_transfer_id,
+                "amount": t.amount,
+                "status": t.status,
+                "date": t.processed_at or t.created_at,
+                "failure_reason": t.failure_reason,
+                "booking_id": t.booking_id,
+            }
+            for t in transfers
+        ],
+    }
+
+@router.get("/bookings/{booking_id}/rating")
+async def get_booking_rating(
+    booking_id: str, 
+    db: AsyncSession = Depends(get_async_session)
+):
+    stmt = (
+        select(schema.BookingRating)
+        .options(
+            joinedload(schema.BookingRating.passenger),
+            joinedload(schema.BookingRating.driver)
+        )
+        .where(schema.BookingRating.booking_id == booking_id)
+    )
+    result = await db.execute(stmt)
+    rating = result.scalar_one_or_none()
+    
+    if not rating:
+        raise HTTPException(status_code=404, detail="No rating found for this booking")
+        
+    return {
+        "trip_rating": rating.trip_rating,
+        "driver_rating": rating.driver_rating,
+        "review": rating.review_text,
+        "passenger_name": rating.passenger.email, # Or profile name
+        "created_at": rating.created_at
+    }
+
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
@@ -1629,6 +1822,7 @@ async def get_driver_linked_account_provider_detail(
     return await service.get_driver_linked_account_provider_detail(driver_user_id)
 
 
+# ----------------- transactions details ---------------------
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
