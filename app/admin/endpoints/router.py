@@ -1632,6 +1632,9 @@ async def get_booking_rating(
     }
 
 
+# app/admin/endpoints/router.py
+
+
 
 # app/admin/endpoints/router.py
 
@@ -1651,61 +1654,73 @@ async def get_all_transactions(
         audit_payout = b.fare_amount - b.commission_amount
         is_payout_correct = audit_payout == b.driver_payout_amount
 
-        report.append({
-            "booking_id": b.id,
-            "timestamp": b.created_at,
-            "status": b.booking_status,
-            "passenger": {
-                "name": b.passenger.passenger_profile.full_name if b.passenger.passenger_profile else "N/A",
-                "email": b.passenger.email,
-            },
-            "trip_details": {
-                "route_name": b.route.name if b.route else "N/A",
-                "pickup": {
-                    "id": b.pickup_stop_id,
-                    "name": b.pickup_stop.name if b.pickup_stop else "N/A"
+        report.append(
+            {
+                "booking_id": b.id,
+                "timestamp": b.created_at,
+                "status": b.booking_status,
+                "passenger": {
+                    "name": b.passenger.passenger_profile.full_name
+                    if b.passenger.passenger_profile
+                    else "N/A",
+                    "email": b.passenger.email,
                 },
-                "dropoff": {
-                    "id": b.dropoff_stop_id,
-                    "name": b.dropoff_stop.name if b.dropoff_stop else "N/A"
+                "trip_details": {
+                    "route_name": b.route.name if b.route else "N/A",
+                    "pickup": {
+                        "id": b.pickup_stop_id,
+                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
+                    },
+                    "dropoff": {
+                        "id": b.dropoff_stop_id,
+                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
+                    },
+                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
+                    if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile)
+                    else "Unknown",
                 },
-                "driver_name": b.scheduled_trip.driver.driver_profile.full_name 
-                               if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile) else "Unknown",
-            },
-            "financials": {
-                "total_fare": float(b.fare_amount),
-                "commission_percent": float(b.commission_percent_snapshot),
-                "admin_earned": float(b.commission_amount),
-                "driver_payout": float(b.driver_payout_amount),
-                "audit_passed": is_payout_correct,
-            },
-            # NEW: Refund/Cancellation Audit Logic
-            "refund_info": {
-                "is_refunded": b.booking_status in ["cancelled", "refunded"],
-                "reason": b.cancellation_reason if hasattr(b, 'cancellation_reason') else "No reason provided",
-                "cancelled_by": b.cancelled_by if hasattr(b, 'cancelled_by') else "N/A",
-                "cancelled_at": b.cancelled_at
-            } if b.booking_status in ["cancelled", "refunded"] else None,
-            
-            "payment_gateway": [
-                {
-                    "razorpay_order_id": p.razorpay_order_id,
-                    "razorpay_payment_id": p.razorpay_payment_id,
-                    "payment_status": p.status,
+                "financials": {
+                    "total_fare": float(b.fare_amount),
+                    "commission_percent": float(b.commission_percent_snapshot),
+                    "admin_earned": float(b.commission_amount),
+                    "driver_payout": float(b.driver_payout_amount),
+                    "audit_passed": is_payout_correct,
+                },
+                # NEW: Refund/Cancellation Audit Logic
+                "refund_info": {
+                    "is_refunded": b.booking_status in ["cancelled", "refunded"],
+                    "reason": b.cancellation_reason
+                    if hasattr(b, "cancellation_reason")
+                    else "No reason provided",
+                    "cancelled_by": b.cancelled_by
+                    if hasattr(b, "cancelled_by")
+                    else "N/A",
+                    "cancelled_at": b.cancelled_at,
                 }
-                for p in b.payments
-            ],
-            "security_scans": [
-                {
-                    "type": s.scan_type,
-                    "time": s.created_at,
-                    "at_correct_stop": s.within_radius,
-                }
-                for s in b.scan_events
-            ],
-        })
+                if b.booking_status in ["cancelled", "refunded"]
+                else None,
+                "payment_gateway": [
+                    {
+                        "razorpay_order_id": p.razorpay_order_id,
+                        "razorpay_payment_id": p.razorpay_payment_id,
+                        "payment_status": p.status,
+                    }
+                    for p in b.payments
+                ],
+                "security_scans": [
+                    {
+                        "type": s.scan_type,
+                        "time": s.created_at,
+                        "at_correct_stop": s.within_radius,
+                    }
+                    for s in b.scan_events
+                ],
+            }
+        )
 
     return {"total_count": len(report), "data": report}
+
+
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
