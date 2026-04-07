@@ -247,25 +247,44 @@ async def get_passenger_details(
         },
         "booking_history": {
             "total_count": len(p.passenger_bookings),
+            # "bookings": [
+            #     {
+            #         "booking_id": b.id,
+            #         "status": b.booking_status,
+            #         "fare": float(b.fare_amount),
+            #         "created_at": b.created_at,
+            #         "pickup_stop": {
+            #             "id": b.pickup_stop.id,
+            #             "name": b.pickup_stop.name,  # Assuming stop_name is the field
+            #             "sequence": b.pickup_sequence_no_snapshot,
+            #         },
+            #         "dropoff_stop": {
+            #             "id": b.pickup_stop.id,
+            #             "name": b.pickup_stop.name,
+            #             "sequence": b.dropoff_sequence_no_snapshot,
+            #         },
+            #     }
+            #     for b in p.passenger_bookings
+            # ],
             "bookings": [
-                {
-                    "booking_id": b.id,
-                    "status": b.booking_status,
-                    "fare": float(b.fare_amount),
-                    "created_at": b.created_at,
-                    "pickup_stop": {
-                        "id": b.pickup_stop.id,
-                        "name": b.pickup_stop.name,  # Assuming stop_name is the field
-                        "sequence": b.pickup_sequence_no_snapshot,
-                    },
-                    "dropoff_stop": {
-                        "id": b.pickup_stop.id,
-                        "name": b.pickup_stop.name,
-                        "sequence": b.dropoff_sequence_no_snapshot,
-                    },
-                }
-                for b in p.passenger_bookings
-            ],
+    {
+        "booking_id": b.id,
+        "status": b.booking_status,
+        "fare": float(b.fare_amount),
+        "created_at": b.created_at,
+        "pickup_stop": {
+            "id": b.pickup_stop.id,
+            "name": b.pickup_stop.name,
+            "sequence": b.pickup_sequence_no_snapshot
+        },
+        "dropoff_stop": {
+            "id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
+            "name": b.dropoff_stop.name, # Ensure this says dropoff_stop
+            "sequence": b.dropoff_sequence_no_snapshot
+        }
+    }
+    for b in p.passenger_bookings
+]
         },
     }
 
