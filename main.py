@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
         print("✅ Database connected successfully")
     except Exception as e:
         print("❌ Database connection failed:", e)
-
+         
     reconcile_task = asyncio.create_task(
         payment_reconcile_loop(),
         name="payment-reconcile-loop",
