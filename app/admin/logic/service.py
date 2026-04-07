@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import desc, func, select, update
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.db import schema
 from app.payments.service import RoutePayoutService
@@ -557,7 +557,6 @@ class AdminService:
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
-
     async def fetch_detailed_transactions(
         self, skip: int, limit: int, status: str = None
     ):
@@ -584,6 +583,9 @@ class AdminService:
 
         if status:
             stmt = stmt.where(schema.TripBooking.booking_status == status)
+
+            result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
 
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
@@ -622,6 +624,84 @@ class AdminService:
     #     result = await self.db.execute(stmt)
     #     return result.unique().scalars().all()
 
+    async def fetch_detailed_transactions(
+        self, skip: int, limit: int, status: str = None
+    ):
+        stmt = (
+            select(schema.TripBooking)
+            .options(
+                joinedload(schema.TripBooking.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+                joinedload(schema.TripBooking.route),
+                joinedload(schema.TripBooking.pickup_stop),
+                joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.scan_events),
+            )
+            .order_by(schema.TripBooking.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+
+        # Apply filter only if status is provided
+        if status:
+            stmt = stmt.where(schema.TripBooking.booking_status == status)
+
+        # --- FIXED: These are now outside the IF block ---
+        result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
+    
+    async def fetch_user_transaction_history(
+    self, user_id: str, skip: int, limit: int, status: str = None):
+       stmt = (
+        select(schema.TripBooking)
+        .where(schema.TripBooking.passenger_user_id == user_id)  # Filter by specific user
+        .options(
+            joinedload(schema.TripBooking.passenger).joinedload(
+                schema.User.passenger_profile
+            ),
+            joinedload(schema.TripBooking.scheduled_trip)
+            .joinedload(schema.ScheduledTrip.driver)
+            .joinedload(schema.User.driver_profile),
+            joinedload(schema.TripBooking.route),
+            joinedload(schema.TripBooking.pickup_stop),
+            joinedload(schema.TripBooking.dropoff_stop),
+            joinedload(schema.TripBooking.payments),
+            joinedload(schema.TripBooking.scan_events),
+        )
+        .order_by(schema.TripBooking.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+       if status:
+        stmt = stmt.where(schema.TripBooking.booking_status == status)
+
+       result = await self.db.execute(stmt)
+       return result.unique().scalars().all()
+
+    async def fetch_complete_passenger_data(self, skip: int = 0, limit: int = 50):
+        stmt = (
+            select(schema.User)
+            .where(schema.User.role == "passenger")
+            .options(
+                joinedload(schema.User.passenger_profile),
+                # FIX: Use the exact name from your schema.py
+                selectinload(schema.User.passenger_bookings).options(
+                    joinedload(schema.TripBooking.route),
+                    joinedload(schema.TripBooking.pickup_stop),
+                    joinedload(schema.TripBooking.dropoff_stop),
+                    joinedload(schema.TripBooking.payments),
+                ),
+            )
+            .order_by(schema.User.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
 
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()

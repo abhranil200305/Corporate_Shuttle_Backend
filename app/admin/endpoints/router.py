@@ -10,7 +10,7 @@ from fastapi import (
     Query,
     UploadFile,
 )
-from sqlalchemy import func, select
+from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -32,7 +32,11 @@ from app.admin.structs.dto import (
     VehicleVerificationUpdate,
     VerificationUpdate,
 )
-from app.auth.dependencies import get_current_admin, get_current_user
+from app.auth.dependencies import (
+    get_current_active_user,
+    get_current_admin,
+    get_current_user,
+)
 from app.db import schema
 from app.db.database import get_async_session
 from app.payments.service import RoutePayoutService
@@ -1545,95 +1549,89 @@ async def get_complete_user_audit(
     }
 
 
+# -------------------------  TRANSACTIONS DETAILS BY SPECIFIC USERS --------------------
 @router.get("/{user_id}/transaction_history")
 async def get_user_transaction_history(
-    user_id: str = Path(..., description="User UUID"),
+    user_id: str,
+    skip: int = 0,
+    limit: int = 50,
+    status: schema.BookingStatus = None,
     db: AsyncSession = Depends(get_async_session),
 ):
-    # 1. Get Payments (User as Passenger)
-    # We join TripBooking and load pickup/dropoff stops
-    payment_stmt = (
-        select(schema.BookingPayment)
-        .join(schema.TripBooking)
-        .where(schema.TripBooking.passenger_user_id == user_id)
-        .options(
-            joinedload(schema.BookingPayment.booking).joinedload(
-                schema.TripBooking.pickup_stop
-            ),
-            joinedload(schema.BookingPayment.booking).joinedload(
-                schema.TripBooking.dropoff_stop
-            ),
-        )
-        .order_by(schema.BookingPayment.created_at.desc())
+    service = AdminService(db)
+    bookings = await service.fetch_user_transaction_history(
+        user_id, skip, limit, status
     )
 
-    # 2. Get Payouts (User as Driver)
-    # We load booking stops so the driver can see which route the payout was for
-    transfer_stmt = (
-        select(schema.BookingTransfer)
-        .where(schema.BookingTransfer.driver_user_id == user_id)
-        .options(
-            joinedload(schema.BookingTransfer.booking).joinedload(
-                schema.TripBooking.pickup_stop
-            ),
-            joinedload(schema.BookingTransfer.booking).joinedload(
-                schema.TripBooking.dropoff_stop
-            ),
+    report = []
+    for b in bookings:
+        # Payout consistency check
+        audit_payout = b.fare_amount - b.commission_amount
+        is_payout_correct = audit_payout == b.driver_payout_amount
+
+        report.append(
+            {
+                "booking_id": b.id,
+                "timestamp": b.created_at,
+                "status": b.booking_status,
+                "passenger": {
+                    "name": b.passenger.passenger_profile.full_name
+                    if (b.passenger and b.passenger.passenger_profile)
+                    else "N/A",
+                    "email": b.passenger.email if b.passenger else "N/A",
+                },
+                "trip_details": {
+                    "route_name": b.route.name if b.route else "N/A",
+                    "pickup": {
+                        "id": b.pickup_stop_id,
+                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
+                    },
+                    "dropoff": {
+                        "id": b.dropoff_stop_id,
+                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
+                    },
+                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
+                    if (
+                        b.scheduled_trip
+                        and b.scheduled_trip.driver
+                        and b.scheduled_trip.driver.driver_profile
+                    )
+                    else "Unknown",
+                },
+                "financials": {
+                    "total_fare": float(b.fare_amount),
+                    "commission_percent": float(b.commission_percent_snapshot),
+                    "admin_earned": float(b.commission_amount),
+                    "driver_payout": float(b.driver_payout_amount),
+                    "audit_passed": is_payout_correct,
+                },
+                "refund_info": {
+                    "is_refunded": b.booking_status in ["cancelled", "refunded"],
+                    "reason": getattr(b, "cancellation_reason", "No reason provided"),
+                    "cancelled_at": getattr(b, "cancelled_at", None),
+                }
+                if b.booking_status in ["cancelled", "refunded"]
+                else None,
+                "payment_gateway": [
+                    {
+                        "razorpay_order_id": p.razorpay_order_id,
+                        "razorpay_payment_id": p.razorpay_payment_id,
+                        "payment_status": p.status,
+                    }
+                    for p in b.payments
+                ],
+                "security_scans": [
+                    {
+                        "type": s.scan_type,
+                        "time": s.created_at,
+                        "at_correct_stop": s.within_radius,
+                    }
+                    for s in b.scan_events
+                ],
+            }
         )
-        .order_by(schema.BookingTransfer.created_at.desc())
-    )
 
-    payments_res = await db.execute(payment_stmt)
-    transfers_res = await db.execute(transfer_stmt)
-
-    payments = payments_res.scalars().all()
-    transfers = transfers_res.scalars().all()
-
-    return {
-        "user_id": user_id,
-        "summary": {
-            "total_spent": sum(p.amount for p in payments if p.status == "paid"),
-            "total_earned": sum(t.amount for t in transfers if t.status == "processed"),
-        },
-        "outbound_payments": [
-            {
-                "transaction_id": p.razorpay_payment_id,
-                "order_id": p.razorpay_order_id,
-                "amount": p.amount,
-                "status": p.status,
-                "date": p.created_at,
-                "booking_id": p.booking_id,
-                "trip_details": {
-                    "pickup_stop": p.booking.pickup_stop.name
-                    if (p.booking and p.booking.pickup_stop)
-                    else "N/A",
-                    "dropoff_stop": p.booking.dropoff_stop.name
-                    if (p.booking and p.booking.dropoff_stop)
-                    else "N/A",
-                },
-            }
-            for p in payments
-        ],
-        "inbound_payouts": [
-            {
-                "transfer_id": t.razorpay_transfer_id,
-                "amount": t.amount,
-                "status": t.status,
-                "date": t.processed_at or t.created_at,
-                "failure_reason": t.failure_reason,
-                "booking_id": t.booking_id,
-                "trip_details": {
-                    "pickup_stop": t.booking.pickup_stop.name
-                    if (t.booking and t.booking.pickup_stop)
-                    else "N/A",
-                    "dropoff_stop": t.booking.dropoff_stop.name
-                    if (t.booking and t.booking.dropoff_stop)
-                    else "N/A",
-                },
-            }
-            for t in transfers
-        ],
-    }
+    return {"user_id": user_id, "total_count": len(report), "data": report}
 
 
 @router.get("/bookings/{booking_id}/rating")
@@ -1663,10 +1661,7 @@ async def get_booking_rating(
     }
 
 
-# app/admin/endpoints/router.py
-# app/admin/endpoints/router.py
-
-
+# ------------------  GET BOOKINGS DETAILS BY USER ID ----------------------
 @router.get("/user/{user_id}/bookings/detailed")
 async def get_user_bookings_detailed(
     user_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1724,6 +1719,259 @@ async def get_user_bookings_detailed(
     return {"user_id": user_id, "total_bookings": len(history), "history": history}
 
 
+# ------------------------ ALL PASSENGERS DETAILS -------------------
+@router.get("/passengers")
+async def get_all_passengers_full_detail(
+    skip: int = 0,
+    limit: int = 50,
+    current_user: schema.User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    # 1. Authorization Check
+    if current_user.role != schema.UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    # 2. Fetch Data from Service
+    service = AdminService(db)
+    users = await service.fetch_complete_passenger_data(skip, limit)
+
+    full_report = []
+
+    for u in users:
+        prof = u.passenger_profile
+        # FIX: Using the correct relationship name from your schema.py
+        bookings = u.passenger_bookings
+
+        # Calculate metrics
+        # Note: We filter for 'paid' status in the nested payments of each booking
+        total_spent = sum(
+            p.amount
+            for b in bookings
+            for p in b.payments
+            if p.status == schema.BookingPaymentStatus.PAID
+        )
+        ride_count = len(bookings)
+
+        # 3. Constructing the JSON Response
+        # We handle 'None' for profile safely to prevent AttributeErrors
+        full_report.append(
+            {
+                "account_info": {
+                    "user_id": u.id,
+                    "email": u.email,
+                    "is_active": u.is_active,
+                    "created_at": u.created_at,
+                },
+                "profile": {
+                    "name": prof.full_name if prof else "N/A",
+                    "profile_picture": prof.profile_picture_path if prof else None,
+                    # Note: These fields are not in your current DB schema for PassengerProfile
+                    "status": "Active" if u.is_active else "Inactive",
+                },
+                "usage_metrics": {
+                    "total_rides": ride_count,
+                    "total_spending": float(total_spent),
+                    "last_ride_date": bookings[0].created_at
+                    if ride_count > 0
+                    else None,
+                },
+                "recent_bookings": [
+                    {
+                        "booking_id": b.id,
+                        "status": b.booking_status,
+                        "route": b.route.name if b.route else "N/A",
+                        "pickup": b.pickup_stop.name if b.pickup_stop else "N/A",
+                        "dropoff": b.dropoff_stop.name if b.dropoff_stop else "N/A",
+                        "fare": float(b.fare_amount),
+                        "date": b.created_at,
+                    }
+                    for b in bookings[:5]  # Limit to 5 most recent
+                ],
+            }
+        )
+
+    return {"status": "success", "count": len(full_report), "passengers": full_report}
+
+
+# -----------------------------------   AVAILABLE VEHICALS ---------------------
+@router.get("/available_vehicles")
+async def get_available_vehicles(
+    current_user: schema.User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Returns vehicles NOT currently in an active/scheduled trip,
+    including the assigned driver's name.
+    """
+    if current_user.role != schema.UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Unauthorized access")
+
+    try:
+        # 1. Subquery for vehicles currently busy
+        # Using ScheduledTripStatus.IN_PROGRESS as defined in your schema
+        busy_vehicle_ids = select(schema.ScheduledTrip.vehicle_id).where(
+            schema.ScheduledTrip.status.in_(
+                [
+                    schema.ScheduledTripStatus.SCHEDULED,
+                    schema.ScheduledTripStatus.IN_PROGRESS,
+                ]
+            )
+        )
+
+        # 2. Query available vehicles with Driver and Profile loaded
+        # We use joinedload to fetch the driver user and their profile in one go
+        query = (
+            select(schema.Vehicle)
+            .options(
+                joinedload(schema.Vehicle.driver).joinedload(schema.User.driver_profile)
+            )
+            .where(not_(schema.Vehicle.id.in_(busy_vehicle_ids)))
+        )
+
+        result = await db.execute(query)
+        available_vehicles = result.scalars().all()
+
+        # 3. Format Response
+        return {
+            "status": "success",
+            "count": len(available_vehicles),
+            "vehicles": [
+                {
+                    "id": v.id,
+                    "registration_number": v.registration_number,
+                    "vehicle_name": v.vehicle_name,
+                    "vehicle_model": v.vehicle_model,
+                    "seat_count": v.seat_count,
+                    "has_ac": v.has_ac,
+                    "driver_info": {
+                        "user_id": v.driver_user_id,
+                        # Accessing nested relationship: Vehicle -> User -> DriverProfile
+                        "driver_name": v.driver.driver_profile.full_name
+                        if v.driver and v.driver.driver_profile
+                        else "No Profile Found",
+                        "driver_email": v.driver.email if v.driver else "N/A",
+                    },
+                    "is_active": v.is_active,
+                }
+                for v in available_vehicles
+            ],
+        }
+
+    except Exception as e:
+        # It's better to log the full error 'e' internally
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+# ---------------- RATING AND REVIEWS FOR DRIVERS ---------------------
+@router.get("/reviews/drivers")
+async def get_driver_reviews(
+    driver_id: str | None = Query(
+        None, description="Filter by specific Driver User ID"
+    ),
+    min_rating: int = Query(1, ge=1, le=5),
+    skip: int = 0,
+    limit: int = 50,
+    current_user: schema.User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_async_session),
+):
+    """
+    Fetches all ratings and reviews given by passengers to drivers.
+    """
+    # 1. Authorization
+    if current_user.role != schema.UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin access required")
+
+    try:
+        # 2. Build the Query
+        # We load: Passenger (User -> Profile), Driver (User -> Profile), and the Trip/Route
+        stmt = (
+            select(schema.BookingRating)
+            .options(
+                joinedload(schema.BookingRating.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                joinedload(schema.BookingRating.driver).joinedload(
+                    schema.User.driver_profile
+                ),
+                joinedload(schema.BookingRating.scheduled_trip).joinedload(
+                    schema.ScheduledTrip.route
+                ),
+            )
+            .order_by(schema.BookingRating.created_at.desc())
+        )
+
+        # 3. Apply Filters
+        if driver_id:
+            stmt = stmt.where(schema.BookingRating.driver_user_id == driver_id)
+
+        # Filtering by driver_rating (assuming field name from your schema logic)
+        stmt = stmt.where(schema.BookingRating.driver_rating >= min_rating)
+
+        # 4. Execute
+        result = await db.execute(stmt.offset(skip).limit(limit))
+        ratings = result.scalars().all()
+
+        # 5. Format JSON Response
+        review_list = []
+        for r in ratings:
+            review_list.append(
+                {
+                    "rating_id": r.id,
+                    "trip_details": {
+                        "trip_id": r.scheduled_trip_id,
+                        "route_name": r.scheduled_trip.route.name
+                        if r.scheduled_trip and r.scheduled_trip.route
+                        else "N/A",
+                        "date": r.scheduled_trip.planned_start_at
+                        if r.scheduled_trip
+                        else None,
+                    },
+                    "passenger": {
+                        "name": r.passenger.passenger_profile.full_name
+                        if r.passenger and r.passenger.passenger_profile
+                        else "Anonymous",
+                        "email": r.passenger.email if r.passenger else "N/A",
+                    },
+                    "driver": {
+                        "user_id": r.driver_user_id,
+                        "name": r.driver.driver_profile.full_name
+                        if r.driver and r.driver.driver_profile
+                        else "Unknown Driver",
+                    },
+                    "feedback": {
+                        "rating": r.driver_rating,
+                        "comment": r.review_text,
+                        "created_at": r.created_at,
+                    },
+                }
+            )
+
+        return {"status": "success", "count": len(review_list), "reviews": review_list}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+
+
+@router.get("/reviews/stats")
+async def get_rating_summary(
+    db: AsyncSession = Depends(get_async_session),
+    current_user: schema.User = Depends(get_current_active_user),
+):
+    """
+    Returns quick stats like average rating across the platform.
+    """
+    if current_user.role != schema.UserRole.ADMIN:
+        raise HTTPException(status_code=403, detail="Unauthorized")
+
+    # Calculate average rating
+    stmt = select(func.avg(schema.BookingRating.driver_rating))
+    result = await db.execute(stmt)
+    avg_rating = result.scalar() or 0.0
+
+    return {"average_platform_rating": round(float(avg_rating), 2)}
+
+
+# ----------------------    ALL TRANSACTIONS --------------------------------
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
