@@ -21,6 +21,7 @@ from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.jobs.cancelled_booking_refund_reconciler import cancelled_booking_refund_loop
 from app.jobs.unstarted_scheduled_trip_canceller import unstarted_trip_cancel_loop
+from app.jobs.driver_trip_start_reminder import driver_trip_reminder_loop
 from app.passenger.router import router as passenger_route
 from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
@@ -68,12 +69,19 @@ async def lifespan(app: FastAPI):
     )
     app.state.unstarted_trip_cancel_task = unstarted_trip_cancel_task
 
+    driver_trip_reminder_task = asyncio.create_task(
+        driver_trip_reminder_loop(app.state.ws_hub),
+        name="driver-trip-reminder-loop",
+    )
+    app.state.driver_trip_reminder_task = driver_trip_reminder_task
+
     try:
         yield
     finally:
         reconcile_task.cancel()
         cancelled_booking_refund_task.cancel()
         unstarted_trip_cancel_task.cancel()
+        driver_trip_reminder_task.cancel()
 
         with suppress(asyncio.CancelledError):
             await reconcile_task
@@ -83,6 +91,9 @@ async def lifespan(app: FastAPI):
 
         with suppress(asyncio.CancelledError):
             await unstarted_trip_cancel_task
+
+        with suppress(asyncio.CancelledError):
+            await driver_trip_reminder_task
 
 
 app = FastAPI(
