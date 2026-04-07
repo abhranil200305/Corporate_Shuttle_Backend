@@ -267,24 +267,24 @@ async def get_passenger_details(
             #     for b in p.passenger_bookings
             # ],
             "bookings": [
-    {
-        "booking_id": b.id,
-        "status": b.booking_status,
-        "fare": float(b.fare_amount),
-        "created_at": b.created_at,
-        "pickup_stop": {
-            "id": b.pickup_stop.id,
-            "name": b.pickup_stop.name,
-            "sequence": b.pickup_sequence_no_snapshot
-        },
-        "dropoff_stop": {
-            "id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
-            "name": b.dropoff_stop.name, # Ensure this says dropoff_stop
-            "sequence": b.dropoff_sequence_no_snapshot
-        }
-    }
-    for b in p.passenger_bookings
-]
+                {
+                    "booking_id": b.id,
+                    "status": b.booking_status,
+                    "fare": float(b.fare_amount),
+                    "created_at": b.created_at,
+                    "pickup_stop": {
+                        "id": b.pickup_stop.id,
+                        "name": b.pickup_stop.name,
+                        "sequence": b.pickup_sequence_no_snapshot,
+                    },
+                    "dropoff_stop": {
+                        "id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
+                        "name": b.dropoff_stop.name,  # Ensure this says dropoff_stop
+                        "sequence": b.dropoff_sequence_no_snapshot,
+                    },
+                }
+                for b in p.passenger_bookings
+            ],
         },
     }
 
@@ -1630,6 +1630,66 @@ async def get_booking_rating(
         "passenger_name": rating.passenger.email,  # Or profile name
         "created_at": rating.created_at,
     }
+
+
+# app/admin/endpoints/router.py
+
+
+@router.get("/user/{user_id}/bookings/detailed")
+async def get_user_bookings_detailed(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    bookings = await service.fetch_user_bookings_with_details(user_id)
+
+    if not bookings:
+        return {"user_id": user_id, "total_bookings": 0, "history": []}
+
+    history = []
+    for b in bookings:
+        history.append(
+            {
+                "booking_id": b.id,
+                "date": b.created_at,
+                "status": b.booking_status,
+                "route": b.route.name if b.route else "Unknown Route",
+                "stops": {
+                    "pickup": {
+                        "id": b.pickup_stop_id,
+                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
+                        "seq": b.pickup_sequence_no_snapshot,
+                    },
+                    "dropoff": {
+                        "id": b.dropoff_stop_id,
+                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
+                        "seq": b.dropoff_sequence_no_snapshot,
+                    },
+                },
+                "financials": {
+                    "fare": float(b.fare_amount),
+                    "payment_id": b.payments[0].razorpay_payment_id
+                    if b.payments
+                    else None,
+                    "payment_status": b.payments[0].status if b.payments else "unpaid",
+                },
+                # Refund & Cancellation Logic
+                "audit_note": {
+                    "cancelled_by": b.cancelled_by
+                    if hasattr(b, "cancelled_by")
+                    else "N/A",
+                    "reason": b.cancellation_reason
+                    if hasattr(b, "cancellation_reason")
+                    else "N/A",
+                    "refund_status": b.transfer_status
+                    if b.booking_status == "cancelled"
+                    else "N/A",
+                }
+                if b.booking_status in ["cancelled", "refunded"]
+                else None,
+            }
+        )
+
+    return {"user_id": user_id, "total_bookings": len(history), "history": history}
 
 
 # ============================================================
