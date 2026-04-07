@@ -8,6 +8,7 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
+    Request,
     UploadFile,
 )
 from sqlalchemy import func, not_, select
@@ -39,6 +40,9 @@ from app.auth.dependencies import (
 )
 from app.db import schema
 from app.db.database import get_async_session
+from app.notifications import hub
+from app.notifications.hub import WSHub
+from app.notifications.schemas import NotificationDataPayload
 from app.payments.service import RoutePayoutService
 
 # Create ONE router for all admin tasks
@@ -47,6 +51,30 @@ router = APIRouter(
     tags=["Admin Management"],
     dependencies=[Depends(get_current_admin)],  # Protects all routes
 )
+
+###----Notifications --------
+
+
+def get_ws_hub(request: Request) -> WSHub:
+    return request.app.state.ws_hub
+
+
+@router.post("/send-notification/{user_id}", tags=["Admin Notifications"])
+async def send_admin_notification(
+    user_id: str,
+    payload: NotificationDataPayload,
+    request: Request,
+    db: AsyncSession = Depends(get_async_session),
+    current_user: schema.User = Depends(get_current_admin),
+):
+    hub = get_ws_hub(request)
+    service = AdminService(db, ws_hub=hub)
+
+    await service.send_user_notification(
+        user_id=user_id, title=payload.title, message=payload.message, data=payload.data
+    )
+
+    return {"status": "success", "message": f"Notification sent to {user_id}"}
 
 
 # -----------------------------
@@ -366,9 +394,31 @@ async def verify_driver(
         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
     )
 
+    # --- ADD NOTIFICATION HERE ---
+    title = (
+        "Profile Verified!" if data.status == "verified" else "Profile Action Required"
+    )
+    message = (
+        "Your profile has been verified. You can now accept rides."
+        if data.status == "verified"
+        else f"Your profile was not approved. Reason: {data.rejection_reason}"
+    )
+
+    await service.send_user_notification(
+        user_id=user_id,
+        title=title,
+        message=message,
+        data={"type": "verification_update", "status": data.status},
+    )
+    # -----------------------------
+
+    # return {"message": f"Driver verification status updated to {data.status}", "user_id": user_id}
+
     return {
+        # "message": f"Driver verification status updated to {data.status}",
         "message": f"Driver verification status updated to {data.status}",
         "user_id": user_id,
+        # "user_id": user_id,
     }
 
 
@@ -389,6 +439,14 @@ async def verify_vehicle(
     # 2. Update the vehicle status
     await service.update_vehicle_verification(
         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
+    )
+    # --- ADD NOTIFICATION HERE ---
+    status_msg = "approved" if data.status == "verified" else "rejected"
+    await service.send_user_notification(
+        user_id=user_id,
+        title="Vehicle Verification Update",
+        message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
+        data={"type": "vehicle_update", "status": data.status},
     )
 
     return {
@@ -1128,12 +1186,39 @@ async def cancel_trip_by_id(
     db: AsyncSession = Depends(get_async_session),
 ):
     service = AdminService(db)
+    trip = await service.get_trip_by_id(trip_id)
+    if not trip:
+        raise HTTPException(status_code=404, detail="Trip not found")
+
     result = await service.cancel_trip(trip_id, reason)
 
     if not result["success"]:
         # If it's a timing error, use 400. If it's a missing trip, use 404.
         status_code = 404 if "not found" in result["error"] else 400
         raise HTTPException(status_code=status_code, detail=result["error"])
+
+    # 1. Notify Driver
+    if trip.driver_id:
+        await service.send_user_notification(
+            db,
+            trip.driver_id,
+            "Trip Cancelled by Admin",
+            f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
+            "TRIP_CANCELLED",
+        )
+
+    # 2. Notify All Booked Passengers
+    for booking in trip.bookings:
+        await service.send_user_notification(
+            db,
+            booking.passenger_id,
+            "Urgent: Trip Cancelled",
+            f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
+            "TRIP_CANCELLED",
+        )
+
+    await db.commit()
+    return {"status": "success", "message": "Trip cancelled and users notified."}
 
     return {
         "status": "success",
@@ -1298,6 +1383,7 @@ async def batch_process_driver_payouts(
     summary = await payout_service.process_monthly_payouts_for_driver(
         driver_id, month, year
     )
+    await db.commit()
     return {"status": "batch_completed", "details": summary}
 
 
@@ -1401,6 +1487,17 @@ async def handle_ticket(
     ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
+
+    status_msg = "resolved" if action == "resolve" else "rejected"
+    await service.send_user_notification(
+        db,
+        ticket.user_id,
+        f"Support Ticket {status_msg.capitalize()}",
+        f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+        "TICKET_UPDATE",
+    )
+
+    await db.commit()
     return {"message": f"Ticket {action} successfully"}
 
 
@@ -1412,6 +1509,7 @@ async def create_ticket(
     current_user: schema.User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
+    service = AdminService(db, ws_hub=hub)
     new_ticket = schema.SupportTicket(
         user_id=current_user.id,
         subject=subject,
@@ -1419,6 +1517,14 @@ async def create_ticket(
         status=schema.SupportStatus.PENDING,
     )
     db.add(new_ticket)
+    
+    await service.send_user_notification(
+        db,
+        current_user.id,
+        "Ticket Received",
+        f"Your ticket '{subject}' has been created and is pending review.",
+        "TICKET_CREATED",
+    )
     await db.commit()
     return {"message": "Ticket created. Support will contact you soon."}
 
