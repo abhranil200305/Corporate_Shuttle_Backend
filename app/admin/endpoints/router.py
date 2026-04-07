@@ -1632,7 +1632,6 @@ async def get_booking_rating(
     }
 
 
-<<<<<<< HEAD
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
@@ -1665,7 +1664,6 @@ async def get_all_transactions(
                     "pickup": {
                         "id": b.pickup_stop_id,
                         "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-=======
 # app/admin/endpoints/router.py
 
 
@@ -1692,12 +1690,10 @@ async def get_user_bookings_detailed(
                         "id": b.pickup_stop_id,
                         "name": b.pickup_stop.name if b.pickup_stop else "N/A",
                         "seq": b.pickup_sequence_no_snapshot,
->>>>>>> dwaipayan
                     },
                     "dropoff": {
                         "id": b.dropoff_stop_id,
                         "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-<<<<<<< HEAD
                     },
                     "driver_name": b.scheduled_trip.driver.driver_profile.full_name
                     if (b.scheduled_trip and b.scheduled_trip.driver.driver_profile)
@@ -1743,7 +1739,6 @@ async def get_user_bookings_detailed(
         )
 
     return {"total_count": len(report), "data": report}
-=======
                         "seq": b.dropoff_sequence_no_snapshot,
                     },
                 },
@@ -1772,7 +1767,6 @@ async def get_user_bookings_detailed(
         )
 
     return {"user_id": user_id, "total_bookings": len(history), "history": history}
->>>>>>> dwaipayan
 
 
 # ============================================================
