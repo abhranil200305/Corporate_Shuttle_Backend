@@ -590,6 +590,40 @@ class AdminService:
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
+
+        result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
+
+    async def fetch_detailed_transactions(
+        self, skip: int, limit: int, status: str = None
+    ):
+
+        stmt = (
+            select(schema.TripBooking)
+            .options(
+                joinedload(schema.TripBooking.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+                joinedload(schema.TripBooking.route),
+                joinedload(schema.TripBooking.pickup_stop),
+                joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.scan_events),
+            )
+            .order_by(schema.TripBooking.created_at.desc())
+            .offset(skip)
+            .limit(limit)
+        )
+
+        if status:
+            stmt = stmt.where(schema.TripBooking.booking_status == status)
+
+            result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
+
     # ============================================================
     # payout management, by Anubhab Dey
     # ============================================================
