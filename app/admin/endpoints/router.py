@@ -253,6 +253,16 @@ async def get_passenger_details(
                     "status": b.booking_status,
                     "fare": float(b.fare_amount),
                     "created_at": b.created_at,
+                    "pickup_stop": {
+                        "id": b.pickup_stop.id,
+                        "name": b.pickup_stop.stop_name,  # Assuming stop_name is the field
+                        "sequence": b.pickup_sequence_no_snapshot,
+                    },
+                    "dropoff_stop": {
+                        "id": b.dropoff_stop.id,
+                        "name": b.dropoff_stop.stop_name,
+                        "sequence": b.dropoff_sequence_no_snapshot,
+                    },
                 }
                 for b in p.passenger_bookings
             ],
@@ -1575,32 +1585,33 @@ async def get_user_transaction_history(
         ],
     }
 
+
 @router.get("/bookings/{booking_id}/rating")
 async def get_booking_rating(
-    booking_id: str, 
-    db: AsyncSession = Depends(get_async_session)
+    booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
     stmt = (
         select(schema.BookingRating)
         .options(
             joinedload(schema.BookingRating.passenger),
-            joinedload(schema.BookingRating.driver)
+            joinedload(schema.BookingRating.driver),
         )
         .where(schema.BookingRating.booking_id == booking_id)
     )
     result = await db.execute(stmt)
     rating = result.scalar_one_or_none()
-    
+
     if not rating:
         raise HTTPException(status_code=404, detail="No rating found for this booking")
-        
+
     return {
         "trip_rating": rating.trip_rating,
         "driver_rating": rating.driver_rating,
         "review": rating.review_text,
-        "passenger_name": rating.passenger.email, # Or profile name
-        "created_at": rating.created_at
+        "passenger_name": rating.passenger.email,  # Or profile name
+        "created_at": rating.created_at,
     }
+
 
 # ============================================================
 # Admin payout management by Anubhab Dey
