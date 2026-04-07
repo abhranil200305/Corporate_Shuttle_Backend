@@ -29,7 +29,8 @@ from app.driver.trips.current_trip import router as driver_current_trip_router
 from app.driver.trips.current_trip import router as current_trip_router
 from app.driver.stats.driver_stats import router as driver_stats_router
 from app.driver.ratings.driver_ratings import router as driver_ratings_router
-
+from app.notifications import router as notifications_router
+from app.notifications.hub import WSHub
 
 
 
@@ -41,6 +42,7 @@ UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.ws_hub = WSHub()
     try:
         async with engine.begin() as conn:
             await conn.execute(text("SELECT 1"))
@@ -108,6 +110,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 # Routers
 # ---------------------------
 app.include_router(auth_router)
+app.include_router(notifications_router)
 app.include_router(admin_router)
 app.include_router(driverprofile_router)
 app.include_router(driver_kyc.router)

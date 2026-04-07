@@ -270,6 +270,12 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
+    notifications: Mapped[list["UserNotification"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     __table_args__ = (CheckConstraint("email <> ''", name="ck_users_email_nonempty"),)
 
 
@@ -316,6 +322,42 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
 
     __table_args__ = (
         Index("ix_user_sessions_user_id_expires_at", "user_id", "expires_at"),
+    )
+
+class UserNotification(UUIDPKMixin, Base):
+    __tablename__ = "user_notifications"
+
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    data_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    user: Mapped["User"] = relationship(
+        back_populates="notifications",
+        foreign_keys=[user_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint("title <> ''", name="ck_user_notifications_title_nonempty"),
+        CheckConstraint("message <> ''", name="ck_user_notifications_message_nonempty"),
+        Index("ix_user_notifications_user_created", "user_id", "created_at"),
+        Index("ix_user_notifications_user_read", "user_id", "read_at"),
     )
 
 
