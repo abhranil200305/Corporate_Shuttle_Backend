@@ -535,10 +535,33 @@ class AdminService:
 
         # app/services/admin_service.py
 
+    # app/services/admin_service.py
+
+    async def fetch_user_bookings_with_details(self, user_id: str):
+
+        stmt = (
+            select(schema.TripBooking)
+            .options(
+                joinedload(schema.TripBooking.pickup_stop),
+                joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.route),
+            )
+            .where(schema.TripBooking.passenger_user_id == user_id)
+            .order_by(schema.TripBooking.created_at.desc())
+        )
+
+        result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
+
+    # app/admin/logic/service.py
+
     async def fetch_detailed_transactions(
         self, skip: int, limit: int, status: str = None
     ):
-
         stmt = (
             select(schema.TripBooking)
             .options(
@@ -559,9 +582,11 @@ class AdminService:
             .limit(limit)
         )
 
+        # 1. Apply filter only if status is provided
         if status:
             stmt = stmt.where(schema.TripBooking.booking_status == status)
 
+        # 2. MOVE THESE OUTSIDE THE IF BLOCK
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 

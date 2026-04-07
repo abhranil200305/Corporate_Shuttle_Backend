@@ -1632,12 +1632,17 @@ async def get_booking_rating(
     }
 
 
+
+
+
+# app/admin/endpoints/router.py
+
 @router.get("/transactions/all")
 async def get_all_transactions(
     skip: int = 0,
     limit: int = 50,
     status: schema.BookingStatus = None,
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_async_session)
 ):
     service = AdminService(db)
     bookings = await service.fetch_detailed_transactions(skip, limit, status)
