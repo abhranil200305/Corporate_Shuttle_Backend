@@ -8,20 +8,20 @@ from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
-    BulkStopAddRequest,
-    RouteCreate,
-    RouteFareCreate,
-    RouteStatusUpdate,
-    StopCreate,
-    VehicleVerificationUpdate,
-    VerificationUpdate,
     BulkPayoutTriggerRequest,
+    BulkStopAddRequest,
     DriverLinkedAccountUpdate,
     DriverPayoutDetailsUpsert,
     DriverPayoutEligibilityUpdate,
     PayoutSettingsUpdate,
+    RouteCreate,
+    RouteFareCreate,
+    RouteStatusUpdate,
+    StopCreate,
     TriggerBookingPayoutRequest,
     TriggerDriverMonthlyPayoutRequest,
+    VehicleVerificationUpdate,
+    VerificationUpdate,
 )
 from app.auth.dependencies import get_current_admin, get_current_user
 from app.db import schema
@@ -373,9 +373,7 @@ async def bulk_upload_stops(
 async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
     # Fetch all active stops from the library
     result = await db.execute(
-        select(schema.Stop)
-        .where(schema.Stop.is_active == True)
-        .order_by(schema.Stop.name)
+        select(schema.Stop).where(schema.Stop.is_active).order_by(schema.Stop.name)
     )
     stops = result.scalars().all()
 
@@ -621,6 +619,9 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
 #         "route_id": new_route.id,
 #         "total_stops_added": len(route_stops),
 #     }
+
+
+# ----------------- specific routes create -------------------------
 
 
 @router.post("/routes/create")
@@ -1407,6 +1408,7 @@ async def view_all_reviews(
         for r in reviews
     ]
 
+
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
@@ -1599,6 +1601,7 @@ async def get_payout_dashboard(
     service = AdminService(db)
     return await service.get_payout_dashboard()
 
+
 @router.post("/payouts/drivers/{driver_user_id}/create-linked-account")
 async def create_and_save_driver_linked_account(
     driver_user_id: str,
@@ -1624,3 +1627,98 @@ async def get_driver_linked_account_provider_detail(
 ):
     service = AdminService(db)
     return await service.get_driver_linked_account_provider_detail(driver_user_id)
+
+
+@router.get("/transactions/all")
+async def get_all_transactions(
+    skip: int = 0,
+    limit: int = 50,
+    status: schema.BookingStatus = None,
+    db: AsyncSession = Depends(get_async_session),
+    # current_admin: schema.User = Depends(get_admin_user) # Logic to verify Admin role
+):
+    """
+    Fetches every detail of a transaction:
+    Passenger, Driver, Route, Payment IDs, and QR Scans.
+    """
+
+    # 1. Build the Query with deep joins
+    stmt = (
+        select(schema.TripBooking)
+        .options(
+            joinedload(schema.TripBooking.passenger).joinedload(
+                schema.User.passenger_profile
+            ),
+            joinedload(schema.TripBooking.scheduled_trip)
+            .joinedload(schema.ScheduledTrip.driver)
+            .joinedload(schema.User.driver_profile),
+            joinedload(schema.TripBooking.route),
+            joinedload(schema.TripBooking.pickup_stop),
+            joinedload(schema.TripBooking.dropoff_stop),
+            joinedload(schema.TripBooking.payments),  # Razorpay Order/Payment IDs
+            joinedload(schema.TripBooking.scan_events),  # Board/Drop QR history
+        )
+        .order_by(schema.TripBooking.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+    )
+
+    if status:
+        stmt = stmt.where(schema.TripBooking.booking_status == status)
+
+    result = await db.execute(stmt)
+    bookings = result.unique().scalars().all()
+
+    # 2. Format the response for the Admin UI
+    report = []
+    for b in bookings:
+        # Calculate expected payout vs actual for audit
+        audit_payout = b.fare_amount - b.commission_amount
+        is_payout_correct = audit_payout == b.driver_payout_amount
+
+        report.append(
+            {
+                "booking_id": b.id,
+                "timestamp": b.created_at,
+                "status": b.booking_status,
+                "passenger": {
+                    "name": b.passenger.passenger_profile.full_name
+                    if b.passenger.passenger_profile
+                    else "N/A",
+                    "email": b.passenger.email,
+                },
+                "trip_details": {
+                    "route_name": b.route.name,
+                    "pickup": b.pickup_stop.name,
+                    "dropoff": b.dropoff_stop.name,
+                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
+                    if b.scheduled_trip.driver.driver_profile
+                    else "Unknown",
+                },
+                "financials": {
+                    "total_fare": float(b.fare_amount),
+                    "commission_percent": float(b.commission_percent_snapshot),
+                    "admin_earned": float(b.commission_amount),
+                    "driver_payout": float(b.driver_payout_amount),
+                    "audit_passed": is_payout_correct,
+                },
+                "payment_gateway": [
+                    {
+                        "razorpay_order_id": p.razorpay_order_id,
+                        "razorpay_payment_id": p.razorpay_payment_id,
+                        "payment_status": p.status,
+                    }
+                    for p in b.payments
+                ],
+                "security_scans": [
+                    {
+                        "type": s.scan_type,
+                        "time": s.created_at,
+                        "at_correct_stop": s.within_radius,
+                    }
+                    for s in b.scan_events
+                ],
+            }
+        )
+
+    return {"total_count": len(report), "data": report}
