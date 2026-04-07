@@ -42,13 +42,12 @@ class ScanRequest(BaseModel):
 # SECRET
 # ============================================================
 QR_SECRET = os.getenv("PASSENGER_QR_SECRET")
-
 if not QR_SECRET:
     raise RuntimeError("PASSENGER_QR_SECRET is not set")
 
 
 # ============================================================
-# HAVERSINE
+# HAVERSINE FUNCTION
 # ============================================================
 def haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -58,7 +57,7 @@ def haversine(lat1, lon1, lat2, lon2):
     a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
     c = 2 * asin(sqrt(a))
 
-    return 6371 * c * 1000
+    return 6371 * c * 1000  # meters
 
 
 # ============================================================
@@ -69,18 +68,14 @@ def add_padding(s: str) -> str:
 
 
 # ============================================================
-# DECODE QR (FIXED)
+# DECODE QR TOKEN
 # ============================================================
 def decode_qr_token(qr_token: str):
     qr_token = qr_token.strip()
-
     print("\n========== QR DEBUG START ==========")
     print("TOKEN LENGTH:", len(qr_token))
     print("RAW TOKEN:", qr_token)
 
-    # -----------------------------
-    # 1. Split token
-    # -----------------------------
     if "." not in qr_token:
         raise HTTPException(400, "QR format invalid (missing signature separator)")
 
@@ -90,9 +85,6 @@ def decode_qr_token(qr_token: str):
         print("SPLIT ERROR:", str(e))
         raise HTTPException(400, "QR split failed")
 
-    # -----------------------------
-    # 2. Decode payload
-    # -----------------------------
     try:
         payload_bytes = base64.urlsafe_b64decode(add_padding(encoded_payload))
         payload = json.loads(payload_bytes)
@@ -100,9 +92,6 @@ def decode_qr_token(qr_token: str):
         print("DECODE ERROR:", str(e))
         raise HTTPException(400, f"Base64/JSON decode failed: {str(e)}")
 
-    # -----------------------------
-    # 3. Signature verify
-    # -----------------------------
     try:
         expected_signature = hmac.new(
             QR_SECRET.encode(),
@@ -115,7 +104,6 @@ def decode_qr_token(qr_token: str):
 
         if not hmac.compare_digest(signature, expected_signature):
             raise HTTPException(400, "Invalid QR signature")
-
     except HTTPException:
         raise
     except Exception as e:
@@ -124,12 +112,11 @@ def decode_qr_token(qr_token: str):
 
     print("DECODE SUCCESS PAYLOAD:", payload)
     print("========== QR DEBUG END ==========\n")
-
     return payload
 
 
 # ============================================================
-# SCAN ENDPOINT (WITH FULL DEBUG)
+# SCAN ENDPOINT
 # ============================================================
 @router.post("/{trip_id}/scan")
 async def scan_passenger(
@@ -145,11 +132,10 @@ async def scan_passenger(
 
         print("\n==== SCAN REQUEST START ====")
 
-        # --------------------------------------------------------
+        # -------------------------
         # 1. Decode QR
-        # --------------------------------------------------------
+        # -------------------------
         payload = decode_qr_token(qr_token)
-
         qr_trip_id = payload.get("scheduled_trip_id")
         booking_id = payload.get("booking_id")
         passenger_id = payload.get("passenger_user_id")
@@ -162,28 +148,27 @@ async def scan_passenger(
 
         scan_type_enum = ScanType(scan_type)
 
-        # --------------------------------------------------------
+        # -------------------------
         # 2. Expiry
-        # --------------------------------------------------------
+        # -------------------------
         if datetime.now(timezone.utc).timestamp() > payload["expires_at"]:
             raise HTTPException(400, "QR expired")
 
-        # --------------------------------------------------------
-        # 3. Trip
-        # --------------------------------------------------------
+        # -------------------------
+        # 3. Trip validation
+        # -------------------------
         if qr_trip_id != trip_id:
             raise HTTPException(400, "QR does not belong to this trip")
 
         trip = await db.get(ScheduledTrip, trip_id)
         if not trip:
             raise HTTPException(404, "Trip not found")
-
         if trip.driver_user_id != current_user.id:
             raise HTTPException(403, "Not your trip")
 
-        # --------------------------------------------------------
-        # 4. Booking
-        # --------------------------------------------------------
+        # -------------------------
+        # 4. Booking validation
+        # -------------------------
         result = await db.execute(
             select(TripBooking).where(
                 TripBooking.id == booking_id,
@@ -191,46 +176,38 @@ async def scan_passenger(
             )
         )
         booking = result.scalar_one_or_none()
-
         if not booking:
             raise HTTPException(404, "Booking not found")
-
         if booking.passenger_user_id != passenger_id:
             raise HTTPException(400, "Passenger mismatch")
 
-        # --------------------------------------------------------
-        # 5. State
-        # --------------------------------------------------------
+        # -------------------------
+        # 5. State validation
+        # -------------------------
         if scan_type_enum == ScanType.BOARD:
             if booking.booking_status != BookingStatus.BOOKED:
                 raise HTTPException(400, "Passenger not eligible for boarding")
-
         elif scan_type_enum == ScanType.DROP:
             if booking.booking_status != BookingStatus.BOARDED:
                 raise HTTPException(400, "Passenger not boarded yet")
 
-        # --------------------------------------------------------
+        # -------------------------
         # 6. Stop
-        # --------------------------------------------------------
-        stop_id = (
-            booking.pickup_stop_id
-            if scan_type_enum == ScanType.BOARD
-            else booking.dropoff_stop_id
-        )
-
+        # -------------------------
+        stop_id = booking.pickup_stop_id if scan_type_enum == ScanType.BOARD else booking.dropoff_stop_id
         stop = await db.get(Stop, stop_id)
         if not stop:
             raise HTTPException(404, "Stop not found")
 
-        # --------------------------------------------------------
-        # 7. Radius
-        # --------------------------------------------------------
+        # -------------------------
+        # 7. Check radius
+        # -------------------------
         distance = haversine(lat, lng, float(stop.lat), float(stop.lng))
         within_radius = distance <= stop.radius_meters
 
-        # --------------------------------------------------------
-        # 8. Save event
-        # --------------------------------------------------------
+        # -------------------------
+        # 8. Save scan event
+        # -------------------------
         scan_event = TripScanEvent(
             scheduled_trip_id=trip_id,
             booking_id=booking_id,
@@ -244,28 +221,38 @@ async def scan_passenger(
         )
         db.add(scan_event)
 
-        # --------------------------------------------------------
-        # 9. Update booking
-        # --------------------------------------------------------
+        # -------------------------
+        # 9. Update booking only if within radius
+        # -------------------------
         if within_radius:
             if scan_type_enum == ScanType.BOARD:
                 booking.booking_status = BookingStatus.BOARDED
                 booking.boarded_at = datetime.now(timezone.utc)
                 booking.boarded_near_stop_id = stop.id
-
             elif scan_type_enum == ScanType.DROP:
                 booking.booking_status = BookingStatus.COMPLETED
                 booking.completed_at = datetime.now(timezone.utc)
                 booking.completed_near_stop_id = stop.id
-
             db.add(booking)
+            response_message = "Scan successful"
+        
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Scan not within the determined stop radius"
+            )
 
         await db.commit()
+
+        # -------------------------
+        # 10. Response
+        # -------------------------
+
 
         print("==== SCAN SUCCESS ====\n")
 
         return {
-            "message": "Scan processed",
+            "message": response_message,
             "scan_type": scan_type_enum.value,
             "within_radius": within_radius,
             "distance_meters": round(distance, 2),
@@ -275,7 +262,6 @@ async def scan_passenger(
     except HTTPException as e:
         print("HTTP ERROR:", e.detail)
         raise e
-
     except Exception as e:
         print("UNEXPECTED ERROR:", str(e))
         raise HTTPException(500, f"Internal server error: {str(e)}")
