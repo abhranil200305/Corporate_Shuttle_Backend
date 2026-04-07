@@ -6,6 +6,9 @@ from sqlalchemy.future import select
 from sqlalchemy import func, update
 from datetime import datetime, timezone, timedelta
 
+from fastapi import Request
+from app.notifications.service import NotificationService
+
 from geopy.distance import geodesic
 from app.db.database import get_async_session
 from app.db.schema import (
@@ -147,6 +150,7 @@ async def create_trip(
 @router.post("/{trip_id}/start")
 async def start_trip(
     trip_id: str,
+    request: Request,   # ✅ FIXED POSITION
     lat: float = Form(...),
     lng: float = Form(...),
     session: AsyncSession = Depends(get_async_session),
@@ -267,6 +271,31 @@ async def start_trip(
     trip.status = ScheduledTripStatus.IN_PROGRESS
 
     await session.commit()
+    # =========================
+    # SEND NOTIFICATIONS
+    # =========================
+
+    notification_service = NotificationService(
+    db=session,
+    ws_hub=request.app.state.ws_hub
+    )
+
+    result = await session.execute(
+    select(TripBooking).where(
+        TripBooking.scheduled_trip_id == trip.id,
+        TripBooking.booking_status == BookingStatus.BOOKED
+        )
+    )
+
+    bookings = result.scalars().all()
+
+    for booking in bookings:
+        await notification_service.notify_user(
+        user_id=booking.passenger_user_id,
+        title="Trip Started",
+        message="Your bus has started.",
+        data={"trip_id": trip.id}
+    )
     return {
         "message": "Trip started",
         "start_time": to_ist(trip.actual_start_at),
@@ -421,6 +450,7 @@ async def end_trip(
 @router.post("/{trip_id}/emergency-end")
 async def emergency_end_trip(
     trip_id: str,
+    request: Request,
     reason: str = Form(...),
     lat: float = Form(...),
     lng: float = Form(...),
@@ -465,6 +495,23 @@ async def emergency_end_trip(
     trip.premature_end_reason = reason
 
     await session.commit()
+    notification_service = NotificationService(
+    db=session,
+    ws_hub=request.app.state.ws_hub
+    )
+    result = await session.execute(
+    select(User).where(User.role == UserRole.ADMIN)
+    )
+
+    admins = result.scalars().all()
+
+    for admin in admins:
+        await notification_service.notify_user(
+        user_id=admin.id,
+        title="Trip Premature End",
+        message="Trip ended early due to emergency",
+        data={"trip_id": trip.id}
+    )
 
     return {
         "message": "Emergency ended",
