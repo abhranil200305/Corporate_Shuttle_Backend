@@ -1551,20 +1551,35 @@ async def get_user_transaction_history(
     db: AsyncSession = Depends(get_async_session),
 ):
     # 1. Get Payments (User as Passenger)
-    # We join TripBooking to ensure the payment belongs to this user
+    # We join TripBooking and load pickup/dropoff stops
     payment_stmt = (
         select(schema.BookingPayment)
         .join(schema.TripBooking)
         .where(schema.TripBooking.passenger_user_id == user_id)
-        .options(joinedload(schema.BookingPayment.booking))
+        .options(
+            joinedload(schema.BookingPayment.booking).joinedload(
+                schema.TripBooking.pickup_stop
+            ),
+            joinedload(schema.BookingPayment.booking).joinedload(
+                schema.TripBooking.dropoff_stop
+            ),
+        )
         .order_by(schema.BookingPayment.created_at.desc())
     )
 
     # 2. Get Payouts (User as Driver)
+    # We load booking stops so the driver can see which route the payout was for
     transfer_stmt = (
         select(schema.BookingTransfer)
         .where(schema.BookingTransfer.driver_user_id == user_id)
-        .options(joinedload(schema.BookingTransfer.booking))
+        .options(
+            joinedload(schema.BookingTransfer.booking).joinedload(
+                schema.TripBooking.pickup_stop
+            ),
+            joinedload(schema.BookingTransfer.booking).joinedload(
+                schema.TripBooking.dropoff_stop
+            ),
+        )
         .order_by(schema.BookingTransfer.created_at.desc())
     )
 
@@ -1588,6 +1603,14 @@ async def get_user_transaction_history(
                 "status": p.status,
                 "date": p.created_at,
                 "booking_id": p.booking_id,
+                "trip_details": {
+                    "pickup_stop": p.booking.pickup_stop.name
+                    if (p.booking and p.booking.pickup_stop)
+                    else "N/A",
+                    "dropoff_stop": p.booking.dropoff_stop.name
+                    if (p.booking and p.booking.dropoff_stop)
+                    else "N/A",
+                },
             }
             for p in payments
         ],
@@ -1599,6 +1622,14 @@ async def get_user_transaction_history(
                 "date": t.processed_at or t.created_at,
                 "failure_reason": t.failure_reason,
                 "booking_id": t.booking_id,
+                "trip_details": {
+                    "pickup_stop": t.booking.pickup_stop.name
+                    if (t.booking and t.booking.pickup_stop)
+                    else "N/A",
+                    "dropoff_stop": t.booking.dropoff_stop.name
+                    if (t.booking and t.booking.dropoff_stop)
+                    else "N/A",
+                },
             }
             for t in transfers
         ],
@@ -1633,6 +1664,64 @@ async def get_booking_rating(
 
 
 # app/admin/endpoints/router.py
+# app/admin/endpoints/router.py
+
+
+@router.get("/user/{user_id}/bookings/detailed")
+async def get_user_bookings_detailed(
+    user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    bookings = await service.fetch_user_bookings_with_details(user_id)
+
+    if not bookings:
+        return {"user_id": user_id, "total_bookings": 0, "history": []}
+
+    history = []
+    for b in bookings:
+        history.append(
+            {
+                "booking_id": b.id,
+                "date": b.created_at,
+                "status": b.booking_status,
+                "route": b.route.name if b.route else "Unknown Route",
+                "stops": {
+                    "pickup": {
+                        "id": b.pickup_stop_id,
+                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
+                        "seq": b.pickup_sequence_no_snapshot,
+                    },
+                    "dropoff": {
+                        "id": b.dropoff_stop_id,
+                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
+                        "seq": b.dropoff_sequence_no_snapshot,
+                    },
+                },
+                "financials": {
+                    "fare": float(b.fare_amount),
+                    "payment_id": b.payments[0].razorpay_payment_id
+                    if b.payments
+                    else None,
+                    "payment_status": b.payments[0].status if b.payments else "unpaid",
+                },
+                # Refund & Cancellation Logic
+                "audit_note": {
+                    "cancelled_by": b.cancelled_by
+                    if hasattr(b, "cancelled_by")
+                    else "N/A",
+                    "reason": b.cancellation_reason
+                    if hasattr(b, "cancellation_reason")
+                    else "N/A",
+                    "refund_status": b.transfer_status
+                    if b.booking_status == "cancelled"
+                    else "N/A",
+                }
+                if b.booking_status in ["cancelled", "refunded"]
+                else None,
+            }
+        )
+
+    return {"user_id": user_id, "total_bookings": len(history), "history": history}
 
 
 @router.get("/transactions/all")

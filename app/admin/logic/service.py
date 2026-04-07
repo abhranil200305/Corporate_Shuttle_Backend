@@ -557,6 +557,7 @@ class AdminService:
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
+
     async def fetch_detailed_transactions(
         self, skip: int, limit: int, status: str = None
     ):
