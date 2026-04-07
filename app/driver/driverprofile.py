@@ -8,10 +8,9 @@ from pathlib import Path
 import shutil
 import uuid
 from typing import Optional
-import aiofiles  # ✅ FIXED: import aiofiles
+import aiofiles
 from sqlalchemy import select
 from app.db.schema import BookingRating
-
 from app.db.schema import DriverProfile, User, DriverVerificationStatus
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
@@ -28,7 +27,6 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ------------------------------
 # Pydantic Schemas
 # ------------------------------
-
 class DriverProfileResponse(BaseModel):
     id: str
     user_id: str
@@ -42,9 +40,8 @@ class DriverProfileResponse(BaseModel):
     class Config:
         from_attributes = True  # ✅ Pydantic v2
 
-
 # ------------------------------
-# Helper function
+# Helper functions
 # ------------------------------
 def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
     if not upload or not upload.filename:
@@ -52,27 +49,27 @@ def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
 
     ext = Path(upload.filename).suffix or ".jpg"
     filename = f"{prefix}_{uuid.uuid4().hex}{ext}"
-
     file_path = UPLOAD_DIR / filename
-
-    # Ensure directory exists (safe)
     file_path.parent.mkdir(parents=True, exist_ok=True)
 
     upload.file.seek(0)
     with file_path.open("wb") as buffer:
         shutil.copyfileobj(upload.file, buffer)
 
-    # ✅ RETURN ABSOLUTE PATH
-    return str(file_path.resolve())
+    # Return relative path
+    return str(file_path.relative_to(BASE_DIR))
 
 async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
     ext = Path(file.filename).suffix or ".jpg"
     filename = f"{uuid.uuid4().hex}{ext}"
     dest = folder / filename
+
     async with aiofiles.open(dest, "wb") as out_file:
         content = await file.read()
         await out_file.write(content)
-    return str(dest)
+
+    # Return relative path
+    return str(dest.relative_to(BASE_DIR))
 
 # ------------------------------
 # Create Driver Profile
@@ -86,32 +83,26 @@ async def create_driver_profile(
     current_user: User = Depends(get_current_user),
 ):
     """Create driver profile"""
-
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     existing = result.scalar_one_or_none()
-
     if existing:
         raise HTTPException(status_code=400, detail="Driver profile already exists")
 
-    profile_pic_path = save_upload(profile_pic, "profile")
+    profile_pic_path = await save_upload_async(profile_pic) if profile_pic else None
 
     driver_profile = DriverProfile(
         user_id=current_user.id,
-        full_name=full_name,
-        phone=phone,
+        full_name=full_name.strip(),
+        phone=phone.strip(),
         profile_picture_path=profile_pic_path,
-
-        # TEMP FIX (should be nullable in DB ideally)
         aadhaar_file_path="",
         pan_file_path="",
-
         verification_status=DriverVerificationStatus.DRAFT,
     )
 
     db.add(driver_profile)
-
     try:
         await db.commit()
         await db.refresh(driver_profile)
@@ -124,7 +115,6 @@ async def create_driver_profile(
 
     return driver_profile
 
-
 # ------------------------------
 # Get My Profile
 # ------------------------------
@@ -134,44 +124,25 @@ async def get_my_driver_profile(
     current_user: User = Depends(get_current_user),
 ):
     """Get logged-in driver's profile WITH rating"""
-
-    # -------------------------
-    # Fetch profile
-    # -------------------------
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     profile = result.scalar_one_or_none()
-
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    # -------------------------
-    # Fetch ratings
-    # -------------------------
     rating_result = await db.execute(
-        select(BookingRating.driver_rating)
-        .where(BookingRating.driver_user_id == current_user.id)
+        select(BookingRating.driver_rating).where(BookingRating.driver_user_id == current_user.id)
     )
-
     ratings = rating_result.scalars().all()
+    avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
+    total_reviews = len(ratings)
 
-    if ratings:
-        avg_rating = round(sum(ratings) / len(ratings), 2)
-        total_reviews = len(ratings)
-    else:
-        avg_rating = None
-        total_reviews = 0
-
-    # -------------------------
-    # Return merged response
-    # -------------------------
     return {
         **profile.__dict__,
         "average_rating": avg_rating,
         "total_reviews": total_reviews,
     }
-
 
 # ------------------------------
 # Update My Profile (Partial)
@@ -185,19 +156,13 @@ async def update_my_profile(
     current_user: User = Depends(get_current_user),
 ):
     """Update logged-in driver's profile (partial update)"""
-
-    # Fetch profile
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     profile = result.scalar_one_or_none()
-
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    # ------------------------------
-    # Update fields if provided
-    # ------------------------------
     if full_name is not None:
         full_name_cleaned = full_name.strip()
         if not full_name_cleaned:
@@ -211,19 +176,16 @@ async def update_my_profile(
         profile.phone = phone_cleaned
 
     if profile_pic is not None:
-        # Delete old file if exists
         if profile.profile_picture_path:
             try:
-                old_path = Path(profile.profile_picture_path)
+                old_path = BASE_DIR / profile.profile_picture_path
                 if old_path.exists():
                     old_path.unlink()
             except Exception:
                 pass
-
         profile.profile_picture_path = await save_upload_async(profile_pic)
 
     db.add(profile)
-
     try:
         await db.commit()
         await db.refresh(profile)
@@ -231,28 +193,21 @@ async def update_my_profile(
         await db.rollback()
         raise HTTPException(status_code=400, detail="Update failed")
 
-    # ------------------------------
-    # Calculate ratings
-    # ------------------------------
     rating_result = await db.execute(
-        select(BookingRating.driver_rating)
-        .where(BookingRating.driver_user_id == current_user.id)
+        select(BookingRating.driver_rating).where(BookingRating.driver_user_id == current_user.id)
     )
     ratings = rating_result.scalars().all()
     avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
     total_reviews = len(ratings)
 
-    # ------------------------------
-    # Return response compatible with DriverProfileResponse
-    # ------------------------------
     return DriverProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
         full_name=profile.full_name,
         phone=profile.phone,
         profile_picture_path=profile.profile_picture_path,
+        verification_status=profile.verification_status,
         average_rating=avg_rating,
-        verification_status=profile.verification_status,  # <--- ADD THIS
         total_reviews=total_reviews,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
