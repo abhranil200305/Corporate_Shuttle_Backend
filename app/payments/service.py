@@ -81,6 +81,16 @@ class RoutePayoutService:
     @staticmethod
     def _get_razorpay_base_url() -> str:
         return os.getenv("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1").strip().rstrip("/")
+
+
+    @staticmethod
+    def _get_razorpay_api_root() -> str:
+        raw = os.getenv("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1").strip().rstrip("/")
+
+        if raw.endswith("/v1") or raw.endswith("/v2"):
+            return raw.rsplit("/", 1)[0]
+
+        return raw
     
     # ---------------------------------------------------------
     # db fetch helpers
@@ -296,7 +306,11 @@ class RoutePayoutService:
         key_id = self._get_razorpay_key_id()
         key_secret = self._get_razorpay_key_secret()
         base_url = self._get_razorpay_base_url()
-        url = f"{base_url}{path}"
+
+        if path.startswith("http://") or path.startswith("https://"):
+            url = path
+        else:
+            url = f"{base_url}{path}"
 
         async with httpx.AsyncClient(auth=(key_id, key_secret), timeout=20.0) as client:
             response = await client.request(
@@ -814,15 +828,15 @@ class RoutePayoutService:
         return results
       
     async def create_linked_account(
-        self,
-        *,
-        email: str,
-        phone: str,
-        full_name: str,
-        city: str = "Kolkata",
-        state: str = "West Bengal",
-        country: str = "IN",
-    ) -> dict[str, Any]:
+    self,
+    *,
+    email: str,
+    phone: str,
+    full_name: str,
+    city: str = "Kolkata",
+    state: str = "West Bengal",
+    country: str = "IN",
+) -> dict[str, Any]:
         cleaned_email = (email or "").strip()
         cleaned_phone = (phone or "").strip()
         cleaned_full_name = (full_name or "").strip()
@@ -854,10 +868,15 @@ class RoutePayoutService:
                 },
             )
 
+        api_root = self._get_razorpay_api_root()
+
         payload = {
             "type": "route",
             "email": cleaned_email,
-            "contact": cleaned_phone,
+            "phone": cleaned_phone,
+            "legal_business_name": cleaned_full_name,
+            "business_type": "individual",
+            "contact_name": cleaned_full_name,
             "profile": {
                 "name": cleaned_full_name,
                 "addresses": {
@@ -868,20 +887,18 @@ class RoutePayoutService:
                     }
                 },
             },
-            "legal_business_name": cleaned_full_name,
-            "business_type": "individual",
         }
 
         return await self._razorpay_request(
             method="POST",
-            path="/accounts",
+            path=f"{api_root}/v2/accounts",
             json_payload=payload,
         )
 
     async def fetch_linked_account(
-        self,
-        linked_account_id: str,
-    ) -> dict[str, Any]:
+    self,
+    linked_account_id: str,
+) -> dict[str, Any]:
         cleaned_linked_account_id = (linked_account_id or "").strip()
         if not cleaned_linked_account_id:
             raise HTTPException(
@@ -892,8 +909,10 @@ class RoutePayoutService:
                 },
             )
 
+        api_root = self._get_razorpay_api_root()
+
         return await self._razorpay_request(
             method="GET",
-            path=f"/accounts/{cleaned_linked_account_id}",
+            path=f"{api_root}/v2/accounts/{cleaned_linked_account_id}",
         )
   
