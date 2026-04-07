@@ -564,6 +564,31 @@ class AdminService:
 
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
+    
+    # app/services/admin_service.py
+
+async def fetch_user_bookings_with_details(self, user_id: str):
+    """
+    Fetches all bookings for a specific user with 
+    complete stop, payment, and refund context.
+    """
+    stmt = (
+        select(schema.TripBooking)
+        .options(
+            joinedload(schema.TripBooking.pickup_stop),
+            joinedload(schema.TripBooking.dropoff_stop),
+            joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+            joinedload(schema.TripBooking.payments),
+            joinedload(schema.TripBooking.route)
+        )
+        .where(schema.TripBooking.passenger_user_id == user_id)
+        .order_by(schema.TripBooking.created_at.desc())
+    )
+    
+    result = await self.db.execute(stmt)
+    return result.unique().scalars().all()
 
     # ============================================================
     # payout management, by Anubhab Dey
