@@ -7,7 +7,6 @@ from sqlalchemy import func, update
 from datetime import datetime, timezone, timedelta
 
 from geopy.distance import geodesic
-
 from app.db.database import get_async_session
 from app.db.schema import (
     ScheduledTrip,
@@ -268,7 +267,6 @@ async def start_trip(
     trip.status = ScheduledTripStatus.IN_PROGRESS
 
     await session.commit()
-
     return {
         "message": "Trip started",
         "start_time": to_ist(trip.actual_start_at),
