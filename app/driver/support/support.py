@@ -11,6 +11,8 @@ from pathlib import Path as FSPath
 from fastapi import Header
 from app.notifications.service import NotificationService
 from app.notifications.hub import WSHub
+from fastapi import Request  # ✅ ADD THIS
+
 
 from app.db.database import get_async_session
 from app.db.schema import SupportTicket, SupportStatus, User, UserRole
@@ -25,26 +27,40 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 # CREATE SUPPORT TICKET
 # ============================================================
+
+
 @router.post("/create")
 async def create_support_ticket(
+    request: Request,  # ✅ IMPORTANT FIX
     subject: str = Form(...),
     description: str = Form(...),
     attachment: Optional[UploadFile] = File(None),
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # ===========================
+    # VALIDATION
+    # ===========================
     if not subject.strip() or not description.strip():
         raise HTTPException(status_code=400, detail="Subject and description required")
 
+    # ===========================
+    # FILE UPLOAD
+    # ===========================
     file_path = None
-    if attachment:
+    if attachment and attachment.filename:
         file_ext = attachment.filename.split(".")[-1]
         filename = f"{uuid.uuid4()}.{file_ext}"
         file_location = UPLOAD_DIR / filename
+
         with open(file_location, "wb") as buffer:
             shutil.copyfileobj(attachment.file, buffer)
+
         file_path = str(file_location)
 
+    # ===========================
+    # CREATE TICKET
+    # ===========================
     ticket = SupportTicket(
         user_id=current_user.id,
         subject=subject,
@@ -52,6 +68,7 @@ async def create_support_ticket(
         attachment_path=file_path,
         status=SupportStatus.PENDING,
     )
+
     db.add(ticket)
     await db.commit()
     await db.refresh(ticket)
@@ -59,15 +76,22 @@ async def create_support_ticket(
     # ===========================
     # SEND NOTIFICATION TO ADMINS
     # ===========================
-    # Get all admin users
-    result = await db.execute(select(User).where(User.role == UserRole.ADMIN))
+    result = await db.execute(
+        select(User).where(User.role == UserRole.ADMIN)
+    )
     admins = result.scalars().all()
 
-    # Get WSHub from FastAPI app state
-    ws_hub: WSHub | None = getattr(router.app.state, "ws_hub", None)
-    notification_service = NotificationService(db=db, ws_hub=ws_hub)
+    # ✅ CORRECT WAY to get ws_hub
+    ws_hub: WSHub | None = getattr(request.app.state, "ws_hub", None)
 
-    # Send notification to each admin
+    notification_service = NotificationService(
+        db=db,
+        ws_hub=ws_hub
+    )
+
+    # ===========================
+    # NOTIFY EACH ADMIN
+    # ===========================
     for admin in admins:
         await notification_service.notify_user(
             user_id=admin.id,
@@ -80,7 +104,13 @@ async def create_support_ticket(
             },
         )
 
-    return {"message": "Support ticket created successfully", "ticket_id": ticket.id}
+    # ===========================
+    # RESPONSE
+    # ===========================
+    return {
+        "message": "Support ticket created successfully",
+        "ticket_id": ticket.id
+    }
 
 
 # ============================================================
