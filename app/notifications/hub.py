@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import WebSocket
+from fastapi.encoders import jsonable_encoder
 
 
 def utcnow() -> datetime:
@@ -79,18 +80,20 @@ class WSHub:
             return self._connections.get(user_id, {}).get(connection_id)
 
     async def send_to_connection(
-        self,
-        user_id: str,
-        connection_id: str,
-        payload: dict[str, Any],
-    ) -> bool:
+    self,
+    user_id: str,
+    connection_id: str,
+    payload: dict[str, Any],
+) -> bool:
         connection = await self._get_connection(user_id, connection_id)
         if connection is None:
             return False
 
         try:
+            safe_payload = jsonable_encoder(payload)
+
             async with connection.send_lock:
-                await connection.websocket.send_json(payload)
+                await connection.websocket.send_json(safe_payload)
             return True
         except Exception:
             await self.unregister(user_id, connection_id)
