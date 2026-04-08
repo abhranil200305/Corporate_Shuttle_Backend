@@ -43,6 +43,7 @@ from app.db.database import get_async_session
 from app.notifications import hub
 from app.notifications.hub import WSHub
 from app.notifications.schemas import NotificationDataPayload
+from app.notifications.service import NotificationService
 from app.payments.service import RoutePayoutService
 
 # Create ONE router for all admin tasks
@@ -405,8 +406,7 @@ async def verify_driver(
         if data.status == "verified"
         else f"Your profile was not approved. Reason: {data.rejection_reason}"
     )
-
-    await service.send_user_notification(
+    await NotificationService.notify_user(
         user_id=user_id,
         title=title,
         message=message,
@@ -443,7 +443,7 @@ async def verify_vehicle(
     )
     # --- ADD NOTIFICATION HERE ---
     status_msg = "approved" if data.status == "verified" else "rejected"
-    await service.send_user_notification(
+    await NotificationService.notify_user(
         user_id=user_id,
         title="Vehicle Verification Update",
         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
@@ -1202,7 +1202,7 @@ async def cancel_trip_by_id(
         raise HTTPException(status_code=status_code, detail=result["error"])
 
     if trip.driver_id:
-        await service.send_user_notification(
+        await NotificationService.notify_user(
             user_id=trip.driver_id,
             title="Trip Cancelled by Admin",
             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
@@ -1211,7 +1211,7 @@ async def cancel_trip_by_id(
 
     # 2. Notify All Booked Passengers (Note: removed 'db' from arguments)
     for booking in trip.bookings:
-        await service.send_user_notification(
+        await NotificationService.notify_user(
             user_id=booking.passenger_id,
             title="Urgent: Trip Cancelled",
             message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
@@ -1487,13 +1487,12 @@ async def handle_ticket(
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     status_msg = "resolved" if action == "resolve" else "rejected"
-    await service.send_user_notification(
+    await NotificationService.notify_user(
         user_id=ticket.user_id,
         title=f"Support Ticket {status_msg.capitalize()}",
         message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
         type="TICKET_UPDATE",
     )
-
     await db.commit()
     return {"message": f"Ticket {action} successfully"}
 
@@ -2201,8 +2200,8 @@ async def get_top_pickup_stops(
 
         return [
             {
-                #"route_id": row.route_id,
-                #"route_name": row.route_name,
+                # "route_id": row.route_id,
+                # "route_name": row.route_name,
                 "stop_id": row.stop_id,
                 "stop_name": row.stop_name,
                 "booking_count": row.booking_count,
