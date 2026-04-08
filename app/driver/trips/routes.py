@@ -40,6 +40,7 @@ async def get_all_routes(
                 "stop_id": rs.stop.id,
                 "name": rs.stop.name,
                 "sequence_no": rs.sequence_no,
+                "assume_time_diff_minutes": rs.assume_time_diff_minutes,  # ✅ added correctly
                 "boarding_allowed": rs.boarding_allowed,
                 "deboarding_allowed": rs.deboarding_allowed
             })

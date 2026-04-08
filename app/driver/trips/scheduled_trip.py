@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import func, update
 from datetime import datetime, timezone, timedelta
+from sqlalchemy.orm import selectinload
 
 from fastapi import Request
 from app.notifications.service import NotificationService
@@ -312,7 +313,7 @@ async def start_trip(
 @router.post("/{trip_id}/stop-action")
 async def stop_action(
     trip_id: str,
-    request: Request,  # ✅ Added for NotificationService
+    request: Request,
     stop_id: str = Form(...),
     mode: str = Form(...),
     session: AsyncSession = Depends(get_async_session),
@@ -335,10 +336,9 @@ async def stop_action(
         select(RouteStop).where(
             RouteStop.route_id == trip.route_id,
             RouteStop.stop_id == stop_id
-        )
+        ).options(selectinload(RouteStop.stop))
     )
     route_stop = result.scalar_one_or_none()
-
     if not route_stop:
         raise HTTPException(400, "Stop not found")
 
@@ -352,7 +352,6 @@ async def stop_action(
         )
     )
     event = result.scalar_one_or_none()
-
     if not event:
         raise HTTPException(400, "Trip event not found")
 
@@ -372,7 +371,6 @@ async def stop_action(
 
         assume_minutes = route_stop.assume_time_diff_minutes or 0
         min_time = event.arrival_time + timedelta(minutes=assume_minutes)
-
         if current_time < min_time:
             raise HTTPException(400, "Cannot depart early")
         event.departure_time = current_time
@@ -381,57 +379,69 @@ async def stop_action(
         raise HTTPException(400, "Invalid mode")
 
     # -------------------------------
+    # Commit trip event changes first
+    # -------------------------------
+    await session.commit()
+
+    # -------------------------------
     # Notifications
     # -------------------------------
     notification_service = NotificationService(
         db=session,
-        ws_hub=request.app.state.ws_hub
+        ws_hub=getattr(request.app.state, "ws_hub", None)
     )
 
     # Get active bookings
     result = await session.execute(
-        select(TripBooking).where(
+        select(TripBooking)
+        .where(
             TripBooking.scheduled_trip_id == trip_id,
             TripBooking.booking_status.in_([BookingStatus.BOOKED, BookingStatus.BOARDED])
         )
+        .options(selectinload(TripBooking.boarding_stop), selectinload(TripBooking.drop_stop))
     )
     bookings = result.scalars().all()
 
     for booking in bookings:
-        # Passenger boarding notifications
-        if mode == "arrive" and booking.boarding_stop_id == stop_id:
+        boarding_stop_seq = booking.boarding_stop.sequence_no
+        drop_stop_seq = booking.drop_stop.sequence_no
+        current_stop_seq = route_stop.sequence_no
+
+        # Passenger boarding notification
+        if mode == "arrive" and str(booking.boarding_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Bus Arrived",
                 message=f"Bus has arrived at your boarding stop.",
-                data={"trip_id": trip.id, "stop_id": stop_id}
+                data={"trip_id": trip.id, "stop_id": stop_id},
             )
+
         # Departure notifications
-        if mode == "depart" and booking.drop_stop_id == stop_id:
+        if mode == "depart" and str(booking.drop_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Next Stop Approaching",
                 message=f"Bus is leaving your drop stop.",
-                data={"trip_id": trip.id, "stop_id": stop_id}
+                data={"trip_id": trip.id, "stop_id": stop_id},
             )
+
         # Missed boarding
-        if booking.boarding_stop_id < stop_id and not booking.boarded:
+        if mode == "arrive" and not booking.boarded and boarding_stop_seq < current_stop_seq:
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Missed Boarding",
                 message="You missed your boarding stop!",
-                data={"trip_id": trip.id, "stop_id": stop_id}
+                data={"trip_id": trip.id, "stop_id": stop_id},
             )
+
         # Missed drop
-        if booking.drop_stop_id < stop_id and booking.boarded:
+        if mode == "depart" and booking.boarded and drop_stop_seq < current_stop_seq:
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Missed Drop",
                 message="Bus passed your drop stop!",
-                data={"trip_id": trip.id, "stop_id": stop_id}
+                data={"trip_id": trip.id, "stop_id": stop_id},
             )
-
-    await session.commit()
 
     return {"message": f"{mode} success", "time": to_ist(current_time)}
 
@@ -524,13 +534,18 @@ async def emergency_end_trip(
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    # Validate reason length
+    # -----------------------------
+    # 1. Validate reason
+    # -----------------------------
     if len(reason.strip()) < 100:
         raise HTTPException(
             status_code=400,
             detail="Reason must be at least 100 characters long."
         )
 
+    # -----------------------------
+    # 2. Validate trip
+    # -----------------------------
     trip = await session.get(ScheduledTrip, trip_id)
 
     if not trip or trip.driver_user_id != current_user.id:
@@ -539,47 +554,65 @@ async def emergency_end_trip(
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
-    # CANCEL BOOKINGS
+    now = now_utc()
+
+    # -----------------------------
+    # 3. CANCEL BOOKINGS (OPTIMIZED)
+    # -----------------------------
     await session.execute(
         update(TripBooking)
         .where(
             TripBooking.scheduled_trip_id == trip_id,
-            TripBooking.booking_status.in_([
-                BookingStatus.BOOKED,
-                BookingStatus.BOARDED
-            ])
+            (
+                (TripBooking.booking_status == BookingStatus.BOOKED)
+                |
+                (
+                    (TripBooking.booking_status == BookingStatus.BOARDED)
+                    & (TripBooking.completed_at.is_(None))
+                )
+            )
         )
         .values(
             booking_status=BookingStatus.CANCELLED,
-            cancelled_at=now_utc()
+            cancelled_at=now
         )
     )
 
-    trip.actual_end_at = now_utc()
+    # -----------------------------
+    # 4. Update trip
+    # -----------------------------
+    trip.actual_end_at = now
     trip.ended_at_lat = lat
     trip.ended_at_long = lng
     trip.status = ScheduledTripStatus.PREMATURE_END
     trip.premature_end_reason = reason
 
     await session.commit()
+
+    # -----------------------------
+    # 5. Notify admins
+    # -----------------------------
     notification_service = NotificationService(
-    db=session,
-    ws_hub=request.app.state.ws_hub
-    )
-    result = await session.execute(
-    select(User).where(User.role == UserRole.ADMIN)
+        db=session,
+        ws_hub=request.app.state.ws_hub
     )
 
+    result = await session.execute(
+        select(User).where(User.role == UserRole.ADMIN)
+    )
     admins = result.scalars().all()
 
     for admin in admins:
         await notification_service.notify_user(
-        user_id=admin.id,
-        title="Trip Premature End",
-        message="Trip ended early due to emergency",
-        data={"trip_id": trip.id}
-    )
+            user_id=admin.id,
+            title="Trip Premature End",
+            message="Trip ended early due to emergency",
+            data={"trip_id": trip.id}
+        )
 
+    # -----------------------------
+    # 6. Response
+    # -----------------------------
     return {
         "message": "Emergency ended",
         "reason": reason,

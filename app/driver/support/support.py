@@ -9,7 +9,8 @@ import shutil
 import uuid
 from pathlib import Path as FSPath
 from fastapi import Header
-
+from app.notifications.service import NotificationService
+from app.notifications.hub import WSHub
 
 from app.db.database import get_async_session
 from app.db.schema import SupportTicket, SupportStatus, User, UserRole
@@ -55,6 +56,30 @@ async def create_support_ticket(
     await db.commit()
     await db.refresh(ticket)
 
+    # ===========================
+    # SEND NOTIFICATION TO ADMINS
+    # ===========================
+    # Get all admin users
+    result = await db.execute(select(User).where(User.role == UserRole.ADMIN))
+    admins = result.scalars().all()
+
+    # Get WSHub from FastAPI app state
+    ws_hub: WSHub | None = getattr(router.app.state, "ws_hub", None)
+    notification_service = NotificationService(db=db, ws_hub=ws_hub)
+
+    # Send notification to each admin
+    for admin in admins:
+        await notification_service.notify_user(
+            user_id=admin.id,
+            title="New Support Ticket",
+            message=f"A new support ticket has been submitted by {current_user.email}",
+            data={
+                "ticket_id": ticket.id,
+                "subject": subject,
+                "description": description,
+            },
+        )
+
     return {"message": "Support ticket created successfully", "ticket_id": ticket.id}
 
 
@@ -85,90 +110,6 @@ async def get_my_tickets(
         for t in tickets
     ]
 
-
-# ============================================================
-# ADMIN - GET ALL TICKETS
-# ============================================================
-@router.get("/admin/all")
-async def get_all_tickets(
-    status: Optional[SupportStatus] = None,
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),
-):
-    if current_user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    query = select(SupportTicket).order_by(SupportTicket.created_at.desc())
-    if status:
-        query = query.where(SupportTicket.status == status)
-
-    result = await db.execute(query)
-    tickets = result.scalars().all()
-
-    return [
-        {
-            "id": t.id,
-            "user_id": t.user_id,
-            "subject": t.subject,
-            "description": t.description,
-            "status": t.status,
-            "attachment": t.attachment_path,
-            "created_at": t.created_at,
-        }
-        for t in tickets
-    ]
-
-
-# ============================================================
-# ADMIN - RESOLVE TICKET
-# ============================================================
-@router.patch("/admin/{ticket_id}/resolve")
-async def resolve_ticket(
-    ticket_id: str,
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),
-):
-    if current_user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
-    ticket = result.scalar_one_or_none()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-
-    ticket.status = SupportStatus.RESOLVED
-    ticket.resolved_by_admin_id = current_user.id
-    ticket.resolved_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    return {"message": "Ticket resolved successfully"}
-
-
-# ============================================================
-# ADMIN - REJECT TICKET
-# ============================================================
-@router.patch("/admin/{ticket_id}/reject")
-async def reject_ticket(
-    ticket_id: str,
-    reason: str = Form(...),
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),
-):
-    if current_user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Admin only")
-
-    result = await db.execute(select(SupportTicket).where(SupportTicket.id == ticket_id))
-    ticket = result.scalar_one_or_none()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-
-    ticket.status = SupportStatus.REJECTED
-    ticket.rejection_reason = reason
-    ticket.resolved_by_admin_id = current_user.id
-    ticket.resolved_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    return {"message": "Ticket rejected successfully"}
 
 
 # ============================================================
