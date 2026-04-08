@@ -2622,11 +2622,6 @@ class PassengerService:
     def _build_qr_token(self, booking: TripBooking) -> tuple[str, dict[str, Any]]:
         payload = {
             "booking_id": booking.id,
-            "scheduled_trip_id": booking.scheduled_trip_id,
-            "passenger_user_id": booking.passenger_user_id,
-            "pickup_stop_id": booking.pickup_stop_id,
-            "dropoff_stop_id": booking.dropoff_stop_id,
-            "booking_status": booking.booking_status.value,
             "issued_at": int(utcnow().timestamp()),
             "expires_at": int((utcnow() + timedelta(hours=12)).timestamp()),
         }
