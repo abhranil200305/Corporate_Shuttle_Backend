@@ -97,6 +97,11 @@ async def lifespan(app: FastAPI):
 
         with suppress(asyncio.CancelledError):
             await driver_trip_reminder_task
+
+        ws_hub = getattr(app.state, "ws_hub", None)
+        if ws_hub is not None:
+            with suppress(Exception):
+                await ws_hub.shutdown(code=1001)
         
         await dispose_database_engine()
         print("✅ Database engine disposed")
