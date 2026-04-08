@@ -86,7 +86,7 @@ def decode_qr_token(qr_token: str):
         raise HTTPException(400, "QR split failed")
 
     try:
-        payload_bytes = base64.urlsafe_b64decode(add_padding(encoded_payload))
+        payload_bytes = base64.b64decode(add_padding(encoded_payload))
         payload = json.loads(payload_bytes)
     except Exception as e:
         print("DECODE ERROR:", str(e))
