@@ -27,9 +27,6 @@ async def get_trip_details(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    # 🔒 Optional: only driver can access own trip
-    # (you can relax later if needed)
-    
     # 1️⃣ Fetch trip with route + stops + vehicle + driver
     result = await db.execute(
         select(ScheduledTrip)
@@ -67,12 +64,13 @@ async def get_trip_details(
         for e in events
     }
 
-    # 3️⃣ Build stops list (merge planned + actual)
+    # 3️⃣ Build stops list (sorted + merged planned + actual)
     stops_data = []
 
-    for rs in trip.route.route_stops:
-        stop = rs.stop
+    sorted_stops = sorted(trip.route.route_stops, key=lambda x: x.sequence_no)
 
+    for rs in sorted_stops:
+        stop = rs.stop
         event = event_map.get(stop.id)
 
         stops_data.append(
@@ -82,6 +80,7 @@ async def get_trip_details(
                 "lat": float(stop.lat),
                 "lng": float(stop.lng),
                 "sequence": rs.sequence_no,
+                "assume_time_diff_minutes": rs.assume_time_diff_minutes,  # ✅ added
                 "boarding_allowed": rs.boarding_allowed,
                 "deboarding_allowed": rs.deboarding_allowed,
                 "arrival_time": event["arrival_time"] if event else None,
