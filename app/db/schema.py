@@ -32,7 +32,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
-    text
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -164,10 +164,12 @@ class ScanType(str, enum.Enum):
     BOARD = "board"
     DROP = "drop"
 
+
 class SupportStatus(str, enum.Enum):
     PENDING = "pending"
     RESOLVED = "resolved"
     REJECTED = "rejected"
+
 
 # ============================================================
 # auth / users
@@ -323,6 +325,7 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
     __table_args__ = (
         Index("ix_user_sessions_user_id_expires_at", "user_id", "expires_at"),
     )
+
 
 class UserNotification(UUIDPKMixin, Base):
     __tablename__ = "user_notifications"
@@ -698,7 +701,9 @@ class RouteStop(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
     sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    assume_time_diff_minutes: Mapped[int] = mapped_column(Integer, nullable=True, default=0)
+    assume_time_diff_minutes: Mapped[int] = mapped_column(
+        Integer, nullable=True, default=0
+    )
     boarding_allowed: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True
     )
@@ -879,9 +884,9 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         foreign_keys=[route_id],
     )
     trip_events: Mapped[list["TripEvent"]] = relationship(
-    back_populates="scheduled_trip",
-    cascade="all, delete-orphan",
-    passive_deletes=True,
+        back_populates="scheduled_trip",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
     )
     driver: Mapped["User"] = relationship(
         back_populates="driven_trips",
@@ -924,7 +929,8 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         Index("ix_scheduled_trips_vehicle_start", "vehicle_id", "planned_start_at"),
         Index("ix_scheduled_trips_route_start", "route_id", "planned_start_at"),
     )
-    
+
+
 class TripEvent(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "trip_events"
 
@@ -967,7 +973,6 @@ class TripEvent(UUIDPKMixin, TimestampMixin, Base):
             "stop_id",
             name="uq_trip_events_trip_stop",
         ),
-
         # ⚡ Faster query
         Index(
             "ix_trip_events_trip_stop",
@@ -1063,9 +1068,7 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
     refund_retry_after: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
-    refund_attempt_count: Mapped[int | None] = mapped_column(
-        Integer, nullable=True
-    )
+    refund_attempt_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     boarded_near_stop_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -1403,6 +1406,7 @@ class BookingRating(UUIDPKMixin, TimestampMixin, Base):
         ),
     )
 
+
 class SupportTicket(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "support_tickets"
 
@@ -1415,10 +1419,7 @@ class SupportTicket(UUIDPKMixin, TimestampMixin, Base):
     subject: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
 
-    attachment_path: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True
-    )
+    attachment_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     status: Mapped[SupportStatus] = mapped_column(
         enum_type(SupportStatus, "support_status"),
