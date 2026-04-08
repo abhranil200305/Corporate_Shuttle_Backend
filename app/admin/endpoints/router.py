@@ -380,9 +380,11 @@ async def deactivate_driver(
 async def verify_driver(
     user_id: str,
     data: VerificationUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
+    hub = get_ws_hub(request)
+    service = AdminService(db, ws_hub=hub)
 
     # 1. Check if the driver profile exists
     driver = await service.fetch_driver_by_id(user_id)
@@ -410,10 +412,7 @@ async def verify_driver(
         message=message,
         data={"type": "verification_update", "status": data.status},
     )
-    # -----------------------------
-
-    # return {"message": f"Driver verification status updated to {data.status}", "user_id": user_id}
-
+    await db.commit()
     return {
         # "message": f"Driver verification status updated to {data.status}",
         "message": f"Driver verification status updated to {data.status}",
@@ -427,9 +426,11 @@ async def verify_driver(
 async def verify_vehicle(
     user_id: str,
     data: VehicleVerificationUpdate,
+    request: Request,
     db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
+    hub = get_ws_hub(request)
+    service = AdminService(db, ws_hub=hub)
 
     # 1. Check if the vehicle exists for this user
     driver = await service.fetch_driver_by_id(user_id)  # Reuse your fetch logic
@@ -446,9 +447,10 @@ async def verify_vehicle(
         user_id=user_id,
         title="Vehicle Verification Update",
         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
-        data={"type": "vehicle_update", "status": data.status},
+        # data={"type": "vehicle_update", "status": data.status},
+        type="vehicle_update",
     )
-
+    await db.commit()
     return {
         "message": f"Vehicle verification status updated to {data.status}",
         "user_id": user_id,
@@ -1182,10 +1184,12 @@ async def monitor_all_trips(
 @router.patch("/trips/{trip_id}/cancel")
 async def cancel_trip_by_id(
     trip_id: str,
+    request: Request,
     reason: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_async_session),
+    db: AsyncSession = Depends(get_async_session),                                    # 1. ADD THIS
 ):
-    service = AdminService(db)
+    hub = get_ws_hub(request)                             # 2. GET HUB
+    service = AdminService(db, ws_hub=hub)
     trip = await service.get_trip_by_id(trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
@@ -1197,33 +1201,26 @@ async def cancel_trip_by_id(
         status_code = 404 if "not found" in result["error"] else 400
         raise HTTPException(status_code=status_code, detail=result["error"])
 
-    # 1. Notify Driver
     if trip.driver_id:
         await service.send_user_notification(
-            db,
-            trip.driver_id,
-            "Trip Cancelled by Admin",
-            f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-            "TRIP_CANCELLED",
+            user_id=trip.driver_id,
+            title="Trip Cancelled by Admin",
+            message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
+            type="TRIP_CANCELLED",
         )
 
-    # 2. Notify All Booked Passengers
+    # 2. Notify All Booked Passengers (Note: removed 'db' from arguments)
     for booking in trip.bookings:
         await service.send_user_notification(
-            db,
-            booking.passenger_id,
-            "Urgent: Trip Cancelled",
-            f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-            "TRIP_CANCELLED",
+            user_id=booking.passenger_id,
+            title="Urgent: Trip Cancelled",
+            message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
+            type="TRIP_CANCELLED",
         )
 
     await db.commit()
     return {"status": "success", "message": "Trip cancelled and users notified."}
 
-    return {
-        "status": "success",
-        "message": f"Trip {trip_id} has been cancelled successfully.",
-    }
 
 
 # @router.patch("/trips/{trip_id}/cancel")
@@ -1479,22 +1476,23 @@ async def list_tickets(
 async def handle_ticket(
     ticket_id: str,
     action: str,  # 'resolve' or 'reject'
+    request: Request,
     note: str = Body(..., embed=True),
     current_admin: schema.User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
+    hub = get_ws_hub(request)
+    service = AdminService(db, ws_hub=hub)
     ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     status_msg = "resolved" if action == "resolve" else "rejected"
     await service.send_user_notification(
-        db,
-        ticket.user_id,
-        f"Support Ticket {status_msg.capitalize()}",
-        f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-        "TICKET_UPDATE",
+        user_id=ticket.user_id,
+        title=f"Support Ticket {status_msg.capitalize()}",
+        message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+        type="TICKET_UPDATE",
     )
 
     await db.commit()
@@ -1517,7 +1515,7 @@ async def create_ticket(
         status=schema.SupportStatus.PENDING,
     )
     db.add(new_ticket)
-    
+
     await service.send_user_notification(
         db,
         current_user.id,
