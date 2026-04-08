@@ -134,3 +134,23 @@ class WSHub:
     async def connection_count_for_user(self, user_id: str) -> int:
         async with self._lock:
             return len(self._connections.get(user_id, {}))
+        
+    async def shutdown(self, *, code: int = 1001) -> None:
+        async with self._lock:
+            snapshot = {
+                user_id: dict(connections)
+                for user_id, connections in self._connections.items()
+            }
+
+        for user_id, user_connections in snapshot.items():
+            for connection_id, connection in user_connections.items():
+                try:
+                    async with connection.send_lock:
+                        await connection.websocket.close(code=code)
+                except Exception:
+                    pass
+
+                await self.unregister(user_id, connection_id)
+
+        async with self._lock:
+            self._connections.clear()
