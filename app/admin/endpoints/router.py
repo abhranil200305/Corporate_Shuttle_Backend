@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
@@ -1186,9 +1186,9 @@ async def cancel_trip_by_id(
     trip_id: str,
     request: Request,
     reason: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_async_session),                                    # 1. ADD THIS
+    db: AsyncSession = Depends(get_async_session),  # 1. ADD THIS
 ):
-    hub = get_ws_hub(request)                             # 2. GET HUB
+    hub = get_ws_hub(request)  # 2. GET HUB
     service = AdminService(db, ws_hub=hub)
     trip = await service.get_trip_by_id(trip_id)
     if not trip:
@@ -1220,7 +1220,6 @@ async def cancel_trip_by_id(
 
     await db.commit()
     return {"status": "success", "message": "Trip cancelled and users notified."}
-
 
 
 # @router.patch("/trips/{trip_id}/cancel")
@@ -2156,6 +2155,66 @@ async def get_all_transactions(
         )
 
     return {"total_count": len(report), "data": report}
+
+
+@router.get(
+    "/analytics/most-booked-routes",
+    response_model=List[dict],
+    status_code=200,
+)
+async def get_most_booked_routes(
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminService(db)
+    try:
+        # Call the service method
+        stats = await service.get_top_booking_routes()
+
+        return [
+            {
+                "route_id": row.route_id,
+                "route_name": row.route_name,
+                "total_bookings": row.total_bookings,
+            }
+            for row in stats
+        ]
+    except Exception as e:
+        print(f"Error fetching route analytics: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve most booked routes"
+        )
+
+
+@router.get(
+    "/analytics/top-pickup-stops",
+    response_model=List[dict],
+    status_code=200,
+)
+async def get_top_pickup_stops(
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminService(db)
+    try:
+        stats = await service.get_most_popular_pickup_stops()
+
+        return [
+            {
+                #"route_id": row.route_id,
+                #"route_name": row.route_name,
+                "stop_id": row.stop_id,
+                "stop_name": row.stop_name,
+                "booking_count": row.booking_count,
+            }
+            for row in stats
+        ]
+    except Exception as e:
+        # Useful for catching those pesky attribute errors!
+        print(f"Error fetching pickup analytics: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve top pickup stops analytics"
+        )
 
 
 # ============================================================

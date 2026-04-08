@@ -7,34 +7,34 @@ from sqlalchemy import desc, func, select, update
 from sqlalchemy.orm import joinedload, selectinload
 
 from app.db import schema
+from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 from app.payments.service import RoutePayoutService
-from app.notifications.hub import WSHub
+
 
 class AdminService:
-    def __init__(self, db,ws_hub: WSHub | None = None):
+    def __init__(self, db, ws_hub: WSHub | None = None):
         self.db = db
         self.ws_hub = ws_hub
         self.notifications = NotificationService(db, ws_hub)
 
-    async def send_user_notification(self, user_id: str, title: str, message: str, type: str):
-     new_notif = schema.Notification(
-        user_id=user_id,
-        title=title,
-        message=message,
-        notification_type=type, # e.g., "TRIP_CANCELLED", "PAYOUT_PROCESSED"
-        is_read=False,
-        created_at=datetime.now(timezone.utc)
-     )
-     self.db.add(new_notif)
-     if self.ws_hub:
-            await self.ws_hub.send_personal_message(user_id, {
-                "title": title, 
-                "message": message,
-                "type": type
-            })
+    async def send_user_notification(
+        self, user_id: str, title: str, message: str, type: str
+    ):
+        new_notif = schema.Notification(
+            user_id=user_id,
+            title=title,
+            message=message,
+            notification_type=type,  # e.g., "TRIP_CANCELLED", "PAYOUT_PROCESSED"
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        self.db.add(new_notif)
+        if self.ws_hub:
+            await self.ws_hub.send_personal_message(
+                user_id, {"title": title, "message": message, "type": type}
+            )
 
-    
     async def fetch_detailed_drivers(self):
         stmt = (
             select(schema.User)
@@ -611,9 +611,6 @@ class AdminService:
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
-
-     
-
     # app/admin/logic/service.py
 
     # async def fetch_detailed_transactions(self, skip: int, limit: int, status: str = None):
@@ -675,35 +672,38 @@ class AdminService:
         # --- FIXED: These are now outside the IF block ---
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
-    
+
     async def fetch_user_transaction_history(
-    self, user_id: str, skip: int, limit: int, status: str = None):
-       stmt = (
-        select(schema.TripBooking)
-        .where(schema.TripBooking.passenger_user_id == user_id)  # Filter by specific user
-        .options(
-            joinedload(schema.TripBooking.passenger).joinedload(
-                schema.User.passenger_profile
-            ),
-            joinedload(schema.TripBooking.scheduled_trip)
-            .joinedload(schema.ScheduledTrip.driver)
-            .joinedload(schema.User.driver_profile),
-            joinedload(schema.TripBooking.route),
-            joinedload(schema.TripBooking.pickup_stop),
-            joinedload(schema.TripBooking.dropoff_stop),
-            joinedload(schema.TripBooking.payments),
-            joinedload(schema.TripBooking.scan_events),
+        self, user_id: str, skip: int, limit: int, status: str = None
+    ):
+        stmt = (
+            select(schema.TripBooking)
+            .where(
+                schema.TripBooking.passenger_user_id == user_id
+            )  # Filter by specific user
+            .options(
+                joinedload(schema.TripBooking.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+                joinedload(schema.TripBooking.route),
+                joinedload(schema.TripBooking.pickup_stop),
+                joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.scan_events),
+            )
+            .order_by(schema.TripBooking.created_at.desc())
+            .offset(skip)
+            .limit(limit)
         )
-        .order_by(schema.TripBooking.created_at.desc())
-        .offset(skip)
-        .limit(limit)
-    )
 
-       if status:
-        stmt = stmt.where(schema.TripBooking.booking_status == status)
+        if status:
+            stmt = stmt.where(schema.TripBooking.booking_status == status)
 
-       result = await self.db.execute(stmt)
-       return result.unique().scalars().all()
+        result = await self.db.execute(stmt)
+        return result.unique().scalars().all()
 
     async def fetch_complete_passenger_data(self, skip: int = 0, limit: int = 50):
         stmt = (
@@ -726,6 +726,57 @@ class AdminService:
 
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
+
+    async def get_top_booking_routes(self):
+        query = (
+            select(
+                schema.Route.id.label("route_id"),
+                schema.Route.name.label("route_name"),
+                func.count(schema.TripBooking.id).label("total_bookings"),
+            )
+            # Link Route -> ScheduledTrip -> TripBooking
+            .join(
+                schema.ScheduledTrip, schema.Route.id == schema.ScheduledTrip.route_id
+            )
+            .join(
+                schema.TripBooking,
+                schema.ScheduledTrip.id == schema.TripBooking.scheduled_trip_id,
+            )
+            # Grouping by ID ensures accuracy if names are similar
+            .group_by(schema.Route.id, schema.Route.name)
+            # Highest bookings first
+            .order_by(desc("total_bookings"))
+        )
+
+        result = await self.db.execute(query)
+        return result.all()
+
+    async def get_most_popular_pickup_stops(self):
+        query = (
+            select(
+                schema.Route.id.label("route_id"),
+                schema.Route.name.label("route_name"),
+                schema.Stop.id.label("stop_id"),
+                schema.Stop.name.label("stop_name"),
+                func.count(schema.TripBooking.id).label("booking_count"),
+            )
+            .join(
+                schema.ScheduledTrip, schema.Route.id == schema.ScheduledTrip.route_id
+            )
+            .join(
+                schema.TripBooking,
+                schema.ScheduledTrip.id == schema.TripBooking.scheduled_trip_id,
+            )
+            # We join Stop specifically on the pickup_stop_id
+            .join(schema.Stop, schema.TripBooking.pickup_stop_id == schema.Stop.id)
+            .group_by(
+                schema.Route.id, schema.Route.name, schema.Stop.id, schema.Stop.name
+            )
+            .order_by(desc("booking_count"))
+        )
+
+        result = await self.db.execute(query)
+        return result.all()
 
     # async def fetch_detailed_transactions(
     #     self, skip: int, limit: int, status: str = None
