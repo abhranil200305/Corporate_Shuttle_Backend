@@ -36,6 +36,7 @@ class ScanRequest(BaseModel):
     qr_token: str
     lat: float
     lng: float
+    scan_type: ScanType   # ✅ IMPORTANT: driver decides board/drop
 
 
 # ============================================================
@@ -47,7 +48,7 @@ if not QR_SECRET:
 
 
 # ============================================================
-# HAVERSINE FUNCTION
+# HAVERSINE
 # ============================================================
 def haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
@@ -61,57 +62,36 @@ def haversine(lat1, lon1, lat2, lon2):
 
 
 # ============================================================
-# BASE64 PADDING
+# BASE64 FIX
 # ============================================================
 def add_padding(s: str) -> str:
-    return s + '=' * (-len(s) % 4)
+    return s + "=" * (-len(s) % 4)
 
 
 # ============================================================
 # DECODE QR TOKEN
 # ============================================================
 def decode_qr_token(qr_token: str):
-    qr_token = qr_token.strip()
-    print("\n========== QR DEBUG START ==========")
-    print("TOKEN LENGTH:", len(qr_token))
-    print("RAW TOKEN:", qr_token)
-
     if "." not in qr_token:
-        raise HTTPException(400, "QR format invalid (missing signature separator)")
+        raise HTTPException(400, "Invalid QR format")
+
+    encoded_payload, signature = qr_token.rsplit(".", 1)
 
     try:
-        encoded_payload, signature = qr_token.rsplit(".", 1)
-    except Exception as e:
-        print("SPLIT ERROR:", str(e))
-        raise HTTPException(400, "QR split failed")
-
-    try:
-        payload_bytes = base64.b64decode(add_padding(encoded_payload))
+        payload_bytes = base64.urlsafe_b64decode(add_padding(encoded_payload))
         payload = json.loads(payload_bytes)
-    except Exception as e:
-        print("DECODE ERROR:", str(e))
-        raise HTTPException(400, f"Base64/JSON decode failed: {str(e)}")
+    except Exception:
+        raise HTTPException(400, "Invalid QR payload")
 
-    try:
-        expected_signature = hmac.new(
-            QR_SECRET.encode(),
-            payload_bytes,
-            hashlib.sha256
-        ).hexdigest()
+    expected_signature = hmac.new(
+        QR_SECRET.encode(),
+        payload_bytes,
+        hashlib.sha256
+    ).hexdigest()
 
-        print("EXPECTED SIGNATURE:", expected_signature)
-        print("RECEIVED SIGNATURE:", signature)
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(400, "Invalid QR signature")
 
-        if not hmac.compare_digest(signature, expected_signature):
-            raise HTTPException(400, "Invalid QR signature")
-    except HTTPException:
-        raise
-    except Exception as e:
-        print("SIGNATURE ERROR:", str(e))
-        raise HTTPException(400, f"Signature verification failed: {str(e)}")
-
-    print("DECODE SUCCESS PAYLOAD:", payload)
-    print("========== QR DEBUG END ==========\n")
     return payload
 
 
@@ -125,143 +105,136 @@ async def scan_passenger(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        qr_token = data.qr_token
-        lat = data.lat
-        lng = data.lng
+    # -------------------------
+    # 1. Decode QR
+    # -------------------------
+    payload = decode_qr_token(data.qr_token)
 
-        print("\n==== SCAN REQUEST START ====")
+    booking_id = payload.get("booking_id")
 
-        # -------------------------
-        # 1. Decode QR
-        # -------------------------
-        payload = decode_qr_token(qr_token)
-        qr_trip_id = payload.get("scheduled_trip_id")
-        booking_id = payload.get("booking_id")
-        passenger_id = payload.get("passenger_user_id")
-        scan_type = payload.get("scan_type", "board")
+    if not booking_id:
+        raise HTTPException(400, "Invalid QR (missing booking_id)")
 
-        print("PAYLOAD:", payload)
+    # -------------------------
+    # 2. Expiry
+    # -------------------------
+    if datetime.now(timezone.utc).timestamp() > payload["expires_at"]:
+        raise HTTPException(400, "QR expired")
 
-        if scan_type not in ["board", "drop"]:
-            raise HTTPException(400, "Invalid scan type in QR")
+    # -------------------------
+    # 3. Trip validation
+    # -------------------------
+    trip = await db.get(ScheduledTrip, trip_id)
+    if not trip:
+        raise HTTPException(404, "Trip not found")
 
-        scan_type_enum = ScanType(scan_type)
+    if trip.driver_user_id != current_user.id:
+        raise HTTPException(403, "Not your trip")
 
-        # -------------------------
-        # 2. Expiry
-        # -------------------------
-        if datetime.now(timezone.utc).timestamp() > payload["expires_at"]:
-            raise HTTPException(400, "QR expired")
-
-        # -------------------------
-        # 3. Trip validation
-        # -------------------------
-        if qr_trip_id != trip_id:
-            raise HTTPException(400, "QR does not belong to this trip")
-
-        trip = await db.get(ScheduledTrip, trip_id)
-        if not trip:
-            raise HTTPException(404, "Trip not found")
-        if trip.driver_user_id != current_user.id:
-            raise HTTPException(403, "Not your trip")
-
-        # -------------------------
-        # 4. Booking validation
-        # -------------------------
-        result = await db.execute(
-            select(TripBooking).where(
-                TripBooking.id == booking_id,
-                TripBooking.scheduled_trip_id == trip_id
-            )
+    # -------------------------
+    # 4. Booking validation
+    # -------------------------
+    result = await db.execute(
+        select(TripBooking).where(
+            TripBooking.id == booking_id,
+            TripBooking.scheduled_trip_id == trip_id
         )
-        booking = result.scalar_one_or_none()
-        if not booking:
-            raise HTTPException(404, "Booking not found")
-        if booking.passenger_user_id != passenger_id:
-            raise HTTPException(400, "Passenger mismatch")
+    )
+    booking = result.scalar_one_or_none()
 
-        # -------------------------
-        # 5. State validation
-        # -------------------------
-        if scan_type_enum == ScanType.BOARD:
-            if booking.booking_status != BookingStatus.BOOKED:
-                raise HTTPException(400, "Passenger not eligible for boarding")
-        elif scan_type_enum == ScanType.DROP:
-            if booking.booking_status != BookingStatus.BOARDED:
-                raise HTTPException(400, "Passenger not boarded yet")
+    if not booking:
+        raise HTTPException(404, "Booking not found")
 
-        # -------------------------
-        # 6. Stop
-        # -------------------------
-        stop_id = booking.pickup_stop_id if scan_type_enum == ScanType.BOARD else booking.dropoff_stop_id
-        stop = await db.get(Stop, stop_id)
-        if not stop:
-            raise HTTPException(404, "Stop not found")
+    # -------------------------
+    # 5. Prevent duplicate scans
+    # -------------------------
+    if data.scan_type == ScanType.BOARD:
+        if booking.booking_status == BookingStatus.BOARDED:
+            raise HTTPException(400, "Already boarded")
 
-        # -------------------------
-        # 7. Check radius
-        # -------------------------
-        distance = haversine(lat, lng, float(stop.lat), float(stop.lng))
-        within_radius = distance <= stop.radius_meters
+    if data.scan_type == ScanType.DROP:
+        if booking.booking_status == BookingStatus.COMPLETED:
+            raise HTTPException(400, "Already dropped")
 
-        # -------------------------
-        # 8. Save scan event
-        # -------------------------
-        scan_event = TripScanEvent(
-            scheduled_trip_id=trip_id,
-            booking_id=booking_id,
-            driver_user_id=current_user.id,
-            scan_type=scan_type_enum,
-            scan_lat=Decimal(str(lat)),
-            scan_lng=Decimal(str(lng)),
-            matched_stop_id=stop.id if within_radius else None,
-            within_radius=within_radius,
-            qr_payload_user_id=passenger_id,
-        )
-        db.add(scan_event)
+    # -------------------------
+    # 6. State validation
+    # -------------------------
+    if data.scan_type == ScanType.BOARD:
+        if booking.booking_status != BookingStatus.BOOKED:
+            raise HTTPException(400, "Not eligible for boarding")
 
-        # -------------------------
-        # 9. Update booking only if within radius
-        # -------------------------
-        if within_radius:
-            if scan_type_enum == ScanType.BOARD:
-                booking.booking_status = BookingStatus.BOARDED
-                booking.boarded_at = datetime.now(timezone.utc)
-                booking.boarded_near_stop_id = stop.id
-            elif scan_type_enum == ScanType.DROP:
-                booking.booking_status = BookingStatus.COMPLETED
-                booking.completed_at = datetime.now(timezone.utc)
-                booking.completed_near_stop_id = stop.id
-            db.add(booking)
-            response_message = "Scan successful"
-        
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Scan not within the determined stop radius"
-            )
+    if data.scan_type == ScanType.DROP:
+        if booking.booking_status != BookingStatus.BOARDED:
+            raise HTTPException(400, "Passenger not boarded")
 
-        await db.commit()
+    # -------------------------
+    # 7. Stop logic
+    # -------------------------
+    stop_id = (
+        booking.pickup_stop_id
+        if data.scan_type == ScanType.BOARD
+        else booking.dropoff_stop_id
+    )
 
-        # -------------------------
-        # 10. Response
-        # -------------------------
+    stop = await db.get(Stop, stop_id)
+    if not stop:
+        raise HTTPException(404, "Stop not found")
 
+    # -------------------------
+    # 8. Distance check
+    # -------------------------
+    distance = haversine(
+        data.lat,
+        data.lng,
+        float(stop.lat),
+        float(stop.lng),
+    )
 
-        print("==== SCAN SUCCESS ====\n")
+    if distance > stop.radius_meters:
+        raise HTTPException(400, "Not within stop radius")
 
-        return {
-            "message": response_message,
-            "scan_type": scan_type_enum.value,
-            "within_radius": within_radius,
-            "distance_meters": round(distance, 2),
-            "booking_status": booking.booking_status.value,
-        }
+    # -------------------------
+    # 9. Save scan event
+    # -------------------------
+    scan_event = TripScanEvent(
+        scheduled_trip_id=trip_id,
+        booking_id=booking.id,
+        driver_user_id=current_user.id,
+        scan_type=data.scan_type,
+        scan_lat=Decimal(str(data.lat)),
+        scan_lng=Decimal(str(data.lng)),
+        matched_stop_id=stop.id,
+        within_radius=True,
+        qr_payload_user_id=booking.passenger_user_id,
+    )
 
-    except HTTPException as e:
-        print("HTTP ERROR:", e.detail)
-        raise e
-    except Exception as e:
-        print("UNEXPECTED ERROR:", str(e))
-        raise HTTPException(500, f"Internal server error: {str(e)}")
+    db.add(scan_event)
+
+    # -------------------------
+    # 10. Update booking
+    # -------------------------
+    now = datetime.now(timezone.utc)
+
+    if data.scan_type == ScanType.BOARD:
+        booking.booking_status = BookingStatus.BOARDED
+        booking.boarded_at = now
+        booking.boarded_near_stop_id = stop.id
+
+    elif data.scan_type == ScanType.DROP:
+        booking.booking_status = BookingStatus.COMPLETED
+        booking.completed_at = now
+        booking.completed_near_stop_id = stop.id
+
+    db.add(booking)
+
+    await db.commit()
+
+    # -------------------------
+    # 11. Response
+    # -------------------------
+    return {
+        "message": "Scan successful",
+        "scan_type": data.scan_type.value,
+        "distance_meters": round(distance, 2),
+        "booking_status": booking.booking_status.value,
+    }
