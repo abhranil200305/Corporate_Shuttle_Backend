@@ -22,16 +22,7 @@ async def cancel_trip(
     current_driver: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Cancel a scheduled trip from the driver panel.
-
-    Rules:
-    - Only trips with status SCHEDULED can be cancelled.
-    - Can cancel only if current time <= planned_start_at - 1 hour.
-    - All passenger bookings for this trip are automatically cancelled.
-    - Driver can provide a cancellation reason.
-    - Booked passengers see status CANCELLED automatically.
-    """
+    
 
     # Fetch the trip assigned to this driver
     result = await db.execute(

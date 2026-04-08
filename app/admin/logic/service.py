@@ -14,29 +14,26 @@ from app.notifications.hub import WSHub
 class AdminService:
     def __init__(self, db,ws_hub: WSHub | None = None):
         self.db = db
+        self.ws_hub = ws_hub
         self.notifications = NotificationService(db, ws_hub)
 
-    # async def send_user_notification(self, user_id: str, title: str, message: str, data: dict = None):
-    #     return await self.notifications.notify_user(
-    #         user_id=user_id,
-    #         title=title,
-    #         message=message,
-    #         data=data or {"type": "admin_alert"}
-    #     )
-
-    # app/services/notification_service.py
-
-    async def send_user_notification(db, user_id: str, title: str, message: str, type: str):
+    async def send_user_notification(self, user_id: str, title: str, message: str, type: str):
      new_notif = schema.Notification(
         user_id=user_id,
         title=title,
         message=message,
         notification_type=type, # e.g., "TRIP_CANCELLED", "PAYOUT_PROCESSED"
-        is_read=False
+        is_read=False,
+        created_at=datetime.now(timezone.utc)
      )
-     db.add(new_notif)
-    # If you have a WebSocket Manager, trigger it here:
-    # await manager.send_personal_message(user_id, {"title": title, "message": message})
+     self.db.add(new_notif)
+     if self.ws_hub:
+            await self.ws_hub.send_personal_message(user_id, {
+                "title": title, 
+                "message": message,
+                "type": type
+            })
+
     
     async def fetch_detailed_drivers(self):
         stmt = (
