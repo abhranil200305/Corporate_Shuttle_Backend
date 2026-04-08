@@ -57,7 +57,7 @@ async def get_current_trip(
             ),
         )
         .options(
-            selectinload(ScheduledTrip.route),
+            selectinload(ScheduledTrip.route),   # already loading route
             selectinload(ScheduledTrip.vehicle),
             selectinload(ScheduledTrip.driver),
         )
@@ -84,6 +84,7 @@ async def get_current_trip(
         "trip": {
             "id": trip.id,
             "route_id": trip.route_id,
+            "route_name": trip.route.name if trip.route else None,  # ✅ ADDED
             "vehicle_id": trip.vehicle_id,
             "driver_user_id": trip.driver_user_id,
             "planned_start_at": trip.planned_start_at,
