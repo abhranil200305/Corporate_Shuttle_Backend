@@ -95,23 +95,23 @@ async def _notification_already_sent(
 
 
 async def _fetch_trip_ids_for_window(
+    db: AsyncSession,
     *,
     window_start: datetime,
     window_end: datetime,
 ) -> list[str]:
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(ScheduledTrip.id)
-            .where(
-                ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
-                ScheduledTrip.actual_start_at.is_(None),
-                ScheduledTrip.planned_start_at >= window_start,
-                ScheduledTrip.planned_start_at <= window_end,
-            )
-            .order_by(ScheduledTrip.planned_start_at.asc())
+    stmt = (
+        select(ScheduledTrip.id)
+        .where(
+            ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
+            ScheduledTrip.actual_start_at.is_(None),
+            ScheduledTrip.planned_start_at >= window_start,
+            ScheduledTrip.planned_start_at <= window_end,
         )
-        result = await db.execute(stmt)
-        return list(result.scalars().all())
+        .order_by(ScheduledTrip.planned_start_at.asc())
+    )
+    result = await db.execute(stmt)
+    return list(result.scalars().all())
 
 
 async def _send_if_due(
@@ -151,6 +151,7 @@ async def _send_if_due(
 
 
 async def _process_trip_id(
+    db: AsyncSession,
     trip_id: str,
     *,
     ws_hub: WSHub | None,
@@ -158,40 +159,41 @@ async def _process_trip_id(
     title: str,
     message: str,
 ) -> str:
-    async with AsyncSessionLocal() as db:
-        stmt = (
-            select(ScheduledTrip)
-            .where(
-                ScheduledTrip.id == trip_id,
-                ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
-                ScheduledTrip.actual_start_at.is_(None),
-            )
-            .options(selectinload(ScheduledTrip.route))
-            .with_for_update(skip_locked=True)
+    stmt = (
+        select(ScheduledTrip)
+        .where(
+            ScheduledTrip.id == trip_id,
+            ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
+            ScheduledTrip.actual_start_at.is_(None),
         )
-        result = await db.execute(stmt)
-        trip = result.scalar_one_or_none()
+        .options(selectinload(ScheduledTrip.route))
+        .with_for_update(skip_locked=True)
+    )
+    result = await db.execute(stmt)
+    trip = result.scalar_one_or_none()
 
-        if trip is None:
-            await db.rollback()
-            return "skip_missing_or_locked"
+    if trip is None:
+        await db.rollback()
+        return "skip_missing_or_locked"
 
-        try:
-            outcome = await _send_if_due(
-                db=db,
-                ws_hub=ws_hub,
-                trip=trip,
-                reminder_key=reminder_key,
-                title=title,
-                message=message,
-            )
-            return outcome
-        except Exception:
-            await db.rollback()
-            raise
+    try:
+        outcome = await _send_if_due(
+            db=db,
+            ws_hub=ws_hub,
+            trip=trip,
+            reminder_key=reminder_key,
+            title=title,
+            message=message,
+        )
+        await db.commit()
+        return outcome
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def _run_reminder_window(
+    db: AsyncSession,
     *,
     ws_hub: WSHub | None,
     reminder_key: str,
@@ -207,13 +209,16 @@ async def _run_reminder_window(
     window_end = target_time
 
     trip_ids = await _fetch_trip_ids_for_window(
+        db,
         window_start=window_start,
         window_end=window_end,
     )
+    await db.rollback()
 
     for trip_id in trip_ids:
         try:
             outcome = await _process_trip_id(
+                db,
                 trip_id,
                 ws_hub=ws_hub,
                 reminder_key=reminder_key,
@@ -227,6 +232,7 @@ async def _run_reminder_window(
                 outcome,
             )
         except Exception:
+            await db.rollback()
             logger.exception(
                 "driver_trip_reminder reminder=%s trip_id=%s outcome=error",
                 reminder_key,
@@ -239,11 +245,11 @@ async def send_driver_trip_reminders_once(
 ) -> None:
     lock_key = _get_lock_key()
 
-    async with engine.begin() as conn:
+    async with engine.connect() as conn:
         acquired = bool(
             (
                 await conn.execute(
-                    text("SELECT pg_try_advisory_xact_lock(:key)"),
+                    text("SELECT pg_try_advisory_lock(:key)"),
                     {"key": lock_key},
                 )
             ).scalar()
@@ -253,29 +259,48 @@ async def send_driver_trip_reminders_once(
             logger.info("driver_trip_reminder skipped: advisory lock not acquired")
             return
 
-        await _run_reminder_window(
-            ws_hub=ws_hub,
-            reminder_key="driver_trip_prestart_15m",
-            offset_from_start=timedelta(minutes=-15),
-            title="Trip starts in 15 minutes",
-            message="Your scheduled trip starts in 15 minutes.",
-        )
+        try:
+            async with AsyncSessionLocal(bind=conn) as db:
+                await _run_reminder_window(
+                    db,
+                    ws_hub=ws_hub,
+                    reminder_key="driver_trip_prestart_15m",
+                    offset_from_start=timedelta(minutes=-15),
+                    title="Trip starts in 15 minutes",
+                    message="Your scheduled trip starts in 15 minutes.",
+                )
 
-        await _run_reminder_window(
-            ws_hub=ws_hub,
-            reminder_key="driver_trip_poststart_5m",
-            offset_from_start=timedelta(minutes=5),
-            title="Trip start overdue by 5 minutes",
-            message="Your scheduled trip was due to start 5 minutes ago. Please start it now.",
-        )
+                await _run_reminder_window(
+                    db,
+                    ws_hub=ws_hub,
+                    reminder_key="driver_trip_poststart_5m",
+                    offset_from_start=timedelta(minutes=5),
+                    title="Trip start overdue by 5 minutes",
+                    message="Your scheduled trip was due to start 5 minutes ago. Please start it now.",
+                )
 
-        await _run_reminder_window(
-            ws_hub=ws_hub,
-            reminder_key="driver_trip_poststart_10m",
-            offset_from_start=timedelta(minutes=10),
-            title="Trip start overdue by 10 minutes",
-            message="Your scheduled trip was due to start 10 minutes ago. Please start it immediately. Auto-cancellation happens soon.",
-        )
+                await _run_reminder_window(
+                    db,
+                    ws_hub=ws_hub,
+                    reminder_key="driver_trip_poststart_10m",
+                    offset_from_start=timedelta(minutes=10),
+                    title="Trip start overdue by 10 minutes",
+                    message="Your scheduled trip was due to start 10 minutes ago. Please start it immediately. Auto-cancellation happens soon.",
+                )
+        finally:
+            try:
+                await conn.rollback()
+            except Exception:
+                pass
+
+            try:
+                await conn.execute(
+                    text("SELECT pg_advisory_unlock(:key)"),
+                    {"key": lock_key},
+                )
+                await conn.commit()
+            except Exception:
+                logger.exception("driver_trip_reminder advisory unlock failed")
 
 
 async def driver_trip_reminder_loop(
