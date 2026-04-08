@@ -2750,13 +2750,13 @@ class PassengerService:
         return self._serialize_rating(booking.rating)
     
     async def create_support_ticket(
-        self,
-        current_user: User,
-        *,
-        subject: str,
-        description: str,
-        file: UploadFile | None = None,
-    ) -> dict[str, Any]:
+    self,
+    current_user: User,
+    *,
+    subject: str,
+    description: str,
+    file: UploadFile | None = None,
+) -> dict[str, Any]:
         self.ensure_passenger(current_user)
 
         cleaned_subject = self._clean_support_text(subject, field_name="subject")
@@ -2799,12 +2799,37 @@ class PassengerService:
         await self.db.commit()
         await self.db.refresh(ticket)
 
+        # notify passenger
         await self._notify_user(
             user_id=current_user.id,
             title="Support ticket created",
             message="Your support request has been recorded.",
             data=self._build_support_ticket_notification_data(ticket),
         )
+
+        # notify all active admins
+        admin_stmt = select(User.id).where(
+            User.role == UserRole.ADMIN,
+            User.is_active.is_(True),
+        )
+        admin_result = await self.db.execute(admin_stmt)
+        admin_user_ids = list(admin_result.scalars().all())
+
+        admin_notification_data = {
+            "ticket_id": ticket.id,
+            "user_id": ticket.user_id,
+            "subject": ticket.subject,
+            "status": ticket.status.value,
+            "refresh": ["support_tickets", "support_ticket_detail"],
+        }
+
+        for admin_user_id in admin_user_ids:
+            await self._notify_user(
+                user_id=admin_user_id,
+                title="New support ticket",
+                message=f"A new passenger support ticket was created: {ticket.subject}",
+                data=admin_notification_data,
+            )
 
         return {
             "message": "Support ticket created successfully.",
