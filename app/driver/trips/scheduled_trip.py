@@ -310,12 +310,16 @@ async def start_trip(
 # STOP ACTION (STRICT)
 # ============================================================
 
+from geopy.distance import geodesic
+
 @router.post("/{trip_id}/stop-action")
 async def stop_action(
     trip_id: str,
     request: Request,
     stop_id: str = Form(...),
     mode: str = Form(...),
+    driver_lat: float = Form(...),
+    driver_lng: float = Form(...),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -333,14 +337,32 @@ async def stop_action(
     # Fetch route stop
     # -------------------------------
     result = await session.execute(
-        select(RouteStop).where(
+        select(RouteStop)
+        .where(
             RouteStop.route_id == trip.route_id,
             RouteStop.stop_id == stop_id
-        ).options(selectinload(RouteStop.stop))
+        )
+        .options(selectinload(RouteStop.stop))
     )
     route_stop = result.scalar_one_or_none()
     if not route_stop:
         raise HTTPException(400, "Stop not found")
+
+    stop = route_stop.stop
+
+    # -------------------------------
+    # 🔥 GEO VALIDATION (NEW)
+    # -------------------------------
+    stop_coords = (float(stop.lat), float(stop.lng))
+    driver_coords = (driver_lat, driver_lng)
+
+    distance = geodesic(stop_coords, driver_coords).meters
+
+    if distance > stop.radius_meters:
+        raise HTTPException(
+            400,
+            f"Driver not within stop radius. Distance: {int(distance)}m, Allowed: {stop.radius_meters}m"
+        )
 
     # -------------------------------
     # Fetch trip event
@@ -363,6 +385,7 @@ async def stop_action(
     if mode == "arrive":
         if event.arrival_time:
             raise HTTPException(400, "Already arrived")
+
         event.arrival_time = current_time
 
     elif mode == "depart":
@@ -371,15 +394,20 @@ async def stop_action(
 
         assume_minutes = route_stop.assume_time_diff_minutes or 0
         min_time = event.arrival_time + timedelta(minutes=assume_minutes)
+
         if current_time < min_time:
-            raise HTTPException(400, "Cannot depart early")
+            raise HTTPException(
+                400,
+                f"Cannot depart early. Wait {assume_minutes} minutes."
+            )
+
         event.departure_time = current_time
 
     else:
         raise HTTPException(400, "Invalid mode")
 
     # -------------------------------
-    # Commit trip event changes first
+    # Commit event
     # -------------------------------
     await session.commit()
 
@@ -391,37 +419,43 @@ async def stop_action(
         ws_hub=getattr(request.app.state, "ws_hub", None)
     )
 
-    # Get active bookings
+    # FIXED LOADING
     result = await session.execute(
         select(TripBooking)
         .where(
             TripBooking.scheduled_trip_id == trip_id,
-            TripBooking.booking_status.in_([BookingStatus.BOOKED, BookingStatus.BOARDED])
+            TripBooking.booking_status.in_([
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED
+            ])
         )
-        .options(selectinload(TripBooking.boarding_stop), selectinload(TripBooking.drop_stop))
+        .options(
+            selectinload(TripBooking.pickup_stop),
+            selectinload(TripBooking.dropoff_stop)
+        )
     )
     bookings = result.scalars().all()
 
     for booking in bookings:
-        boarding_stop_seq = booking.boarding_stop.sequence_no
-        drop_stop_seq = booking.drop_stop.sequence_no
+        boarding_stop_seq = booking.pickup_stop.sequence_no
+        drop_stop_seq = booking.dropoff_stop.sequence_no
         current_stop_seq = route_stop.sequence_no
 
-        # Passenger boarding notification
-        if mode == "arrive" and str(booking.boarding_stop_id) == str(stop_id):
+        # Boarding notification
+        if mode == "arrive" and str(booking.pickup_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Bus Arrived",
-                message=f"Bus has arrived at your boarding stop.",
+                message="Bus has arrived at your boarding stop.",
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # Departure notifications
-        if mode == "depart" and str(booking.drop_stop_id) == str(stop_id):
+        # Drop notification
+        if mode == "depart" and str(booking.dropoff_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
                 title="Next Stop Approaching",
-                message=f"Bus is leaving your drop stop.",
+                message="Bus is leaving your drop stop.",
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
@@ -431,7 +465,7 @@ async def stop_action(
                 user_id=booking.passenger_user_id,
                 title="Missed Boarding",
                 message="You missed your boarding stop!",
-                data={"trip_id": trip.id, "stop_id": stop_id},
+                data={"trip_id": trip.id},
             )
 
         # Missed drop
@@ -440,10 +474,14 @@ async def stop_action(
                 user_id=booking.passenger_user_id,
                 title="Missed Drop",
                 message="Bus passed your drop stop!",
-                data={"trip_id": trip.id, "stop_id": stop_id},
+                data={"trip_id": trip.id},
             )
 
-    return {"message": f"{mode} success", "time": to_ist(current_time)}
+    return {
+        "message": f"{mode} success",
+        "time": to_ist(current_time),
+        "distance_from_stop_meters": int(distance)
+    }
 
 
 # ============================================================
