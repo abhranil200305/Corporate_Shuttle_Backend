@@ -14,6 +14,12 @@ from app.db.schema import BookingRating
 from app.db.schema import DriverProfile, User, DriverVerificationStatus
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
+from sqlalchemy.orm import selectinload
+from sqlalchemy.exc import IntegrityError
+from datetime import datetime
+
+
+
 
 router = APIRouter(prefix="/driver-profile", tags=["DriverProfile"])
 
@@ -36,6 +42,10 @@ class DriverProfileResponse(BaseModel):
     verification_status: DriverVerificationStatus
     average_rating: Optional[float]
     total_reviews: int
+    email: Optional[str]  # ✅ ADD THIS
+    created_at: datetime   # ✅ ADD THIS
+    updated_at: datetime   # ✅ ADD THIS
+
 
     class Config:
         from_attributes = True  # ✅ Pydantic v2
@@ -115,91 +125,36 @@ async def create_driver_profile(
 
     return driver_profile
 
-# ------------------------------
-# Get My Profile
-# ------------------------------
 @router.get("/me", response_model=DriverProfileResponse)
 async def get_my_driver_profile(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Get logged-in driver's profile WITH rating"""
+    """Get logged-in driver's profile WITH rating + email"""
+
+    # 👇 Load user relation
     result = await db.execute(
-        select(DriverProfile).where(DriverProfile.user_id == current_user.id)
+        select(DriverProfile)
+        .where(DriverProfile.user_id == current_user.id)
+        .options(selectinload(DriverProfile.user))
     )
     profile = result.scalar_one_or_none()
+
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
+    # 👇 Ratings
     rating_result = await db.execute(
-        select(BookingRating.driver_rating).where(BookingRating.driver_user_id == current_user.id)
+        select(BookingRating.driver_rating).where(
+            BookingRating.driver_user_id == current_user.id
+        )
     )
     ratings = rating_result.scalars().all()
+
     avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
     total_reviews = len(ratings)
 
-    return {
-        **profile.__dict__,
-        "average_rating": avg_rating,
-        "total_reviews": total_reviews,
-    }
-
-# ------------------------------
-# Update My Profile (Partial)
-# ------------------------------
-@router.patch("/update", response_model=DriverProfileResponse)
-async def update_my_profile(
-    full_name: Optional[str] = Form(None),
-    phone: Optional[str] = Form(None),
-    profile_pic: Optional[UploadFile] = File(None),
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),
-):
-    """Update logged-in driver's profile (partial update)"""
-    result = await db.execute(
-        select(DriverProfile).where(DriverProfile.user_id == current_user.id)
-    )
-    profile = result.scalar_one_or_none()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-
-    if full_name is not None:
-        full_name_cleaned = full_name.strip()
-        if not full_name_cleaned:
-            raise HTTPException(status_code=400, detail="Full name cannot be empty")
-        profile.full_name = full_name_cleaned
-
-    if phone is not None:
-        phone_cleaned = phone.strip()
-        if not phone_cleaned:
-            raise HTTPException(status_code=400, detail="Phone cannot be empty")
-        profile.phone = phone_cleaned
-
-    if profile_pic is not None:
-        if profile.profile_picture_path:
-            try:
-                old_path = BASE_DIR / profile.profile_picture_path
-                if old_path.exists():
-                    old_path.unlink()
-            except Exception:
-                pass
-        profile.profile_picture_path = await save_upload_async(profile_pic)
-
-    db.add(profile)
-    try:
-        await db.commit()
-        await db.refresh(profile)
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail="Update failed")
-
-    rating_result = await db.execute(
-        select(BookingRating.driver_rating).where(BookingRating.driver_user_id == current_user.id)
-    )
-    ratings = rating_result.scalars().all()
-    avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
-    total_reviews = len(ratings)
-
+    # 👇 Clean response (NO __dict__)
     return DriverProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
@@ -207,8 +162,10 @@ async def update_my_profile(
         phone=profile.phone,
         profile_picture_path=profile.profile_picture_path,
         verification_status=profile.verification_status,
+        email=profile.user.email if profile.user else None,  # ✅ EMAIL
         average_rating=avg_rating,
         total_reviews=total_reviews,
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )
+
