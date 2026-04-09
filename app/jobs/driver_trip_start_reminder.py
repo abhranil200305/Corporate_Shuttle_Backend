@@ -216,8 +216,7 @@ async def _run_reminder_window(
     for trip_id in trip_ids:
         try:
             outcome = await _process_trip_id(
-                db,
-                trip_id,
+                trip_id = trip_id,
                 ws_hub=ws_hub,
                 reminder_key=reminder_key,
                 title=title,
