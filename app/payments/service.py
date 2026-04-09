@@ -881,7 +881,7 @@ class RoutePayoutService:
     phone: str,
     full_name: str,
     city: str = "Kolkata",
-    state: str = "West Bengal",
+    state: str = "WB",
     country: str = "IN",
 ) -> dict[str, Any]:
         cleaned_email = (email or "").strip()
@@ -925,6 +925,13 @@ class RoutePayoutService:
             "business_type": "individual",
             "contact_name": cleaned_full_name,
             "profile": {
+                "addresses": {
+                    "registered": {
+                        "city": city,
+                        "state": state,
+                        "country": country,
+                    }
+                },
                 "category":"transport",
                 "subcategory":"bus"
             },
