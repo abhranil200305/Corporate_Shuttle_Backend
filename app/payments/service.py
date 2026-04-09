@@ -921,11 +921,10 @@ class RoutePayoutService:
             "type": "route",
             "email": cleaned_email,
             "phone": cleaned_phone,
-            # "legal_business_name": cleaned_full_name,
+            "legal_business_name": cleaned_full_name,
             "business_type": "individual",
             "contact_name": cleaned_full_name,
             "profile": {
-                "name": cleaned_full_name,
                 "addresses": {
                     "permanent": {
                         "city": city,
