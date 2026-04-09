@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_active_user, get_db
+from app.auth.dependencies import get_current_active_user, get_db, get_current_admin
 from app.auth.exceptions import AuthError
 from app.auth.service import AuthService
 from app.db.database import AsyncSessionLocal
@@ -16,6 +16,8 @@ from app.notifications.schemas import (
     NotificationListResponse,
     NotificationMessageResponse,
     NotificationUnreadCountResponse,
+    DevTriggerNotificationRequest,
+    DevTriggerNotificationResponse,
 )
 from app.notifications.service import NotificationService
 
@@ -243,3 +245,22 @@ async def notifications_ws(websocket: WebSocket) -> None:
             pass
 
         await hub.unregister(current_user.id, connection_id)
+
+@router.post(
+    "/dev/trigger",
+    response_model=DevTriggerNotificationResponse,
+)
+async def trigger_dev_notification(
+    request: Request,
+    payload: DevTriggerNotificationRequest,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    service = _get_notification_service(request, db)
+    return await service.trigger_dev_notification(
+        user_id=payload.user_id,
+        title=payload.title,
+        message=payload.message,
+        data=payload.data,
+        persist=payload.persist,
+    )

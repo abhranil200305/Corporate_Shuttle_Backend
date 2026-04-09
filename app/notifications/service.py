@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy import func, select, update
@@ -59,6 +61,24 @@ class NotificationService:
                 },
             )
         return cleaned
+
+    @staticmethod
+    def _is_dev_trigger_enabled() -> bool:
+        raw = os.getenv("ENABLE_DEV_NOTIFICATION_TRIGGER", "").strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _assert_dev_trigger_enabled(cls) -> None:
+        if cls._is_dev_trigger_enabled():
+            return
+
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "not_found",
+                "message": "Notification dev trigger is not enabled.",
+            },
+        )
 
     @staticmethod
     def _serialize_notification_row(notification: UserNotification) -> dict[str, Any]:
@@ -143,6 +163,54 @@ class NotificationService:
         if self.ws_hub is None:
             return
         await self.ws_hub.notify_user(user_id, payload)
+
+    async def trigger_dev_notification(
+        self,
+        *,
+        user_id: str,
+        title: str,
+        message: str,
+        data: dict[str, Any] | None = None,
+        persist: bool = False,
+    ) -> dict[str, Any]:
+        self._assert_dev_trigger_enabled()
+
+        cleaned_title = self._clean_title(title)
+        cleaned_message = self._clean_message(message)
+        safe_data = data or {}
+
+        if persist:
+            payload = await self.notify_user(
+                user_id=user_id,
+                title=cleaned_title,
+                message=cleaned_message,
+                data=safe_data,
+                commit=True,
+            )
+            return {
+                "message": "Persisted and pushed notification successfully.",
+                "mode": "persisted_and_live",
+                "payload": payload,
+            }
+
+        payload = {
+            "id": f"dev-{uuid4().hex}",
+            "title": cleaned_title,
+            "message": cleaned_message,
+            "data": safe_data,
+            "read_at": None,
+            "created_at": utcnow(),
+        }
+        await self.push_payload_to_user(
+            user_id=user_id,
+            payload=payload,
+        )
+
+        return {
+            "message": "Live-only notification pushed successfully.",
+            "mode": "live_only",
+            "payload": payload,
+        }
 
     async def list_notifications(
         self,
