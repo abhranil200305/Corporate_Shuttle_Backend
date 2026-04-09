@@ -932,6 +932,8 @@ class RoutePayoutService:
                         "country": country,
                     }
                 },
+                "category":"transport",
+                "subcategory":"bus"
             },
         }
 
