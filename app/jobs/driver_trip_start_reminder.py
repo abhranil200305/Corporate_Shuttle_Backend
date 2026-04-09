@@ -151,7 +151,6 @@ async def _send_if_due(
 
 
 async def _process_trip_id(
-    db: AsyncSession,
     trip_id: str,
     *,
     ws_hub: WSHub | None,
@@ -159,37 +158,36 @@ async def _process_trip_id(
     title: str,
     message: str,
 ) -> str:
-    stmt = (
-        select(ScheduledTrip)
-        .where(
-            ScheduledTrip.id == trip_id,
-            ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
-            ScheduledTrip.actual_start_at.is_(None),
+    async with AsyncSessionLocal() as db:
+        stmt = (
+            select(ScheduledTrip)
+            .where(
+                ScheduledTrip.id == trip_id,
+                ScheduledTrip.status == ScheduledTripStatus.SCHEDULED,
+                ScheduledTrip.actual_start_at.is_(None),
+            )
+            .options(selectinload(ScheduledTrip.route))
         )
-        .options(selectinload(ScheduledTrip.route))
-        .with_for_update(skip_locked=True)
-    )
-    result = await db.execute(stmt)
-    trip = result.scalar_one_or_none()
+        result = await db.execute(stmt)
+        trip = result.scalar_one_or_none()
 
-    if trip is None:
-        await db.rollback()
-        return "skip_missing_or_locked"
+        if trip is None:
+            await db.rollback()
+            return "skip_missing_or_ineligible"
 
-    try:
-        outcome = await _send_if_due(
-            db=db,
-            ws_hub=ws_hub,
-            trip=trip,
-            reminder_key=reminder_key,
-            title=title,
-            message=message,
-        )
-        await db.commit()
-        return outcome
-    except Exception:
-        await db.rollback()
-        raise
+        try:
+            outcome = await _send_if_due(
+                db=db,
+                ws_hub=ws_hub,
+                trip=trip,
+                reminder_key=reminder_key,
+                title=title,
+                message=message,
+            )
+            return outcome
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def _run_reminder_window(
