@@ -310,6 +310,10 @@ async def start_trip(
 # STOP ACTION (STRICT)
 # ============================================================
 
+# ============================================================
+# STOP ACTION (STRICT)
+# ============================================================
+
 from geopy.distance import geodesic
 
 @router.post("/{trip_id}/stop-action")
@@ -436,10 +440,32 @@ async def stop_action(
     )
     bookings = result.scalars().all()
 
+    # -------------------------------
+    # 🔥 FIX: Build RouteStop map
+    # -------------------------------
+    result = await session.execute(
+        select(RouteStop).where(RouteStop.route_id == trip.route_id)
+    )
+    route_stops = result.scalars().all()
+
+    route_stop_map = {
+        str(rs.stop_id): rs for rs in route_stops
+    }
+
+    # -------------------------------
+    # Notifications loop (FIXED)
+    # -------------------------------
     for booking in bookings:
-        boarding_stop_seq = booking.pickup_stop.sequence_no
-        drop_stop_seq = booking.dropoff_stop.sequence_no
-        current_stop_seq = route_stop.sequence_no
+        pickup_rs = route_stop_map.get(str(booking.pickup_stop_id))
+        drop_rs = route_stop_map.get(str(booking.dropoff_stop_id))
+        current_rs = route_stop_map.get(str(stop_id))
+
+        if not pickup_rs or not drop_rs or not current_rs:
+            continue
+
+        boarding_stop_seq = pickup_rs.sequence_no
+        drop_stop_seq = drop_rs.sequence_no
+        current_stop_seq = current_rs.sequence_no
 
         # Boarding notification
         if mode == "arrive" and str(booking.pickup_stop_id) == str(stop_id):
