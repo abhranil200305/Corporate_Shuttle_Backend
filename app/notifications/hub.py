@@ -11,10 +11,13 @@ from uuid import uuid4
 from fastapi import WebSocket
 from fastapi.encoders import jsonable_encoder
 
+import logging
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+logger = logging.getLogger(__name__)
 
 @dataclass
 class WSConnection:
@@ -93,15 +96,26 @@ class WSHub:
 
         safe_payload = jsonable_encoder(payload)
 
-        try:
-            async with connection.send_lock:
-                await connection.websocket.send_json(safe_payload)
-            return True
+        logger.info(
+            "ws_send_attempt user_id=%s connection_id=%s notification_id=%s title=%r message=%r payload=%s",
+            user_id,
+            connection_id,
+            safe_payload.get("id"),
+            safe_payload.get("title"),
+            safe_payload.get("message"),
+            safe_payload,
+        )
 
-        except Exception as exc:
-            raise RuntimeError(
-                f"WS send failed for user_id={user_id} connection_id={connection_id}"
-            ) from exc
+        async with connection.send_lock:
+            await connection.websocket.send_json(safe_payload)
+
+        logger.info(
+            "ws_send_success user_id=%s connection_id=%s notification_id=%s",
+            user_id,
+            connection_id,
+            safe_payload.get("id"),
+        )
+        return True
 
     async def send_ping(self, user_id: str, connection_id: str) -> bool:
         return await self.send_to_connection(
@@ -114,7 +128,22 @@ class WSHub:
         async with self._lock:
             connection_ids = list(self._connections.get(user_id, {}).keys())
 
+        logger.info(
+            "ws_notification_emit user_id=%s connection_count=%s notification_id=%s title=%r message=%r payload=%s",
+            user_id,
+            len(connection_ids),
+            payload.get("id"),
+            payload.get("title"),
+            payload.get("message"),
+            payload,
+        )
+
         if not connection_ids:
+            logger.warning(
+                "ws_notification_emit_no_connections user_id=%s notification_id=%s",
+                user_id,
+                payload.get("id"),
+            )
             return
 
         for connection_id in connection_ids:

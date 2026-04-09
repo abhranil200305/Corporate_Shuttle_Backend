@@ -14,10 +14,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.schema import UserNotification
 from app.notifications.hub import WSHub
 
+import logging
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(
@@ -155,13 +158,28 @@ class NotificationService:
         return payload
 
     async def push_payload_to_user(
-        self,
-        *,
-        user_id: str,
-        payload: dict[str, Any],
-    ) -> None:
+    self,
+    *,
+    user_id: str,
+    payload: dict[str, Any],
+) -> None:
+        logger.info(
+            "notification_emit_requested user_id=%s notification_id=%s title=%r message=%r payload=%s",
+            user_id,
+            payload.get("id"),
+            payload.get("title"),
+            payload.get("message"),
+            payload,
+        )
+
         if self.ws_hub is None:
+            logger.warning(
+                "notification_emit_skipped_no_hub user_id=%s notification_id=%s",
+                user_id,
+                payload.get("id"),
+            )
             return
+
         await self.ws_hub.notify_user(user_id, payload)
 
     async def trigger_dev_notification(
