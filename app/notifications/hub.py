@@ -87,17 +87,21 @@ class WSHub:
 ) -> bool:
         connection = await self._get_connection(user_id, connection_id)
         if connection is None:
-            return False
+            raise RuntimeError(
+                f"WS connection not found for user_id={user_id} connection_id={connection_id}"
+            )
+
+        safe_payload = jsonable_encoder(payload)
 
         try:
-            safe_payload = jsonable_encoder(payload)
-
             async with connection.send_lock:
                 await connection.websocket.send_json(safe_payload)
             return True
-        except Exception:
-            await self.unregister(user_id, connection_id)
-            return False
+
+        except Exception as exc:
+            raise RuntimeError(
+                f"WS send failed for user_id={user_id} connection_id={connection_id}"
+            ) from exc
 
     async def send_ping(self, user_id: str, connection_id: str) -> bool:
         return await self.send_to_connection(
