@@ -576,6 +576,7 @@ class PassengerService:
             "id": route.id,
             "name": route.name,
             "code": route.code,
+            "has_ac": route.has_ac,
             "is_active": route.is_active,
             "stops": [
                 {
@@ -1266,14 +1267,23 @@ class PassengerService:
     # ------------------------------------------------------------------
     # discovery
     # ------------------------------------------------------------------
-    async def list_routes(self, *, active_only: bool = True) -> dict[str, Any]:
+    async def list_routes(
+    self,
+    *,
+    active_only: bool = True,
+    has_ac: bool | None = None,
+) -> dict[str, Any]:
         stmt = (
             select(Route)
             .options(selectinload(Route.route_stops).selectinload(RouteStop.stop))
             .order_by(Route.name.asc())
         )
+
         if active_only:
             stmt = stmt.where(Route.is_active.is_(True))
+
+        if has_ac is not None:
+            stmt = stmt.where(Route.has_ac.is_(has_ac))
 
         result = await self.db.execute(stmt)
         routes = result.scalars().unique().all()
@@ -1397,6 +1407,7 @@ class PassengerService:
             "route_id": route.id,
             "route_name": route.name,
             "route_code": route.code,
+            "has_ac": route.has_ac,
             "pickup_stop": self._serialize_stop_brief(pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(dropoff_stop),
             "pickup_sequence_no": pickup_route_stop.sequence_no,

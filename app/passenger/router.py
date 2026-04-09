@@ -82,10 +82,13 @@ async def upsert_profile_picture(
 @router.get("/routes", response_model=RouteListResponse)
 async def list_routes(
     active_only: bool = Query(default=True),
+    has_ac: bool | None = Query(default=None),
     service: PassengerService = Depends(get_passenger_service),
 ) -> RouteListResponse:
-    return await service.list_routes(active_only=active_only)
-
+    return await service.list_routes(
+        active_only=active_only,
+        has_ac=has_ac,
+    )
 
 @router.get("/routes/{route_id}", response_model=RouteResponse)
 async def get_route_detail(
