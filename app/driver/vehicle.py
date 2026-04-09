@@ -1,5 +1,3 @@
-# app/driver/vehicle.py
-
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
@@ -25,12 +23,39 @@ UPLOAD_DIR = Path("uploads/upload_vehicledetails_photo")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
+# ============================================================
+# Helper: Parse + Validate Date
+# ============================================================
+def parse_registration_date(date_str: str) -> datetime:
+    try:
+        dt = datetime.fromisoformat(date_str)
+    except ValueError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid date format. Use ISO format (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)"
+        )
+
+    # Ensure timezone aware
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+
+    # Must be future date
+    if dt <= datetime.now(timezone.utc):
+        raise HTTPException(
+            status_code=400,
+            detail="Registration validity must be a future date"
+        )
+
+    return dt
+
+
 # ---------------------------
 # Register Vehicle
 # ---------------------------
 @router.patch("/register", response_model=VehicleOut, status_code=status.HTTP_201_CREATED)
 async def register_vehicle(
     registration_number: str = Form(...),
+    registration_valid_till: str = Form(...),
     vehicle_name: str = Form(...),
     vehicle_model: str = Form(...),
     color: str = Form(...),
@@ -43,6 +68,9 @@ async def register_vehicle(
 ):
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers allowed")
+
+    # Parse Date
+    registration_valid_till_dt = parse_registration_date(registration_valid_till)
 
     # KYC CHECK
     result = await session.execute(
@@ -79,6 +107,7 @@ async def register_vehicle(
     vehicle = Vehicle(
         driver_user_id=current_driver.id,
         registration_number=registration_number,
+        registration_valid_till=registration_valid_till_dt,
         vehicle_name=vehicle_name,
         vehicle_model=vehicle_model,
         color=color,
@@ -112,7 +141,7 @@ async def get_my_vehicle(
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle found")
 
-    return vehicle
+    return vehicle   # ✅ registration_valid_till automatically returned
 
 
 # ---------------------------
@@ -125,6 +154,7 @@ async def update_vehicle(
     color: str | None = Form(None),
     seat_count: int | None = Form(None),
     has_ac: bool | None = Form(None),
+    registration_valid_till: str | None = Form(None),  # ✅ ADDED
     rc_file: UploadFile | None = File(None),
     rear_photo: UploadFile | None = File(None),
     current_driver: User = Depends(get_current_active_user),
@@ -148,7 +178,7 @@ async def update_vehicle(
             detail="Cannot update after submission. Wait for admin or rejection."
         )
 
-    # If REJECTED → allow edit and move back to DRAFT
+    # If REJECTED → allow edit
     if vehicle.verification_status == VehicleVerificationStatus.REJECTED:
         vehicle.verification_status = VehicleVerificationStatus.DRAFT
 
@@ -163,6 +193,10 @@ async def update_vehicle(
         vehicle.seat_count = seat_count
     if has_ac is not None:
         vehicle.has_ac = has_ac
+
+    # Update registration validity
+    if registration_valid_till is not None:
+        vehicle.registration_valid_till = parse_registration_date(registration_valid_till)
 
     # Files
     if rc_file:
@@ -186,7 +220,7 @@ async def update_vehicle(
 
 
 # ---------------------------
-# SUBMIT VEHICLE (IMPORTANT)
+# SUBMIT VEHICLE
 # ---------------------------
 @router.post("/submit", response_model=VehicleOut)
 async def submit_vehicle(
@@ -201,7 +235,7 @@ async def submit_vehicle(
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle found")
 
-    # Only DRAFT or REJECTED can submit
+    # Only DRAFT or REJECTED
     if vehicle.verification_status not in [
         VehicleVerificationStatus.DRAFT,
         VehicleVerificationStatus.REJECTED
