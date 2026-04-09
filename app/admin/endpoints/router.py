@@ -114,6 +114,7 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                 },
                 "bus_details": {
                     "reg_no": v.registration_number if v else None,
+                    "reg_valid_till": v.registration_valid_till if v else None,
                     "model": v.vehicle_model if v else None,
                     "capacity": v.seat_count if v else 0,
                     "ac": v.has_ac if v else False,
@@ -203,6 +204,7 @@ async def get_driver_details(
         },
         "vehicle": {
             "reg_no": d.vehicle.registration_number if d.vehicle else None,
+            "reg_valid_till": d.vehicle.registration_valid_till if d else None,
             "model": d.vehicle.vehicle_model if d.vehicle else None,
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
@@ -240,6 +242,7 @@ async def get_driver_details_vechicals(
         "is_active": d.is_active,
         "vehicle": {
             "reg_no": d.vehicle.registration_number if d.vehicle else None,
+            "reg_valid_till": d.vehicle.registration_valid_till if d else None,
             "model": d.vehicle.vehicle_model if d.vehicle else None,
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
@@ -377,7 +380,7 @@ async def deactivate_driver(
 
 
 # ----------------- driver profiles verification ---------------------------
-#@router.post("/driver/verify/{user_id}")
+# @router.post("/driver/verify/{user_id}")
 # async def verify_driver(
 #     user_id: str,
 #     data: VerificationUpdate,
@@ -396,6 +399,7 @@ async def deactivate_driver(
 #     await service.update_driver_verification(
 #         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
 #     )
+
 
 #     # --- ADD NOTIFICATION HERE ---
 #     title = (
@@ -442,24 +446,30 @@ async def verify_driver(
     )
 
     # Use the instance (notif_service) not the Class (NotificationService)
-    title = "Profile Verified!" if data.status == "verified" else "Profile Action Required"
+    title = (
+        "Profile Verified!" if data.status == "verified" else "Profile Action Required"
+    )
     message = (
         "Your profile has been verified. You can now accept rides."
         if data.status == "verified"
         else f"Your profile was not approved. Reason: {data.rejection_reason}"
     )
-    
+
     await notif_service.notify_user(
         user_id=user_id,
         title=title,
         message=message,
         data={"type": "verification_update", "status": data.status},
-        #commit=False # We handle the commit below
+        # commit=False # We handle the commit below
     )
-    
+
     await db.commit()
 
-    return {"message": f"Driver verification status updated to {data.status}", "user_id": user_id}
+    return {
+        "message": f"Driver verification status updated to {data.status}",
+        "user_id": user_id,
+    }
+
 
 # ----------------- driver vehical verification ---------------------------
 # @router.post("/vehicle/verify/{user_id}")
@@ -490,7 +500,7 @@ async def verify_driver(
 #         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
 #         data={"type": "vehicle_update", "status": data.status},
 #     )
-#     except Exception as e: 
+#     except Exception as e:
 #         print(f"Notification failed: {e}")
 
 #     await db.commit()
@@ -499,6 +509,7 @@ async def verify_driver(
 #         "user_id": user_id,
 #         "registration_number": driver.vehicle.registration_number,
 #     }
+
 
 @router.post("/vehicle/verify/{user_id}")
 async def verify_vehicle(
@@ -509,13 +520,15 @@ async def verify_vehicle(
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
-    
+
     # 1. Instantiate the NotificationService correctly
     notif_service = NotificationService(db, ws_hub=hub)
 
     driver = await service.fetch_driver_by_id(user_id)
     if not driver or not driver.vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle record not found for this user")
+        raise HTTPException(
+            status_code=404, detail="Vehicle record not found for this user"
+        )
 
     # 3. Update the vehicle status
     await service.update_vehicle_verification(
@@ -524,7 +537,7 @@ async def verify_vehicle(
 
     # --- NOTIFICATION LOGIC ---
     status_msg = "approved" if data.status == "verified" else "rejected"
-    
+
     try:
         # Call the method on 'notif_service' (the instance), not the class
         await notif_service.notify_user(
@@ -532,20 +545,22 @@ async def verify_vehicle(
             title="Vehicle Verification Update",
             message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
             data={"type": "vehicle_update", "status": data.status},
-            commit=False  
+            commit=False,
         )
-    except Exception as e: 
+    except Exception as e:
         # Log the error but don't stop the whole process
         print(f"Notification failed: {e}")
 
     # Final commit for both the DB update and the notification record
     await db.commit()
-    
+
     return {
         "message": f"Vehicle verification status updated to {data.status}",
         "user_id": user_id,
         "registration_number": driver.vehicle.registration_number,
     }
+
+
 # ------------------- add stops and routes -----------------------------
 
 
@@ -1278,7 +1293,7 @@ async def cancel_trip_by_id(
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
-    
+
     # 1. Create the instance of the NotificationService
     notif_service = NotificationService(db, ws_hub=hub)
 
@@ -1301,9 +1316,9 @@ async def cancel_trip_by_id(
                 title="Trip Cancelled by Admin",
                 message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
                 data={"type": "Trip_cancel_UPDATE"},
-                commit=False  # Don't commit yet
+                commit=False,  # Don't commit yet
             )
-        except Exception as e: 
+        except Exception as e:
             print(f"Driver Notification failed: {e}")
 
     # 3. Notify all Passengers
@@ -1315,15 +1330,17 @@ async def cancel_trip_by_id(
                 title="Urgent: Trip Cancelled",
                 message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
                 data={"type": "Trip_cancel_UPDATE"},
-                commit=False  # Don't commit yet
+                commit=False,  # Don't commit yet
             )
-        except Exception as e: 
+        except Exception as e:
             print(f"Passenger Notification failed for {booking.passenger_id}: {e}")
 
     # 4. Final single commit for the cancellation AND all notification records
     await db.commit()
-    
+
     return {"status": "success", "message": "Trip cancelled and users notified."}
+
+
 # async def cancel_trip_by_id(
 #     trip_id: str,
 #     request: Request,
@@ -1350,7 +1367,7 @@ async def cancel_trip_by_id(
 #             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
 #             data={"type": "Trip_cancel_UPDATE"},
 #         )
-#         except Exception as e: 
+#         except Exception as e:
 #            print(f"Notification failed: {e}")
 
 #     for booking in trip.bookings:
@@ -1627,7 +1644,7 @@ async def handle_ticket(
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
-    
+
     # 1. Create the instance of the NotificationService
     notif_service = NotificationService(db, ws_hub=hub)
 
@@ -1636,7 +1653,7 @@ async def handle_ticket(
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     status_msg = "resolved" if action == "resolve" else "rejected"
-    
+
     # 2. Use the instance 'notif_service' instead of the class 'NotificationService'
     try:
         await notif_service.notify_user(
@@ -1644,7 +1661,7 @@ async def handle_ticket(
             title=f"Support Ticket {status_msg.capitalize()}",
             message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
             data={"type": "TICKET_UPDATE"},
-            commit=False  # Keep it False so we commit everything once at the end
+            commit=False,  # Keep it False so we commit everything once at the end
         )
     except Exception as e:
         # Log the error so the admin knows the DB updated but the alert failed
@@ -1652,8 +1669,10 @@ async def handle_ticket(
 
     # 3. Final commit for both the ticket update and the notification record
     await db.commit()
-    
+
     return {"message": f"Ticket {action}ed successfully"}
+
+
 # async def handle_ticket(
 #     ticket_id: str,
 #     action: str,  # 'resolve' or 'reject'
@@ -1707,7 +1726,7 @@ async def create_ticket(
         f"Your ticket '{subject}' has been created and is pending review.",
         "TICKET_CREATED",
     )
-    
+
     await db.commit()
     return {"message": "Ticket created. Support will contact you soon."}
 
