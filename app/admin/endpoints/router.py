@@ -849,7 +849,9 @@ async def create_route_identity(
     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
 ):
     try:
-        new_route = schema.Route(name=data.name.strip(), code=data.code.strip().upper())
+        new_route = schema.Route(
+            name=data.name.strip(), code=data.code.strip().upper(), has_ac=data.has_ac
+        )
         db.add(new_route)
         await db.commit()
         await db.refresh(new_route)
@@ -861,6 +863,7 @@ async def create_route_identity(
                 "route_id": new_route.id,
                 "name": new_route.name,
                 "code": new_route.code,
+                "has_ac": new_route.has_ac,
             },
         }
 
@@ -1045,6 +1048,7 @@ async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
             "route_id": r.id,
             "name": r.name,
             "code": r.code,
+            "has_ac": r.has_ac,
             "is_active": r.is_active,
             "total_stops": len(r.route_stops),
             "created_at": r.created_at,
@@ -1089,6 +1093,7 @@ async def get_route_details(
         "route_id": route.id,
         "name": route.name,
         "code": route.code,
+        "has_ac": route.has_ac,
         "is_active": route.is_active,
         "path": ordered_stops,
     }

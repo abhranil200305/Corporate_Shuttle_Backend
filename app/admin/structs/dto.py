@@ -68,6 +68,7 @@ class RouteStatusUpdate(BaseModel):
 class RouteCreate(BaseModel):
     name: str
     code: str
+    has_ac: bool = False
 
 
 class RouteStopInput(BaseModel):
