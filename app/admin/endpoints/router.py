@@ -454,10 +454,11 @@ async def verify_driver(
         title=title,
         message=message,
         data={"type": "verification_update", "status": data.status},
-        commit=False # We handle the commit below
+        #commit=False # We handle the commit below
     )
     
     await db.commit()
+
     return {"message": f"Driver verification status updated to {data.status}", "user_id": user_id}
 
 # ----------------- driver vehical verification ---------------------------
