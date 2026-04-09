@@ -170,6 +170,11 @@ class SupportStatus(str, enum.Enum):
     RESOLVED = "resolved"
     REJECTED = "rejected"
 
+class VehicleInspectionStatus(str, enum.Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
 
 # ============================================================
 # auth / users
@@ -539,6 +544,15 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     )
     verification_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+    inspection_created_at: Mapped[datetime | None] = mapped_column(
+    DateTime(timezone=True),
+    nullable=True,
+    )
+
+    inspection_status: Mapped[VehicleInspectionStatus | None] = mapped_column(
+        enum_type(VehicleInspectionStatus, "vehicle_inspection_status"),
         nullable=True,
     )
     reviewed_by_admin_id: Mapped[str | None] = mapped_column(
