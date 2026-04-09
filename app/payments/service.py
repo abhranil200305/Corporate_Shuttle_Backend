@@ -927,8 +927,11 @@ class RoutePayoutService:
             "profile": {
                 "addresses": {
                     "registered": {
+                        "street1": "Mani Casadona",
+                        "street2": "Newtown Action Area II",
                         "city": city,
                         "state": state,
+                        "postal_code":"700156",
                         "country": country,
                     }
                 },
