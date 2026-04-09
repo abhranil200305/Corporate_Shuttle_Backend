@@ -519,6 +519,10 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     registration_number: Mapped[str] = mapped_column(
         String(32), unique=True, nullable=False
     )
+    registration_valid_till: Mapped[datetime] = mapped_column(
+    DateTime(timezone=True),
+    nullable=False,
+    )
     vehicle_name: Mapped[str] = mapped_column(String(80), nullable=False)
     vehicle_model: Mapped[str] = mapped_column(String(80), nullable=False)
     color: Mapped[str] = mapped_column(String(40), nullable=False)
