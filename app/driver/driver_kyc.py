@@ -8,6 +8,10 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+from app.notifications.service import NotificationService
+from app.db.schema import User, UserRole
+from sqlalchemy import select
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 
 from app.db.database import get_async_session
 from app.db.schema import (
@@ -132,6 +136,7 @@ async def upload_documents(
 # -----------------------------
 @router.post("/submit")
 async def submit_kyc(
+    request: Request,
     db: AsyncSession = Depends(get_async_session),
     current_user=Depends(get_current_user),
 ):
@@ -164,6 +169,32 @@ async def submit_kyc(
     driver.verification_requested_at = datetime.now(timezone.utc)
 
     await db.commit()
+    # -----------------------------
+    # SEND NOTIFICATION TO ADMINS
+    # -----------------------------
+    # get ws hub from app
+    ws_hub = getattr(request.app.state, "ws_hub", None)
+
+    notification_service = NotificationService(db=db, ws_hub=ws_hub)
+
+    # get all admins
+    result = await db.execute(
+        select(User).where(User.role == UserRole.ADMIN)
+    )
+    admins = result.scalars().all()
+
+    # send notification to each admin
+    for admin in admins:
+        await notification_service.notify_user(
+            user_id=admin.id,
+            title="New Driver KYC Submitted",
+            message=f"{driver.full_name} has submitted KYC for verification.",
+            data={
+                "driver_user_id": current_user.id,
+                "driver_name": driver.full_name,
+                "type": "DRIVER_KYC_SUBMITTED"
+            }
+        )
 
     return {
         "message": "KYC submitted successfully",
