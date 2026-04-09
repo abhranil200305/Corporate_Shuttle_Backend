@@ -1,4 +1,4 @@
-# app/controllers/driverprofile/driverprofile.py
+# app/driver/driverprofile.py
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -163,6 +163,80 @@ async def get_my_driver_profile(
         profile_picture_path=profile.profile_picture_path,
         verification_status=profile.verification_status,
         email=profile.user.email if profile.user else None,  # ✅ EMAIL
+        average_rating=avg_rating,
+        total_reviews=total_reviews,
+        created_at=profile.created_at,
+        updated_at=profile.updated_at,
+    )
+# ------------------------------
+# Update Driver Profile
+# ------------------------------
+@router.patch("/update", response_model=DriverProfileResponse)
+async def update_driver_profile(
+    full_name: Optional[str] = Form(None),
+    phone: Optional[str] = Form(None),
+    profile_pic: Optional[UploadFile] = File(None),
+    db: AsyncSession = Depends(get_async_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Update logged-in driver's profile"""
+
+    # 🔍 Get existing profile
+    result = await db.execute(
+        select(DriverProfile)
+        .where(DriverProfile.user_id == current_user.id)
+        .options(selectinload(DriverProfile.user))
+    )
+    profile = result.scalar_one_or_none()
+
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+
+    # ✏️ Update fields (only if provided)
+    if full_name is not None:
+        profile.full_name = full_name.strip()
+
+    if phone is not None:
+        profile.phone = phone.strip()
+
+    # 🖼️ Update profile picture
+    if profile_pic:
+        new_path = await save_upload_async(profile_pic)
+        profile.profile_picture_path = new_path
+
+    # ⏱️ Update timestamp
+    profile.updated_at = datetime.utcnow()
+
+    try:
+        await db.commit()
+        await db.refresh(profile)
+    except IntegrityError as e:
+        await db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"Update failed: {str(e.orig)}"
+        )
+
+    # ⭐ Ratings
+    rating_result = await db.execute(
+        select(BookingRating.driver_rating).where(
+            BookingRating.driver_user_id == current_user.id
+        )
+    )
+    ratings = rating_result.scalars().all()
+
+    avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
+    total_reviews = len(ratings)
+
+    # ✅ Return response
+    return DriverProfileResponse(
+        id=profile.id,
+        user_id=profile.user_id,
+        full_name=profile.full_name,
+        phone=profile.phone,
+        profile_picture_path=profile.profile_picture_path,
+        verification_status=profile.verification_status,
+        email=profile.user.email if profile.user else None,
         average_rating=avg_rating,
         total_reviews=total_reviews,
         created_at=profile.created_at,
