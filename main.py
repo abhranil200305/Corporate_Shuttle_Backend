@@ -34,9 +34,13 @@ from app.notifications import router as notifications_router
 from app.notifications.hub import WSHub
 from app.driver.trips.route_stops import router as trip_stops_router
 
+import logging
 
-
-
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    force=True,
+)
 
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
