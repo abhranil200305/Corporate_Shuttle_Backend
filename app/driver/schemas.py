@@ -6,6 +6,7 @@ from app.db.schema import VehicleVerificationStatus
 class VehicleBase(BaseModel):
     registration_number: str
     vehicle_name: str
+    registration_valid_till: datetime | None
     vehicle_model: str
     color: str
     seat_count: int
