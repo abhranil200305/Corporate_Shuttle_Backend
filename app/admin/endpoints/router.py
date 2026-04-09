@@ -101,6 +101,9 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     "name": p.full_name if p else None,
                     "phone": p.phone if p else None,
                     "verification": p.verification_status if p else "N/A",
+                    "profile_verification_req_date": p.verification_requested_at
+                    if p
+                    else None,
                     "documents": {
                         "aadhaar_number": p.aadhaar_number if p else None,
                         "pan_number": p.pan_number if p else None,
@@ -124,6 +127,9 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     "rear_photo_file_path": v.rear_photo_file_path
                     if (v and v.rear_photo_file_path)
                     else "NA",
+                    "vechical_verification_req_date": v.verification_requested_at
+                    if v
+                    else None,
                 },
                 "account_info": {
                     "account_number": p.bank_account_number if p else None,
@@ -183,6 +189,9 @@ async def get_driver_details(
             "verification_status": d.driver_profile.verification_status
             if d.driver_profile
             else "draft",
+            "profile_verification_req_date": d.driver_profile.verification_requested_at
+            if d
+            else None,
             "documents": {
                 # Added Aadhaar and PAN numbers here
                 "aadhaar_number": d.driver_profile.aadhaar_number
@@ -213,6 +222,9 @@ async def get_driver_details(
             "rear_photo_file_path": v.rear_photo_file_path
             if (v and v.rear_photo_file_path)
             else "NA",
+            "vechical_verification_req_date": v.verification_requested_at
+            if v
+            else None,
         },
         "account_info": {
             "account_number": d.driver_profile.bank_account_number
@@ -251,6 +263,9 @@ async def get_driver_details_vechicals(
             "rear_photo_file_path": v.rear_photo_file_path
             if (v and v.rear_photo_file_path)
             else "NA",
+            "vechical_verification_req_date": v.verification_requested_at
+            if v
+            else None,
         },
     }
 
