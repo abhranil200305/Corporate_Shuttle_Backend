@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.db.database import get_async_session
-from app.db.schema import Route, RouteStop, Stop
+from app.db.schema import Route, RouteStop
 
 router = APIRouter(prefix="/driver/routes", tags=["Driver Routes"])
 
@@ -17,7 +17,7 @@ async def get_all_routes(
 ):
     query = (
         select(Route)
-        .where(Route.is_active == True)
+        .where(Route.is_active.is_(True))  # ✅ better boolean check
         .options(
             selectinload(Route.route_stops)
             .selectinload(RouteStop.stop)
@@ -30,25 +30,29 @@ async def get_all_routes(
     response = []
 
     for route in routes:
-        stops_data = []
+        # ✅ Sort stops safely
+        sorted_stops = sorted(
+            route.route_stops,
+            key=lambda x: x.sequence_no or 0
+        )
 
-        # Sort stops by sequence_no
-        sorted_stops = sorted(route.route_stops, key=lambda x: x.sequence_no)
-
-        for rs in sorted_stops:
-            stops_data.append({
+        stops_data = [
+            {
                 "stop_id": rs.stop.id,
                 "name": rs.stop.name,
                 "sequence_no": rs.sequence_no,
-                "assume_time_diff_minutes": rs.assume_time_diff_minutes,  # ✅ added correctly
+                "assume_time_diff_minutes": rs.assume_time_diff_minutes,
                 "boarding_allowed": rs.boarding_allowed,
-                "deboarding_allowed": rs.deboarding_allowed
-            })
+                "deboarding_allowed": rs.deboarding_allowed,
+            }
+            for rs in sorted_stops
+        ]
 
         response.append({
             "route_id": route.id,
             "name": route.name,
             "code": route.code,
+            "has_ac": route.has_ac,  # ✅ ADDED FIELD
             "stops": stops_data
         })
 
