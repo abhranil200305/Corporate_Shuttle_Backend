@@ -84,7 +84,7 @@ async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
 # ------------------------------
 # Create Driver Profile
 # ------------------------------
-@router.post("/", response_model=DriverProfileResponse)
+@router.post("/")
 async def create_driver_profile(
     full_name: str = Form(...),
     phone: str = Form(...),
