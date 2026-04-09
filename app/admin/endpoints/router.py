@@ -377,6 +377,51 @@ async def deactivate_driver(
 
 
 # ----------------- driver profiles verification ---------------------------
+#@router.post("/driver/verify/{user_id}")
+# async def verify_driver(
+#     user_id: str,
+#     data: VerificationUpdate,
+#     request: Request,
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     hub = get_ws_hub(request)
+#     service = AdminService(db, ws_hub=hub)
+#     notif_service = NotificationService(db, ws_hub=hub)
+#     # 1. Check if the driver profile exists
+#     driver = await service.fetch_driver_by_id(user_id)
+#     if not driver or not driver.driver_profile:
+#         return {"error": "Driver profile not found"}, 404
+
+#     # 2. Update the status
+#     await service.update_driver_verification(
+#         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
+#     )
+
+#     # --- ADD NOTIFICATION HERE ---
+#     title = (
+#         "Profile Verified!" if data.status == "verified" else "Profile Action Required"
+#     )
+#     message = (
+#         "Your profile has been verified. You can now accept rides."
+#         if data.status == "verified"
+#         else f"Your profile was not approved. Reason: {data.rejection_reason}"
+#     )
+#     try:
+#         await NotificationService.notify_user(
+#         user_id=user_id,
+#         title=title,
+#         message=message,
+#         data={"type": "verification_update", "status": data.status},
+#     )
+#     except Exception as e: # Correct Python exception syntax
+#         print(f"Notification failed: {e}")
+#     await db.commit()
+#     return {
+#         # "message": f"Driver verification status updated to {data.status}",
+#         "message": f"Driver verification status updated to {data.status}",
+#         "user_id": user_id,
+#         # "user_id": user_id,
+#     }
 @router.post("/driver/verify/{user_id}")
 async def verify_driver(
     user_id: str,
@@ -385,46 +430,75 @@ async def verify_driver(
     db: AsyncSession = Depends(get_async_session),
 ):
     hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
+    admin_service = AdminService(db)
+    notif_service = NotificationService(db, ws_hub=hub)
 
-    # 1. Check if the driver profile exists
-    driver = await service.fetch_driver_by_id(user_id)
+    driver = await admin_service.fetch_driver_by_id(user_id)
     if not driver or not driver.driver_profile:
-        return {"error": "Driver profile not found"}, 404
+        raise HTTPException(status_code=404, detail="Driver profile not found")
 
-    # 2. Update the status
-    await service.update_driver_verification(
+    await admin_service.update_driver_verification(
         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
     )
 
-    # --- ADD NOTIFICATION HERE ---
-    title = (
-        "Profile Verified!" if data.status == "verified" else "Profile Action Required"
-    )
+    # Use the instance (notif_service) not the Class (NotificationService)
+    title = "Profile Verified!" if data.status == "verified" else "Profile Action Required"
     message = (
         "Your profile has been verified. You can now accept rides."
         if data.status == "verified"
         else f"Your profile was not approved. Reason: {data.rejection_reason}"
     )
-    try:
-        await NotificationService.notify_user(
+    
+    await notif_service.notify_user(
         user_id=user_id,
         title=title,
         message=message,
         data={"type": "verification_update", "status": data.status},
+        commit=False # We handle the commit below
     )
-    except Exception as e: # Correct Python exception syntax
-        print(f"Notification failed: {e}")
+    
     await db.commit()
-    return {
-        # "message": f"Driver verification status updated to {data.status}",
-        "message": f"Driver verification status updated to {data.status}",
-        "user_id": user_id,
-        # "user_id": user_id,
-    }
-
+    return {"message": f"Driver verification status updated to {data.status}", "user_id": user_id}
 
 # ----------------- driver vehical verification ---------------------------
+# @router.post("/vehicle/verify/{user_id}")
+# async def verify_vehicle(
+#     user_id: str,
+#     data: VehicleVerificationUpdate,
+#     request: Request,
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     hub = get_ws_hub(request)
+#     service = AdminService(db, ws_hub=hub)
+
+#     # 1. Check if the vehicle exists for this user
+#     driver = await service.fetch_driver_by_id(user_id)  # Reuse your fetch logic
+#     if not driver or not driver.vehicle:
+#         return {"error": "Vehicle record not found for this user"}, 404
+
+#     # 2. Update the vehicle status
+#     await service.update_vehicle_verification(
+#         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
+#     )
+#     # --- ADD NOTIFICATION HERE ---
+#     status_msg = "approved" if data.status == "verified" else "rejected"
+#     try:
+#         await NotificationService.notify_user(
+#         user_id=user_id,
+#         title="Vehicle Verification Update",
+#         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
+#         data={"type": "vehicle_update", "status": data.status},
+#     )
+#     except Exception as e: 
+#         print(f"Notification failed: {e}")
+
+#     await db.commit()
+#     return {
+#         "message": f"Vehicle verification status updated to {data.status}",
+#         "user_id": user_id,
+#         "registration_number": driver.vehicle.registration_number,
+#     }
+
 @router.post("/vehicle/verify/{user_id}")
 async def verify_vehicle(
     user_id: str,
@@ -434,36 +508,43 @@ async def verify_vehicle(
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
+    
+    # 1. Instantiate the NotificationService correctly
+    notif_service = NotificationService(db, ws_hub=hub)
 
-    # 1. Check if the vehicle exists for this user
-    driver = await service.fetch_driver_by_id(user_id)  # Reuse your fetch logic
+    driver = await service.fetch_driver_by_id(user_id)
     if not driver or not driver.vehicle:
-        return {"error": "Vehicle record not found for this user"}, 404
+        raise HTTPException(status_code=404, detail="Vehicle record not found for this user")
 
-    # 2. Update the vehicle status
+    # 3. Update the vehicle status
     await service.update_vehicle_verification(
         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
     )
-    # --- ADD NOTIFICATION HERE ---
+
+    # --- NOTIFICATION LOGIC ---
     status_msg = "approved" if data.status == "verified" else "rejected"
+    
     try:
-        await NotificationService.notify_user(
-        user_id=user_id,
-        title="Vehicle Verification Update",
-        message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
-        data={"type": "vehicle_update", "status": data.status},
-    )
+        # Call the method on 'notif_service' (the instance), not the class
+        await notif_service.notify_user(
+            user_id=user_id,
+            title="Vehicle Verification Update",
+            message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
+            data={"type": "vehicle_update", "status": data.status},
+            commit=False  
+        )
     except Exception as e: 
+        # Log the error but don't stop the whole process
         print(f"Notification failed: {e}")
 
+    # Final commit for both the DB update and the notification record
     await db.commit()
+    
     return {
         "message": f"Vehicle verification status updated to {data.status}",
         "user_id": user_id,
         "registration_number": driver.vehicle.registration_number,
     }
-
-
 # ------------------- add stops and routes -----------------------------
 
 
@@ -1192,10 +1273,14 @@ async def cancel_trip_by_id(
     trip_id: str,
     request: Request,
     reason: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_async_session),  # 1. ADD THIS
+    db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)  # 2. GET HUB
+    hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
+    
+    # 1. Create the instance of the NotificationService
+    notif_service = NotificationService(db, ws_hub=hub)
+
     trip = await service.get_trip_by_id(trip_id)
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
@@ -1203,32 +1288,82 @@ async def cancel_trip_by_id(
     result = await service.cancel_trip(trip_id, reason)
 
     if not result["success"]:
-        # If it's a timing error, use 400. If it's a missing trip, use 404.
         status_code = 404 if "not found" in result["error"] else 400
         raise HTTPException(status_code=status_code, detail=result["error"])
+
+    # 2. Notify the Driver
     if trip.driver_id:
         try:
-            await NotificationService.notify_user(
-            user_id=trip.driver_id,
-            title="Trip Cancelled by Admin",
-            message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-            data={"type": "Trip_cancel_UPDATE"},
-        )
+            # Call using the instance 'notif_service'
+            await notif_service.notify_user(
+                user_id=trip.driver_id,
+                title="Trip Cancelled by Admin",
+                message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
+                data={"type": "Trip_cancel_UPDATE"},
+                commit=False  # Don't commit yet
+            )
         except Exception as e: 
-           print(f"Notification failed: {e}")
+            print(f"Driver Notification failed: {e}")
 
+    # 3. Notify all Passengers
     for booking in trip.bookings:
         try:
-            await NotificationService.notify_user(
-            user_id=booking.passenger_id,
-            title="Urgent: Trip Cancelled",
-            message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-            data={"type": "Trip_cancel_UPDATE"},
-        )
-        except Exception as e: # Correct Python exception syntax
-           print(f"Notification failed: {e}")
+            # Call using the instance 'notif_service'
+            await notif_service.notify_user(
+                user_id=booking.passenger_id,
+                title="Urgent: Trip Cancelled",
+                message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
+                data={"type": "Trip_cancel_UPDATE"},
+                commit=False  # Don't commit yet
+            )
+        except Exception as e: 
+            print(f"Passenger Notification failed for {booking.passenger_id}: {e}")
+
+    # 4. Final single commit for the cancellation AND all notification records
     await db.commit()
+    
     return {"status": "success", "message": "Trip cancelled and users notified."}
+# async def cancel_trip_by_id(
+#     trip_id: str,
+#     request: Request,
+#     reason: str = Body(..., embed=True),
+#     db: AsyncSession = Depends(get_async_session),  # 1. ADD THIS
+# ):
+#     hub = get_ws_hub(request)  # 2. GET HUB
+#     service = AdminService(db, ws_hub=hub)
+#     trip = await service.get_trip_by_id(trip_id)
+#     if not trip:
+#         raise HTTPException(status_code=404, detail="Trip not found")
+
+#     result = await service.cancel_trip(trip_id, reason)
+
+#     if not result["success"]:
+#         # If it's a timing error, use 400. If it's a missing trip, use 404.
+#         status_code = 404 if "not found" in result["error"] else 400
+#         raise HTTPException(status_code=status_code, detail=result["error"])
+#     if trip.driver_id:
+#         try:
+#             await NotificationService.notify_user(
+#             user_id=trip.driver_id,
+#             title="Trip Cancelled by Admin",
+#             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
+#             data={"type": "Trip_cancel_UPDATE"},
+#         )
+#         except Exception as e: 
+#            print(f"Notification failed: {e}")
+
+#     for booking in trip.bookings:
+#         try:
+#             await NotificationService.notify_user(
+#             user_id=booking.passenger_id,
+#             title="Urgent: Trip Cancelled",
+#             message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
+#             data={"type": "Trip_cancel_UPDATE"},
+#         )
+#         except Exception as e: # Correct Python exception syntax
+#            print(f"Notification failed: {e}")
+#     await db.commit()
+#     return {"status": "success", "message": "Trip cancelled and users notified."}
 
 
 # @router.patch("/trips/{trip_id}/cancel")
@@ -1491,23 +1626,60 @@ async def handle_ticket(
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
+    
+    # 1. Create the instance of the NotificationService
+    notif_service = NotificationService(db, ws_hub=hub)
+
     ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     status_msg = "resolved" if action == "resolve" else "rejected"
+    
+    # 2. Use the instance 'notif_service' instead of the class 'NotificationService'
     try:
-        await NotificationService.notify_user(
-         user_id=ticket.user_id,
-         title=f"Support Ticket {status_msg.capitalize()}",
-         message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-         data={"type":"TICKET_UPDATE"},
-     )
-    except Exception as e: # Correct Python exception syntax
-        print(f"Notification failed: {e}")
+        await notif_service.notify_user(
+            user_id=ticket.user_id,
+            title=f"Support Ticket {status_msg.capitalize()}",
+            message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+            data={"type": "TICKET_UPDATE"},
+            commit=False  # Keep it False so we commit everything once at the end
+        )
+    except Exception as e:
+        # Log the error so the admin knows the DB updated but the alert failed
+        print(f"Notification failed for ticket {ticket_id}: {e}")
 
+    # 3. Final commit for both the ticket update and the notification record
     await db.commit()
-    return {"message": f"Ticket {action} successfully"}
+    
+    return {"message": f"Ticket {action}ed successfully"}
+# async def handle_ticket(
+#     ticket_id: str,
+#     action: str,  # 'resolve' or 'reject'
+#     request: Request,
+#     note: str = Body(..., embed=True),
+#     current_admin: schema.User = Depends(get_current_admin),
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     hub = get_ws_hub(request)
+#     service = AdminService(db, ws_hub=hub)
+#     ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
+#     if not ticket:
+#         raise HTTPException(status_code=404, detail="Ticket not found")
+
+#     status_msg = "resolved" if action == "resolve" else "rejected"
+#     try:
+#         await NotificationService.notify_user(
+#          user_id=ticket.user_id,
+#          title=f"Support Ticket {status_msg.capitalize()}",
+#          message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+#          data={"type":"TICKET_UPDATE"},
+#      )
+#     except Exception as e: # Correct Python exception syntax
+#         print(f"Notification failed: {e}")
+
+#     await db.commit()
+#     return {"message": f"Ticket {action} successfully"}
 
 
 # app/users/endpoints/router.py
