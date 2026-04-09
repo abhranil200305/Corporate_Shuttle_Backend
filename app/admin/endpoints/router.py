@@ -406,12 +406,15 @@ async def verify_driver(
         if data.status == "verified"
         else f"Your profile was not approved. Reason: {data.rejection_reason}"
     )
-    await NotificationService.notify_user(
+    try:
+        await NotificationService.notify_user(
         user_id=user_id,
         title=title,
         message=message,
         data={"type": "verification_update", "status": data.status},
     )
+    except Exception as e: # Correct Python exception syntax
+        print(f"Notification failed: {e}")
     await db.commit()
     return {
         # "message": f"Driver verification status updated to {data.status}",
@@ -443,12 +446,16 @@ async def verify_vehicle(
     )
     # --- ADD NOTIFICATION HERE ---
     status_msg = "approved" if data.status == "verified" else "rejected"
-    await NotificationService.notify_user(
+    try:
+        await NotificationService.notify_user(
         user_id=user_id,
         title="Vehicle Verification Update",
         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
         data={"type": "vehicle_update", "status": data.status},
     )
+    except Exception as e: 
+        print(f"Notification failed: {e}")
+
     await db.commit()
     return {
         "message": f"Vehicle verification status updated to {data.status}",
@@ -1199,24 +1206,27 @@ async def cancel_trip_by_id(
         # If it's a timing error, use 400. If it's a missing trip, use 404.
         status_code = 404 if "not found" in result["error"] else 400
         raise HTTPException(status_code=status_code, detail=result["error"])
-
     if trip.driver_id:
-        await NotificationService.notify_user(
+        try:
+            await NotificationService.notify_user(
             user_id=trip.driver_id,
             title="Trip Cancelled by Admin",
             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
             data={"type": "Trip_cancel_UPDATE"},
         )
+        except Exception as e: 
+           print(f"Notification failed: {e}")
 
-    # 2. Notify All Booked Passengers (Note: removed 'db' from arguments)
     for booking in trip.bookings:
-        await NotificationService.notify_user(
+        try:
+            await NotificationService.notify_user(
             user_id=booking.passenger_id,
             title="Urgent: Trip Cancelled",
             message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
             data={"type": "Trip_cancel_UPDATE"},
         )
-
+        except Exception as e: # Correct Python exception syntax
+           print(f"Notification failed: {e}")
     await db.commit()
     return {"status": "success", "message": "Trip cancelled and users notified."}
 
@@ -1486,12 +1496,16 @@ async def handle_ticket(
         raise HTTPException(status_code=404, detail="Ticket not found")
 
     status_msg = "resolved" if action == "resolve" else "rejected"
-    await NotificationService.notify_user(
-        user_id=ticket.user_id,
-        title=f"Support Ticket {status_msg.capitalize()}",
-        message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-        data={"type":"TICKET_UPDATE"},
-    )
+    try:
+        await NotificationService.notify_user(
+         user_id=ticket.user_id,
+         title=f"Support Ticket {status_msg.capitalize()}",
+         message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+         data={"type":"TICKET_UPDATE"},
+     )
+    except Exception as e: # Correct Python exception syntax
+        print(f"Notification failed: {e}")
+
     await db.commit()
     return {"message": f"Ticket {action} successfully"}
 
