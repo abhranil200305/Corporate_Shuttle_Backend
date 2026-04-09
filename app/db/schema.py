@@ -664,6 +664,10 @@ class Route(UUIDPKMixin, TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120), nullable=False)
     code: Mapped[str] = mapped_column(String(40), unique=True, nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    has_ac: Mapped[bool | None] = mapped_column(
+        Boolean,
+        nullable=True
+    )
 
     route_stops: Mapped[list["RouteStop"]] = relationship(
         back_populates="route",
