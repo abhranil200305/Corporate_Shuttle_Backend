@@ -882,7 +882,7 @@ class RoutePayoutService:
     full_name: str,
     city: str = "Kolkata",
     state: str = "WEST BENGAL",
-    country: str = "IN",
+    country: str = "india",
 ) -> dict[str, Any]:
         cleaned_email = (email or "").strip()
         cleaned_phone = (phone or "").strip()
