@@ -69,7 +69,7 @@ class RouteResponse(BaseModel):
     id: str
     name: str
     code: str
-    has_ac: bool
+    has_ac: bool | None
     is_active: bool
     stops: list[RouteStopResponse]
 
@@ -144,7 +144,7 @@ class FarePreviewResponse(BaseModel):
     route_id: str
     route_name: str
     route_code: str
-    has_ac: bool
+    has_ac: bool | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
     pickup_sequence_no: int
