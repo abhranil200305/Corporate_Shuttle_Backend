@@ -447,8 +447,7 @@ async def verify_vehicle(
         user_id=user_id,
         title="Vehicle Verification Update",
         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
-        # data={"type": "vehicle_update", "status": data.status},
-        type="vehicle_update",
+        data={"type": "vehicle_update", "status": data.status},
     )
     await db.commit()
     return {
@@ -1206,7 +1205,7 @@ async def cancel_trip_by_id(
             user_id=trip.driver_id,
             title="Trip Cancelled by Admin",
             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-            type="TRIP_CANCELLED",
+            data={"type": "Trip_cancel_UPDATE"},
         )
 
     # 2. Notify All Booked Passengers (Note: removed 'db' from arguments)
@@ -1215,7 +1214,7 @@ async def cancel_trip_by_id(
             user_id=booking.passenger_id,
             title="Urgent: Trip Cancelled",
             message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-            type="TRIP_CANCELLED",
+            data={"type": "Trip_cancel_UPDATE"},
         )
 
     await db.commit()
@@ -1491,7 +1490,7 @@ async def handle_ticket(
         user_id=ticket.user_id,
         title=f"Support Ticket {status_msg.capitalize()}",
         message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-        type="TICKET_UPDATE",
+        data={"type":"TICKET_UPDATE"},
     )
     await db.commit()
     return {"message": f"Ticket {action} successfully"}
@@ -1521,6 +1520,7 @@ async def create_ticket(
         f"Your ticket '{subject}' has been created and is pending review.",
         "TICKET_CREATED",
     )
+    
     await db.commit()
     return {"message": "Ticket created. Support will contact you soon."}
 
