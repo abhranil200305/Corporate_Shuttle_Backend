@@ -925,13 +925,6 @@ class RoutePayoutService:
             "business_type": "individual",
             "contact_name": cleaned_full_name,
             "profile": {
-                "addresses": {
-                    "permanent": {
-                        "city": city,
-                        "state": state,
-                        "country": country,
-                    }
-                },
                 "category":"transport",
                 "subcategory":"bus"
             },
