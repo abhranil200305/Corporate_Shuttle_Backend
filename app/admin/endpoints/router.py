@@ -190,7 +190,7 @@ async def get_driver_details(
             if d.driver_profile
             else "draft",
             "profile_verification_req_date": d.driver_profile.verification_requested_at
-            if d
+            if d.driver_profile
             else None,
             "documents": {
                 # Added Aadhaar and PAN numbers here
@@ -213,7 +213,7 @@ async def get_driver_details(
         },
         "vehicle": {
             "reg_no": d.vehicle.registration_number if d.vehicle else None,
-            "reg_valid_till": d.vehicle.registration_valid_till if d else None,
+            "reg_valid_till": d.vehicle.registration_valid_till if d.vehicle else None,
             "model": d.vehicle.vehicle_model if d.vehicle else None,
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
@@ -254,7 +254,7 @@ async def get_driver_details_vechicals(
         "is_active": d.is_active,
         "vehicle": {
             "reg_no": d.vehicle.registration_number if d.vehicle else None,
-            "reg_valid_till": d.vehicle.registration_valid_till if d else None,
+            "reg_valid_till": d.vehicle.registration_valid_till if d.vehicle else None,
             "model": d.vehicle.vehicle_model if d.vehicle else None,
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
