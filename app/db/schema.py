@@ -550,6 +550,10 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     DateTime(timezone=True),
     nullable=True,
     )
+    inspection_reviewed_at: Mapped[datetime | None] = mapped_column(
+    DateTime(timezone=True),
+    nullable=True,
+    )
 
     inspection_status: Mapped[VehicleInspectionStatus | None] = mapped_column(
         enum_type(VehicleInspectionStatus, "vehicle_inspection_status"),
