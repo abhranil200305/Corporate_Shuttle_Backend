@@ -30,6 +30,7 @@ from app.admin.structs.dto import (
     StopCreate,
     TriggerBookingPayoutRequest,
     TriggerDriverMonthlyPayoutRequest,
+    VehicleInspectionUpdate,
     VehicleVerificationUpdate,
     VerificationUpdate,
 )
@@ -573,6 +574,36 @@ async def verify_vehicle(
         "message": f"Vehicle verification status updated to {data.status}",
         "user_id": user_id,
         "registration_number": driver.vehicle.registration_number,
+    }
+
+
+@router.post("/vehicle/inspect/{vehicle_id}")
+async def resolve_vehicle_inspection(
+    vehicle_id: str,
+    data: VehicleInspectionUpdate,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    # 1. Check if vehicle exists
+    vehicle = await service.fetch_vehicle_by_id(vehicle_id)
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle record not found")
+
+    # 2. Perform the update via service
+    # This automatically sets the inspection_created_at to now
+    await service.update_physical_inspection(
+        vehicle_id=vehicle_id,
+        status=data.status,
+    )
+
+    # 3. Commit the transaction
+    await db.commit()
+
+    return {
+        "status": "success",
+        "message": f"Vehicle physical inspection has been {data.status}",
+        "vehicle_id": vehicle_id,
     }
 
 
