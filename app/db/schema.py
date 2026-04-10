@@ -430,6 +430,10 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default=DriverLifecycleStatus.ACTIVE,
     )
+    duration_payable_days: Mapped[int] = mapped_column(
+    Integer,
+    nullable=True,
+    )
 
     verification_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -546,6 +550,7 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True),
         nullable=True,
     )
+    
     inspection_created_at: Mapped[datetime | None] = mapped_column(
     DateTime(timezone=True),
     nullable=True,
@@ -1015,6 +1020,10 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         String(36),
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    otp: Mapped[str | None] = mapped_column(
+        String(10),   
+        nullable=True
     )
     scheduled_trip_id: Mapped[str] = mapped_column(
         String(36),
