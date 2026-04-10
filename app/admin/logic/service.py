@@ -804,6 +804,32 @@ class AdminService:
         )
         await self.db.execute(stmt)
 
+    async def fetch_fully_verified_drivers(self):
+        """
+        Fetches drivers where both their Profile (DriverProfile) 
+        and their Vehicle are verified.
+        """
+        stmt = (
+            select(schema.User)
+            # 1. Join DriverProfile to check profile status
+            .join(schema.DriverProfile, schema.User.id == schema.DriverProfile.user_id)
+            # 2. Join Vehicle to check vehicle status
+            .join(schema.Vehicle, schema.User.id == schema.Vehicle.driver_user_id)
+            # 3. Load the data so it's available in the loop
+            .options(
+                joinedload(schema.User.driver_profile),
+                joinedload(schema.User.vehicle)
+            )
+            # 4. Filter strictly by the statuses in the related tables
+            .where(
+                schema.DriverProfile.verification_status == schema.DriverVerificationStatus.VERIFIED,
+                schema.Vehicle.verification_status == schema.VehicleVerificationStatus.VERIFIED
+            )
+        )
+        
+        result = await self.db.execute(stmt)
+        return result.scalars().unique().all()
+
     # async def fetch_detailed_transactions(
     #     self, skip: int, limit: int, status: str = None
     # ):

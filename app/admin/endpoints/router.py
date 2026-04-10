@@ -607,6 +607,45 @@ async def resolve_vehicle_inspection(
     }
 
 
+# app/admin/endpoints/router.py
+
+
+@router.get("/drivers/verified_data")
+async def get_fully_verified_fleet(db: AsyncSession = Depends(get_async_session)):
+    service = AdminService(db)
+    drivers = await service.fetch_fully_verified_drivers()
+
+    fleet_data = []
+    for d in drivers:
+        # Accessing nested data from DriverProfile and Vehicle objects
+        profile = d.driver_profile
+        vehicle = d.vehicle
+
+        fleet_data.append(
+            {
+                "driver_id": d.id,
+                "personal_details": {
+                    "full_name": profile.full_name,  # From DriverProfile
+                    "phone": profile.phone,  # From DriverProfile
+                    "email": d.email,  # From User
+                },
+                "verification_info": {
+                    "profile_status": profile.verification_status,
+                    "profile_verified_at": profile.reviewed_at,
+                    "vehicle_status": vehicle.verification_status,
+                    "vehicle_verified_at": vehicle.reviewed_at,
+                },
+                "vehicle_details": {
+                    "registration": vehicle.registration_number,
+                    "model": f"{vehicle.vehicle_name} {vehicle.vehicle_model}",
+                    "has_ac": vehicle.has_ac,
+                },
+            }
+        )
+
+    return {"status": "success", "count": len(fleet_data), "items": fleet_data}
+
+
 # ------------------- add stops and routes -----------------------------
 
 
