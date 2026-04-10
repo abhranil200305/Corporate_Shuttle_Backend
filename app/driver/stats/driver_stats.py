@@ -99,6 +99,7 @@ async def get_driver_stats(
         trip_stats.append({
             "trip_id": trip.id,
             "status": trip.status,
+            "planned_start_at": trip.planned_start_at,  # ✅ ADDED HERE
             "passenger_count": passenger_count,
             "earning": float(earning),
         })
