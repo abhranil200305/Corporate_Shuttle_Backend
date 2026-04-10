@@ -60,7 +60,7 @@ def is_within_radius(stop: Stop, lat: float, lng: float, radius=150) -> bool:
 
 
 # ============================================================
-# CREATE TRIP (UNCHANGED)
+# CREATE TRIP (WITH AC/NON-AC VALIDATION)
 # ============================================================
 
 @router.post("/create")
@@ -85,16 +85,31 @@ async def create_trip(
     if planned_end_at <= planned_start_at:
         raise HTTPException(400, "End must be after start")
 
+    # ---------------------------------------------------
+    # 1. Get vehicle (REMOVE is_active filter ❗)
+    # ---------------------------------------------------
     result = await session.execute(
         select(Vehicle).where(
-            Vehicle.driver_user_id == current_user.id,
-            Vehicle.is_active == True
+            Vehicle.driver_user_id == current_user.id
         )
     )
     vehicle = result.scalar_one_or_none()
-    if not vehicle:
-        raise HTTPException(400, "No active vehicle found")
 
+    if not vehicle:
+        raise HTTPException(400, "No vehicle found")
+
+    # ---------------------------------------------------
+    # 🔥 NEW VALIDATION: vehicle must be active
+    # ---------------------------------------------------
+    if not vehicle.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle is inactive. Contact admin and raise a support ticket"
+        )
+
+    # ---------------------------------------------------
+    # 2. Get route
+    # ---------------------------------------------------
     result = await session.execute(
         select(Route).where(
             func.lower(Route.name) == route_name.lower(),
@@ -102,24 +117,42 @@ async def create_trip(
         )
     )
     route = result.scalar_one_or_none()
+
     if not route:
         raise HTTPException(404, "Route not found")
 
+    # ---------------------------------------------------
+    # 🔥 3. AC / NON-AC VALIDATION
+    # ---------------------------------------------------
+    if route.has_ac != vehicle.has_ac:
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle type does not match route type (AC / NON-AC mismatch)"
+        )
+
+    # ---------------------------------------------------
+    # 4. Validate stops
+    # ---------------------------------------------------
     result = await session.execute(
         select(RouteStop)
         .where(RouteStop.route_id == route.id)
         .order_by(RouteStop.sequence_no)
     )
     stops = result.scalars().all()
+
     if len(stops) < 2:
         raise HTTPException(400, "Route must have at least 2 stops")
 
+    # ---------------------------------------------------
+    # 5. Check previous trip
+    # ---------------------------------------------------
     result = await session.execute(
         select(ScheduledTrip)
         .where(ScheduledTrip.driver_user_id == current_user.id)
         .order_by(ScheduledTrip.created_at.desc())
     )
     last_trip = result.scalars().first()
+
     if last_trip and last_trip.status not in [
         ScheduledTripStatus.COMPLETED,
         ScheduledTripStatus.CANCELLED,
@@ -127,6 +160,9 @@ async def create_trip(
     ]:
         raise HTTPException(400, "Previous trip not finished")
 
+    # ---------------------------------------------------
+    # 6. Create trip
+    # ---------------------------------------------------
     trip = ScheduledTrip(
         route_id=route.id,
         vehicle_id=vehicle.id,
