@@ -44,7 +44,7 @@ class StopCreate(BaseModel):
     name: str = Field(..., example="Technopolis - Main Gate")
     latitude: float = Field(..., example=22.5815)
     longitude: float = Field(..., example=88.4355)
-    radius_meters: int = Field(default=150, description="Geofence radius in meters")
+    radius_meters: int = Field(default=300, description="Geofence radius in meters")
 
 
 class FareEntry(BaseModel):
