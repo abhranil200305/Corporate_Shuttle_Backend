@@ -778,6 +778,32 @@ class AdminService:
         result = await self.db.execute(query)
         return result.all()
 
+    async def fetch_vehicle_by_id(self, vehicle_id: str):
+        stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def update_physical_inspection(
+        self,
+        vehicle_id: str,
+        status: schema.VehicleInspectionStatus,
+    ) -> None:
+        """
+        Updates the physical inspection status and sets the
+        inspection_created_at to the current time of resolution.
+        """
+        values = {
+            "inspection_status": status,
+            "inspection_reviewed_at": datetime.now(timezone.utc),
+        }
+
+        stmt = (
+            update(schema.Vehicle)
+            .where(schema.Vehicle.id == vehicle_id)
+            .values(**values)
+        )
+        await self.db.execute(stmt)
+
     # async def fetch_detailed_transactions(
     #     self, skip: int, limit: int, status: str = None
     # ):

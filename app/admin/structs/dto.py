@@ -87,6 +87,8 @@ class RatingCreate(BaseModel):
     driver_rating: int = Field(ge=1, le=5)
     review_text: Optional[str] = None
 
+class VehicleInspectionUpdate(BaseModel):
+    status: schema.VehicleInspectionStatus
 
 # Implemented by Anubhab below this
 from datetime import datetime
@@ -231,3 +233,4 @@ class RefundQueueItem(BaseModel):
 class RefundQueueResponse(BaseModel):
     items: List[RefundQueueItem]
     count: int
+
