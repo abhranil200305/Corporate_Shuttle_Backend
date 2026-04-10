@@ -25,6 +25,9 @@ from app.jobs.driver_trip_start_reminder import driver_trip_reminder_loop
 from app.jobs.vehicle_registration_expiry_reminder import (
     vehicle_registration_expiry_reminder_loop,
 )
+from app.jobs.vehicle_inspection_status_reminder import (
+    vehicle_inspection_status_reminder_loop,
+)
 from app.passenger.router import router as passenger_route
 from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
@@ -92,6 +95,13 @@ async def lifespan(app: FastAPI):
     app.state.vehicle_registration_expiry_reminder_task = (
         vehicle_registration_expiry_reminder_task
     )
+    vehicle_inspection_status_reminder_task = asyncio.create_task(
+        vehicle_inspection_status_reminder_loop(app.state.ws_hub),
+        name="vehicle-inspection-status-reminder-loop",
+    )
+    app.state.vehicle_inspection_status_reminder_task = (
+        vehicle_inspection_status_reminder_task
+    )
 
     try:
         yield
@@ -101,6 +111,7 @@ async def lifespan(app: FastAPI):
         unstarted_trip_cancel_task.cancel()
         driver_trip_reminder_task.cancel()
         vehicle_registration_expiry_reminder_task.cancel()
+        vehicle_inspection_status_reminder_task.cancel()
 
         with suppress(asyncio.CancelledError):
             await reconcile_task
@@ -116,6 +127,9 @@ async def lifespan(app: FastAPI):
 
         with suppress(asyncio.CancelledError):
             await vehicle_registration_expiry_reminder_task
+        
+        with suppress(asyncio.CancelledError):
+            await vehicle_inspection_status_reminder_task
 
         ws_hub = getattr(app.state, "ws_hub", None)
         if ws_hub is not None:
