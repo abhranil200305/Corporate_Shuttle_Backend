@@ -1111,7 +1111,10 @@ class RoutePayoutService:
             booking.transfer_processed_at = booking.transfer.processed_at
 
         created_applications: list[PayoutAdjustmentApplication] = []
-        if normalized_allocations:
+        if (
+            normalized_allocations
+            and mapped_transfer_status == BookingTransferStatus.PROCESSED
+        ):
             created_applications = await self._create_adjustment_applications(
                 booking=booking,
                 booking_transfer_id=booking.transfer.id,

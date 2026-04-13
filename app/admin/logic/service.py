@@ -930,6 +930,8 @@ class AdminService:
                 "ready_total_amount": agg.get("ready_total_amount", 0),
                 "transferred_booking_count": agg.get("transferred_booking_count", 0),
                 "transferred_total_amount": agg.get("transferred_total_amount", 0),
+                "withheld_booking_count": agg.get("withheld_booking_count", 0),
+                "withheld_total_amount": agg.get("withheld_total_amount", 0),
                 "failed_booking_count": agg.get("failed_booking_count", 0),
                 "failed_total_amount": agg.get("failed_total_amount", 0),
                 "reversed_booking_count": agg.get("reversed_booking_count", 0),
@@ -1002,36 +1004,59 @@ class AdminService:
     def _build_driver_payout_aggregates(self, bookings):
         agg = {
             "ready_booking_count": 0,
-            "ready_total_amount": 0,
+            "ready_total_amount": Decimal("0.00"),
             "transferred_booking_count": 0,
-            "transferred_total_amount": 0,
+            "transferred_total_amount": Decimal("0.00"),
+            "withheld_booking_count": 0,
+            "withheld_total_amount": Decimal("0.00"),
             "failed_booking_count": 0,
-            "failed_total_amount": 0,
+            "failed_total_amount": Decimal("0.00"),
             "reversed_booking_count": 0,
-            "reversed_total_amount": 0,
+            "reversed_total_amount": Decimal("0.00"),
             "refund_queue_count": 0,
-            "refund_queue_total_amount": 0,
+            "refund_queue_total_amount": Decimal("0.00"),
         }
 
         for booking in bookings:
-            payout_amount = booking.driver_payout_amount or 0
-            fare_amount = booking.fare_amount or 0
+            gross_payout_amount = self._quantize_money(
+                Decimal(booking.driver_payout_amount or 0)
+            )
+            fare_amount = self._quantize_money(Decimal(booking.fare_amount or 0))
+
+            applied_adjustment_amount = Decimal("0.00")
+            for application in getattr(
+                booking, "applied_payout_adjustment_applications", []
+            ) or []:
+                applied_adjustment_amount += self._quantize_money(
+                    application.applied_amount
+                )
+
+            applied_adjustment_amount = self._quantize_money(applied_adjustment_amount)
+            net_payout_amount = self._quantize_money(
+                gross_payout_amount - applied_adjustment_amount
+            )
+            if net_payout_amount < Decimal("0.00"):
+                net_payout_amount = Decimal("0.00")
 
             if booking.transfer_status == schema.TransferStatus.READY:
                 agg["ready_booking_count"] += 1
-                agg["ready_total_amount"] += payout_amount
+                agg["ready_total_amount"] += net_payout_amount
 
             elif booking.transfer_status == schema.TransferStatus.TRANSFERRED:
                 agg["transferred_booking_count"] += 1
-                agg["transferred_total_amount"] += payout_amount
+                agg["transferred_total_amount"] += net_payout_amount
+
+            elif booking.transfer_status == schema.TransferStatus.WITHHELD:
+                agg["withheld_booking_count"] += 1
+                agg["withheld_total_amount"] += net_payout_amount
 
             elif booking.transfer_status == schema.TransferStatus.FAILED:
                 agg["failed_booking_count"] += 1
-                agg["failed_total_amount"] += payout_amount
+                agg["failed_total_amount"] += net_payout_amount
 
             elif booking.transfer_status == schema.TransferStatus.REVERSED:
                 agg["reversed_booking_count"] += 1
-                agg["reversed_total_amount"] += payout_amount
+                agg["reversed_total_amount"] += net_payout_amount
 
             if (
                 booking.booking_status == schema.BookingStatus.CANCELLED
@@ -1039,6 +1064,16 @@ class AdminService:
             ):
                 agg["refund_queue_count"] += 1
                 agg["refund_queue_total_amount"] += fare_amount
+
+        for key in (
+            "ready_total_amount",
+            "transferred_total_amount",
+            "withheld_total_amount",
+            "failed_total_amount",
+            "reversed_total_amount",
+            "refund_queue_total_amount",
+        ):
+            agg[key] = self._quantize_money(agg[key])
 
         return agg
 
@@ -1101,6 +1136,21 @@ class AdminService:
         booking = transfer.booking
         scheduled_trip = booking.scheduled_trip if booking else None
 
+        applied_adjustments = [
+            self._serialize_payout_adjustment_application(application)
+            for application in getattr(
+                transfer, "applied_payout_adjustment_applications", []
+            ) or []
+        ]
+
+        applied_adjustment_amount = Decimal("0.00")
+        for application in getattr(
+            transfer, "applied_payout_adjustment_applications", []
+        ) or []:
+            applied_adjustment_amount += self._quantize_money(application.applied_amount)
+
+        applied_adjustment_amount = self._quantize_money(applied_adjustment_amount)
+
         return {
             "transfer_id": transfer.id,
             "booking_id": transfer.booking_id,
@@ -1120,9 +1170,9 @@ class AdminService:
             "booking_status": booking.booking_status if booking else None,
             "completed_at": booking.completed_at if booking else None,
             "cancelled_at": booking.cancelled_at if booking else None,
-            "trip_driver_user_id": scheduled_trip.driver_user_id
-            if scheduled_trip
-            else None,
+            "trip_driver_user_id": scheduled_trip.driver_user_id if scheduled_trip else None,
+            "applied_adjustment_amount": applied_adjustment_amount,
+            "applied_adjustments": applied_adjustments,
         }
 
     async def get_payout_settings(self):
@@ -1215,6 +1265,9 @@ class AdminService:
                 .options(
                     joinedload(schema.TripBooking.scheduled_trip),
                     joinedload(schema.TripBooking.payments),
+                    joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                        schema.PayoutAdjustmentApplication.adjustment
+                    ),
                 )
             )
             result = await self.db.execute(stmt)
@@ -1251,6 +1304,9 @@ class AdminService:
             .options(
                 joinedload(schema.TripBooking.scheduled_trip),
                 joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                    schema.PayoutAdjustmentApplication.adjustment
+                ),
             )
         )
         result = await self.db.execute(stmt)
@@ -1661,6 +1717,10 @@ class AdminService:
                 joinedload(schema.BookingTransfer.booking).joinedload(
                     schema.TripBooking.payments
                 ),
+                joinedload(schema.BookingTransfer.source_booking_payment),
+                joinedload(
+                    schema.BookingTransfer.applied_payout_adjustment_applications
+                ).joinedload(schema.PayoutAdjustmentApplication.adjustment),
             )
             .order_by(schema.BookingTransfer.created_at.desc())
         )
@@ -1703,6 +1763,9 @@ class AdminService:
                     schema.TripBooking.payments
                 ),
                 joinedload(schema.BookingTransfer.source_booking_payment),
+                joinedload(
+                    schema.BookingTransfer.applied_payout_adjustment_applications
+                ).joinedload(schema.PayoutAdjustmentApplication.adjustment),
             )
         )
         result = await self.db.execute(stmt)
@@ -1725,6 +1788,12 @@ class AdminService:
                 "created_at": transfer.source_booking_payment.created_at,
                 "updated_at": transfer.source_booking_payment.updated_at,
             },
+            "applied_adjustments": [
+                self._serialize_payout_adjustment_application(application)
+                for application in (
+                    transfer.applied_payout_adjustment_applications or []
+                )
+            ],
         }
     
     async def trigger_booking_payout(
@@ -1776,6 +1845,7 @@ class AdminService:
                     [
                         schema.TransferStatus.NOT_READY,
                         schema.TransferStatus.READY,
+                        schema.TransferStatus.WITHHELD,
                         schema.TransferStatus.FAILED,
                     ]
                 ),
@@ -1887,6 +1957,7 @@ class AdminService:
                         [
                             schema.TransferStatus.NOT_READY,
                             schema.TransferStatus.READY,
+                            schema.TransferStatus.WITHHELD,
                             schema.TransferStatus.FAILED,
                         ]
                     )
