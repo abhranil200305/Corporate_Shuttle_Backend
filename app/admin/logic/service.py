@@ -2094,53 +2094,18 @@ class AdminService:
 
         booking_stmt = (
             select(schema.TripBooking)
-            .options(joinedload(schema.TripBooking.payments))
+            .options(
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                    schema.PayoutAdjustmentApplication.adjustment
+                ),
+            )
             .order_by(schema.TripBooking.created_at.desc())
         )
         booking_result = await self.db.execute(booking_stmt)
         bookings = booking_result.unique().scalars().all()
 
-        ready_booking_count = 0
-        ready_total_amount = 0
-
-        transferred_booking_count = 0
-        transferred_total_amount = 0
-
-        failed_booking_count = 0
-        failed_total_amount = 0
-
-        reversed_booking_count = 0
-        reversed_total_amount = 0
-
-        refund_queue_count = 0
-        refund_queue_total_amount = 0
-
-        for booking in bookings:
-            payout_amount = booking.driver_payout_amount or 0
-            fare_amount = booking.fare_amount or 0
-
-            if booking.transfer_status == schema.TransferStatus.READY:
-                ready_booking_count += 1
-                ready_total_amount += payout_amount
-
-            elif booking.transfer_status == schema.TransferStatus.TRANSFERRED:
-                transferred_booking_count += 1
-                transferred_total_amount += payout_amount
-
-            elif booking.transfer_status == schema.TransferStatus.FAILED:
-                failed_booking_count += 1
-                failed_total_amount += payout_amount
-
-            elif booking.transfer_status == schema.TransferStatus.REVERSED:
-                reversed_booking_count += 1
-                reversed_total_amount += payout_amount
-
-            if (
-                booking.booking_status == schema.BookingStatus.CANCELLED
-                and self._booking_has_paid_payment(booking)
-            ):
-                refund_queue_count += 1
-                refund_queue_total_amount += fare_amount
+        agg = self._build_driver_payout_aggregates(bookings)
 
         drivers = await self.fetch_detailed_drivers()
         drivers_missing_linked_account_count = 0
@@ -2156,17 +2121,26 @@ class AdminService:
                 drivers_not_eligible_count += 1
 
         return {
-            "commission_percent": settings.commission_percent if settings else 0,
-            "ready_booking_count": ready_booking_count,
-            "ready_total_amount": ready_total_amount,
-            "transferred_booking_count": transferred_booking_count,
-            "transferred_total_amount": transferred_total_amount,
-            "failed_booking_count": failed_booking_count,
-            "failed_total_amount": failed_total_amount,
-            "reversed_booking_count": reversed_booking_count,
-            "reversed_total_amount": reversed_total_amount,
-            "refund_queue_count": refund_queue_count,
-            "refund_queue_total_amount": refund_queue_total_amount,
+            "commission_percent": settings.commission_percent if settings else Decimal("0.00"),
+
+            "ready_booking_count": agg["ready_booking_count"],
+            "ready_total_amount": agg["ready_total_amount"],
+
+            "transferred_booking_count": agg["transferred_booking_count"],
+            "transferred_total_amount": agg["transferred_total_amount"],
+
+            "withheld_booking_count": agg["withheld_booking_count"],
+            "withheld_total_amount": agg["withheld_total_amount"],
+
+            "failed_booking_count": agg["failed_booking_count"],
+            "failed_total_amount": agg["failed_total_amount"],
+
+            "reversed_booking_count": agg["reversed_booking_count"],
+            "reversed_total_amount": agg["reversed_total_amount"],
+
+            "refund_queue_count": agg["refund_queue_count"],
+            "refund_queue_total_amount": agg["refund_queue_total_amount"],
+
             "drivers_missing_linked_account_count": drivers_missing_linked_account_count,
             "drivers_not_eligible_count": drivers_not_eligible_count,
         }

@@ -35,6 +35,7 @@ from app.admin.structs.dto import (
     VerificationUpdate,
     PayoutAdjustmentCreateRequest,
     PayoutAdjustmentDecisionRequest,
+    PayoutDashboardResponse
 )
 from app.auth.dependencies import (
     get_current_active_user,
@@ -2801,7 +2802,7 @@ async def reconcile_cancelled_booking_refund(
     return await service.reconcile_cancelled_booking_refund(booking_id)
 
 
-@router.get("/payouts/dashboard")
+@router.get("/payouts/dashboard", response_model=PayoutDashboardResponse)
 async def get_payout_dashboard(
     db: AsyncSession = Depends(get_async_session),
 ):
