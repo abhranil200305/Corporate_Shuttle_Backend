@@ -2000,3 +2000,12 @@ class AdminService:
             "linked_account_status": payout.linked_account_status,
             "provider_account": provider_account,
         }
+    
+    async def fetch_vehicle_details_by_id(self, vehicle_id: str):
+        stmt = (
+            select(schema.Vehicle)
+            .options(joinedload(schema.Vehicle.driver))
+            .where(schema.Vehicle.id == vehicle_id)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
