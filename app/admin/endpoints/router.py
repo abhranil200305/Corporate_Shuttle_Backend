@@ -117,6 +117,7 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
                     },
                 },
                 "bus_details": {
+                    "vehicle_id": v.id if v else None,
                     "reg_no": v.registration_number if v else None,
                     "reg_valid_till": v.registration_valid_till if v else None,
                     "model": v.vehicle_model if v else None,
