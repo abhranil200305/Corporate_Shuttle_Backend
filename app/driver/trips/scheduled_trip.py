@@ -25,6 +25,7 @@ from app.db.schema import (
     User,
     UserRole,
 )
+from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
 
 router = APIRouter(
@@ -635,12 +636,12 @@ async def emergency_end_trip(
     current_user: User = Depends(get_current_user),
 ):
     # -----------------------------
-    # 1. Validate reason
+    # 1. Validate reason (UPDATED → 50 chars)
     # -----------------------------
-    if len(reason.strip()) < 100:
+    if len(reason.strip()) < 50:
         raise HTTPException(
             status_code=400,
-            detail="Reason must be at least 100 characters long."
+            detail="Reason must be at least 50 characters long."
         )
 
     # -----------------------------
@@ -654,43 +655,37 @@ async def emergency_end_trip(
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
+    # -----------------------------
+    # 3. Prevent duplicate request
+    # -----------------------------
+    if trip.emergency_stop_request_status == EmergencyStopRequestStatus.PENDING:
+        raise HTTPException(400, "Emergency request already pending")
+
     now = now_utc()
 
     # -----------------------------
-    # 3. CANCEL BOOKINGS (OPTIMIZED)
+    # 4. UPDATE → REQUEST MODE ONLY
     # -----------------------------
-    await session.execute(
-        update(TripBooking)
-        .where(
-            TripBooking.scheduled_trip_id == trip_id,
-            (
-                (TripBooking.booking_status == BookingStatus.BOOKED)
-                |
-                (
-                    (TripBooking.booking_status == BookingStatus.BOARDED)
-                    & (TripBooking.completed_at.is_(None))
-                )
-            )
-        )
-        .values(
-            booking_status=BookingStatus.CANCELLED,
-            cancelled_at=now
-        )
-    )
+    trip.status = ScheduledTripStatus.PREMATURED_END_REQUEST
+    trip.emergency_stop_request_status = EmergencyStopRequestStatus.PENDING
 
-    # -----------------------------
-    # 4. Update trip
-    # -----------------------------
-    trip.actual_end_at = now
+    # Store context (VERY IMPORTANT for admin)
+    trip.premature_end_reason = reason
     trip.ended_at_lat = lat
     trip.ended_at_long = lng
-    trip.status = ScheduledTripStatus.PREMATURE_END
-    trip.premature_end_reason = reason
 
+    # ❌ DO NOT:
+    # - cancel bookings
+    # - set actual_end_at
+    # - end trip
+
+    # -----------------------------
+    # 5. COMMIT
+    # -----------------------------
     await session.commit()
 
     # -----------------------------
-    # 5. Notify admins
+    # 6. Notify admins
     # -----------------------------
     notification_service = NotificationService(
         db=session,
@@ -705,16 +700,21 @@ async def emergency_end_trip(
     for admin in admins:
         await notification_service.notify_user(
             user_id=admin.id,
-            title="Trip Premature End",
-            message="Trip ended early due to emergency",
-            data={"trip_id": trip.id}
+            title="Emergency Stop Request",
+            message="Driver requested to end trip early",
+            data={
+                "trip_id": trip.id,
+                "reason": reason,
+                "lat": lat,
+                "lng": lng
+            }
         )
 
     # -----------------------------
-    # 6. Response
+    # 7. Response
     # -----------------------------
     return {
-        "message": "Emergency ended",
-        "reason": reason,
-        "time": to_ist(trip.actual_end_at)
+        "message": "Emergency stop request sent to admin",
+        "status": EmergencyStopRequestStatus.PENDING,
+        "trip_status": trip.status,
     }
