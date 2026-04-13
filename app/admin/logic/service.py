@@ -787,6 +787,7 @@ class AdminService:
         self,
         vehicle_id: str,
         status: schema.VehicleInspectionStatus,
+        reason: Optional[str] = None,
     ) -> None:
         """
         Updates the physical inspection status and sets the
@@ -794,6 +795,7 @@ class AdminService:
         """
         values = {
             "inspection_status": status,
+            "inspection_reason": reason,
             "inspection_reviewed_at": datetime.now(timezone.utc),
         }
 
@@ -806,7 +808,7 @@ class AdminService:
 
     async def fetch_fully_verified_drivers(self):
         """
-        Fetches drivers where both their Profile (DriverProfile) 
+        Fetches drivers where both their Profile (DriverProfile)
         and their Vehicle are verified.
         """
         stmt = (
@@ -817,16 +819,17 @@ class AdminService:
             .join(schema.Vehicle, schema.User.id == schema.Vehicle.driver_user_id)
             # 3. Load the data so it's available in the loop
             .options(
-                joinedload(schema.User.driver_profile),
-                joinedload(schema.User.vehicle)
+                joinedload(schema.User.driver_profile), joinedload(schema.User.vehicle)
             )
             # 4. Filter strictly by the statuses in the related tables
             .where(
-                schema.DriverProfile.verification_status == schema.DriverVerificationStatus.VERIFIED,
-                schema.Vehicle.verification_status == schema.VehicleVerificationStatus.VERIFIED
+                schema.DriverProfile.verification_status
+                == schema.DriverVerificationStatus.VERIFIED,
+                schema.Vehicle.verification_status
+                == schema.VehicleVerificationStatus.VERIFIED,
             )
         )
-        
+
         result = await self.db.execute(stmt)
         return result.scalars().unique().all()
 

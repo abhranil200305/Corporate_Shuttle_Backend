@@ -230,6 +230,14 @@ async def get_driver_details(
             else None,
             "vehical_reviewed_at": v.reviewed_at if v else None,
         },
+        "vehical_physical_inspection": {
+            "inspection_status": d.vehicle.inspection_status if d.vehicle else None,
+            "inspection_reason": d.vehicle.inspection_reason if d.vehicle else None,
+            # "inspection_created_at":d.vehicle.inspection_created_at if d.vehicle else None,
+            "inspection_reviewed_at": d.vehicle.inspection_reviewed_at
+            if d.vehicle
+            else None,
+        },
         "account_info": {
             "account_number": d.driver_profile.bank_account_number
             if d.driver_profile
@@ -597,8 +605,7 @@ async def resolve_vehicle_inspection(
     # 2. Perform the update via service
     # This automatically sets the inspection_created_at to now
     await service.update_physical_inspection(
-        vehicle_id=vehicle_id,
-        status=data.status,
+        vehicle_id=vehicle_id, status=data.status, reason=data.reason
     )
 
     # 3. Commit the transaction

@@ -89,6 +89,7 @@ class RatingCreate(BaseModel):
 
 class VehicleInspectionUpdate(BaseModel):
     status: schema.VehicleInspectionStatus
+    reason: Optional[str] = None
 
 # Implemented by Anubhab below this
 from datetime import datetime
