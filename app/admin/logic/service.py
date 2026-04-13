@@ -1726,7 +1726,7 @@ class AdminService:
                 "updated_at": transfer.source_booking_payment.updated_at,
             },
         }
-
+    
     async def trigger_booking_payout(
         self,
         booking_id: str,
@@ -1747,10 +1747,96 @@ class AdminService:
             "message": "Booking payout trigger completed.",
             "result": result,
         }
+    
+    async def trigger_driver_monthly_payouts(
+        self,
+        driver_user_id: str,
+        month: int,
+        year: int,
+        linked_account_id: Optional[str] = None,
+        booking_items: Optional[list] = None,
+        applied_by_admin_id: Optional[str] = None,
+    ):
+        driver = await self.fetch_driver_by_id(driver_user_id)
+        if not driver:
+            raise HTTPException(status_code=404, detail="Driver not found")
+
+        stmt = (
+            select(schema.TripBooking)
+            .join(
+                schema.ScheduledTrip,
+                schema.ScheduledTrip.id == schema.TripBooking.scheduled_trip_id,
+            )
+            .where(
+                schema.ScheduledTrip.driver_user_id == driver_user_id,
+                schema.TripBooking.booking_status == schema.BookingStatus.COMPLETED,
+                func.extract("month", schema.TripBooking.completed_at) == month,
+                func.extract("year", schema.TripBooking.completed_at) == year,
+                schema.TripBooking.transfer_status.in_(
+                    [
+                        schema.TransferStatus.NOT_READY,
+                        schema.TransferStatus.READY,
+                        schema.TransferStatus.FAILED,
+                    ]
+                ),
+            )
+            .order_by(schema.TripBooking.completed_at.asc())
+        )
+        result = await self.db.execute(stmt)
+        bookings = result.scalars().all()
+
+        booking_adjustment_map = self._build_booking_adjustment_map(booking_items)
+        self._validate_booking_items_match_selected_bookings(
+            selected_bookings=bookings,
+            booking_adjustment_map=booking_adjustment_map,
+        )
+
+        payout_service = RoutePayoutService(self.db)
+
+        results = []
+        success_count = 0
+        failure_count = 0
+
+        for booking in bookings:
+            try:
+                payout_result = await payout_service.trigger_transfer_for_booking(
+                    booking_id=booking.id,
+                    linked_account_id=linked_account_id,
+                    require_completed=True,
+                    adjustments_to_apply=booking_adjustment_map.get(booking.id, []),
+                    applied_by_admin_id=applied_by_admin_id,
+                )
+                results.append(
+                    {
+                        "booking_id": booking.id,
+                        "status": "success",
+                        "result": payout_result,
+                    }
+                )
+                success_count += 1
+            except Exception as exc:
+                results.append(
+                    {
+                        "booking_id": booking.id,
+                        "status": "failed",
+                        "error": str(exc),
+                    }
+                )
+                failure_count += 1
+
+        return {
+            "message": "Driver monthly payout batch completed.",
+            "total_selected": len(bookings),
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "results": results,
+        }
 
     async def trigger_bulk_payouts(
         self,
         payload,
+        *,
+        applied_by_admin_id: Optional[str] = None,
     ):
         selected_bookings = []
 
@@ -1783,14 +1869,12 @@ class AdminService:
 
             if payload.month is not None:
                 stmt = stmt.where(
-                    func.extract("month", schema.TripBooking.completed_at)
-                    == payload.month
+                    func.extract("month", schema.TripBooking.completed_at) == payload.month
                 )
 
             if payload.year is not None:
                 stmt = stmt.where(
-                    func.extract("year", schema.TripBooking.completed_at)
-                    == payload.year
+                    func.extract("year", schema.TripBooking.completed_at) == payload.year
                 )
 
             if payload.only_ready:
@@ -1811,6 +1895,12 @@ class AdminService:
             result = await self.db.execute(stmt)
             selected_bookings = result.scalars().all()
 
+        booking_adjustment_map = self._build_booking_adjustment_map(payload.booking_items)
+        self._validate_booking_items_match_selected_bookings(
+            selected_bookings=selected_bookings,
+            booking_adjustment_map=booking_adjustment_map,
+        )
+
         payout_service = RoutePayoutService(self.db)
 
         results = []
@@ -1823,6 +1913,8 @@ class AdminService:
                     booking_id=booking.id,
                     linked_account_id=payload.linked_account_id,
                     require_completed=payload.require_completed,
+                    adjustments_to_apply=booking_adjustment_map.get(booking.id, []),
+                    applied_by_admin_id=applied_by_admin_id,
                 )
                 results.append(
                     {
@@ -1849,7 +1941,7 @@ class AdminService:
             "failure_count": failure_count,
             "results": results,
         }
-
+    
     async def list_refund_queue(self):
         stmt = (
             select(schema.TripBooking)

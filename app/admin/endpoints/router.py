@@ -2732,6 +2732,7 @@ async def trigger_driver_monthly_payouts(
     driver_user_id: str,
     payload: TriggerDriverMonthlyPayoutRequest,
     db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
     service = AdminService(db)
     return await service.trigger_driver_monthly_payouts(
@@ -2739,6 +2740,8 @@ async def trigger_driver_monthly_payouts(
         month=payload.month,
         year=payload.year,
         linked_account_id=payload.linked_account_id,
+        booking_items=payload.booking_items,
+        applied_by_admin_id=current_admin.id,
     )
 
 
@@ -2746,9 +2749,13 @@ async def trigger_driver_monthly_payouts(
 async def trigger_bulk_payouts(
     payload: BulkPayoutTriggerRequest,
     db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
     service = AdminService(db)
-    return await service.trigger_bulk_payouts(payload)
+    return await service.trigger_bulk_payouts(
+        payload,
+        applied_by_admin_id=current_admin.id,
+    )
 
 
 @router.get("/payouts/transfers")

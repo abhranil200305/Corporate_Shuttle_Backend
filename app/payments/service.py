@@ -1159,37 +1159,6 @@ class RoutePayoutService:
             ],
         }
     
-    #by dwaipayan
-    async def process_monthly_payouts_for_driver(self, driver_id: str, month: int, year: int):
-    # 1. Get all bookings for the driver in that month that are READY for transfer
-    # Filter by: scheduled_trip.driver_user_id, status='completed', transfer_status='ready'
-      stmt = (
-        select(TripBooking)
-        .join(ScheduledTrip)
-        .where(
-            ScheduledTrip.driver_user_id == driver_id,
-            func.extract('month', TripBooking.completed_at) == month,
-            func.extract('year', TripBooking.completed_at) == year,
-            TripBooking.transfer_status == TransferStatus.READY
-        )
-    )
-      result = await self.db.execute(stmt)
-      bookings = result.scalars().all()
-    
-      results = []
-      for booking in bookings:
-        try:
-            # Re-using your existing trigger_transfer_for_booking logic
-            payout_res = await self.trigger_transfer_for_booking(
-                booking_id=booking.id,
-                require_completed=True
-            )
-            results.append({"booking_id": booking.id, "status": "success"})
-        except Exception as e:
-            results.append({"booking_id": booking.id, "status": "failed", "error": str(e)})
-            
-        return results
-      
     async def create_linked_account(
     self,
     *,
