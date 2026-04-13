@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Optional
 
 from fastapi import HTTPException
@@ -937,6 +938,66 @@ class AdminService:
                 "refund_queue_total_amount": agg.get("refund_queue_total_amount", 0),
             },
         }
+    
+    @staticmethod
+    def _quantize_money(value: Decimal) -> Decimal:
+        return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+    def _get_adjustment_applied_total(self, adjustment) -> Decimal:
+        total = Decimal("0.00")
+        for application in adjustment.applications:
+            total += self._quantize_money(application.applied_amount)
+        return self._quantize_money(total)
+
+
+    def _get_adjustment_remaining_amount(self, adjustment) -> Decimal:
+        remaining = self._quantize_money(adjustment.amount) - self._get_adjustment_applied_total(adjustment)
+        if remaining < Decimal("0.00"):
+            return Decimal("0.00")
+        return self._quantize_money(remaining)
+
+
+    def _serialize_payout_adjustment_application(self, application):
+        return {
+            "id": application.id,
+            "payout_adjustment_id": application.payout_adjustment_id,
+            "applied_on_booking_id": application.applied_on_booking_id,
+            "booking_transfer_id": application.booking_transfer_id,
+            "applied_by_admin_id": application.applied_by_admin_id,
+            "applied_amount": application.applied_amount,
+            "applied_at": application.applied_at,
+            "created_at": application.created_at,
+            "updated_at": application.updated_at,
+        }
+
+
+    def _serialize_payout_adjustment(self, adjustment):
+        origin_booking = adjustment.origin_booking
+        origin_trip = origin_booking.scheduled_trip if origin_booking else None
+
+        return {
+            "id": adjustment.id,
+            "origin_booking_id": adjustment.origin_booking_id,
+            "origin_driver_user_id": origin_trip.driver_user_id if origin_trip else None,
+            "adjustment_type": adjustment.adjustment_type,
+            "amount": adjustment.amount,
+            "applied_total": self._get_adjustment_applied_total(adjustment),
+            "remaining_amount": self._get_adjustment_remaining_amount(adjustment),
+            "reason_code": adjustment.reason_code,
+            "reason_text": adjustment.reason_text,
+            "admin_note": adjustment.admin_note,
+            "decision_status": adjustment.decision_status,
+            "created_by_admin_id": adjustment.created_by_admin_id,
+            "decided_by_admin_id": adjustment.decided_by_admin_id,
+            "decided_at": adjustment.decided_at,
+            "created_at": adjustment.created_at,
+            "updated_at": adjustment.updated_at,
+            "applications": [
+                self._serialize_payout_adjustment_application(application)
+                for application in adjustment.applications
+            ],
+        }
 
     def _build_driver_payout_aggregates(self, bookings):
         agg = {
@@ -994,6 +1055,14 @@ class AdminService:
             if passenger and passenger.passenger_profile
             else None
         )
+        applied_adjustment_amount = Decimal("0.00")
+        for application in getattr(booking, "applied_payout_adjustment_applications", []) or []:
+            applied_adjustment_amount += self._quantize_money(application.applied_amount)
+
+        applied_adjustment_amount = self._quantize_money(applied_adjustment_amount)
+        net_payout_amount = self._quantize_money(
+            Decimal(booking.driver_payout_amount or 0) - applied_adjustment_amount
+        )
 
         return {
             "booking_id": booking.id,
@@ -1009,7 +1078,10 @@ class AdminService:
             "fare_amount": booking.fare_amount,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
+            "withheld_at": getattr(booking, "withheld_at", None),
             "driver_payout_amount": booking.driver_payout_amount,
+            "applied_adjustment_amount": applied_adjustment_amount,
+            "net_payout_amount": net_payout_amount,
             "transfer_status": booking.transfer_status,
             "transfer_ready_at": booking.transfer_ready_at,
             "transfer_processed_at": booking.transfer_processed_at,
@@ -1298,6 +1370,9 @@ class AdminService:
             .options(
                 joinedload(schema.TripBooking.transfer),
                 joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                    schema.PayoutAdjustmentApplication.adjustment
+                ),
                 joinedload(schema.TripBooking.passenger).joinedload(
                     schema.User.passenger_profile
                 ),
@@ -1347,6 +1422,12 @@ class AdminService:
                 joinedload(schema.TripBooking.payments),
                 joinedload(schema.TripBooking.pickup_stop),
                 joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.originated_payout_adjustments).joinedload(
+                    schema.PayoutAdjustment.applications
+                ),
+                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                    schema.PayoutAdjustmentApplication.adjustment
+                ),
                 joinedload(schema.TripBooking.passenger).joinedload(
                     schema.User.passenger_profile
                 ),
@@ -1364,42 +1445,204 @@ class AdminService:
         if booking is None:
             raise HTTPException(status_code=404, detail="Booking not found")
 
+        driver_user_id = (
+            booking.scheduled_trip.driver_user_id
+            if booking.scheduled_trip is not None
+            else None
+        )
+
+        open_driver_adjustments = (
+            await self.list_driver_open_payout_adjustments(driver_user_id)
+            if driver_user_id is not None
+            else {"items": [], "count": 0}
+        )
+
         return {
             "booking": self._serialize_payout_booking(booking),
-            "pickup_stop": None
-            if booking.pickup_stop is None
-            else {
-                "id": booking.pickup_stop.id,
-                "name": booking.pickup_stop.name,
-                "lat": booking.pickup_stop.lat,
-                "lng": booking.pickup_stop.lng,
-                "radius_meters": booking.pickup_stop.radius_meters,
-            },
-            "dropoff_stop": None
-            if booking.dropoff_stop is None
-            else {
-                "id": booking.dropoff_stop.id,
-                "name": booking.dropoff_stop.name,
-                "lat": booking.dropoff_stop.lat,
-                "lng": booking.dropoff_stop.lng,
-                "radius_meters": booking.dropoff_stop.radius_meters,
-            },
-            "payments": [
-                {
-                    "id": payment.id,
-                    "booking_id": payment.booking_id,
-                    "razorpay_order_id": payment.razorpay_order_id,
-                    "razorpay_payment_id": payment.razorpay_payment_id,
-                    "amount": payment.amount,
-                    "status": payment.status,
-                    "created_at": payment.created_at,
-                    "updated_at": payment.updated_at,
-                }
-                for payment in booking.payments
+            "originated_adjustments": [
+                self._serialize_payout_adjustment(adjustment)
+                for adjustment in booking.originated_payout_adjustments
             ],
-            "transfer": None
-            if booking.transfer is None
-            else self._serialize_booking_transfer(booking.transfer),
+            "applied_adjustments": [
+                self._serialize_payout_adjustment_application(application)
+                for application in booking.applied_payout_adjustment_applications
+            ],
+            "open_driver_adjustments": open_driver_adjustments,
+        }
+    
+    async def create_payout_adjustment(
+        self,
+        *,
+        booking_id: str,
+        admin_user_id: str,
+        payload,
+    ):
+        stmt = (
+            select(schema.TripBooking)
+            .where(schema.TripBooking.id == booking_id)
+            .options(
+                joinedload(schema.TripBooking.scheduled_trip),
+            )
+        )
+        result = await self.db.execute(stmt)
+        booking = result.unique().scalar_one_or_none()
+
+        if booking is None:
+            raise HTTPException(status_code=404, detail="Booking not found")
+
+        reason_text = (payload.reason_text or "").strip()
+        if not reason_text:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_reason_text",
+                    "message": "reason_text cannot be empty.",
+                },
+            )
+
+        adjustment = schema.PayoutAdjustment(
+            origin_booking_id=booking.id,
+            adjustment_type=payload.adjustment_type,
+            amount=self._quantize_money(payload.amount),
+            reason_code=(payload.reason_code or "").strip() or None,
+            reason_text=reason_text,
+            admin_note=(payload.admin_note or "").strip() or None,
+            decision_status=schema.PayoutAdjustmentDecision.PENDING,
+            created_by_admin_id=admin_user_id,
+        )
+        self.db.add(adjustment)
+        await self.db.commit()
+
+        return {
+            "message": "Payout adjustment created successfully.",
+            "adjustment": await self.get_payout_adjustment_detail(adjustment.id),
+        }
+
+
+    async def list_booking_payout_adjustments(self, booking_id: str):
+        stmt = (
+            select(schema.PayoutAdjustment)
+            .where(schema.PayoutAdjustment.origin_booking_id == booking_id)
+            .options(
+                joinedload(schema.PayoutAdjustment.origin_booking).joinedload(
+                    schema.TripBooking.scheduled_trip
+                ),
+                joinedload(schema.PayoutAdjustment.applications),
+            )
+            .order_by(schema.PayoutAdjustment.created_at.desc())
+        )
+        result = await self.db.execute(stmt)
+        adjustments = result.unique().scalars().all()
+
+        return {
+            "items": [self._serialize_payout_adjustment(adjustment) for adjustment in adjustments],
+            "count": len(adjustments),
+        }
+
+
+    async def list_driver_open_payout_adjustments(self, driver_user_id: str):
+        stmt = (
+            select(schema.PayoutAdjustment)
+            .join(
+                schema.TripBooking,
+                schema.TripBooking.id == schema.PayoutAdjustment.origin_booking_id,
+            )
+            .join(
+                schema.ScheduledTrip,
+                schema.ScheduledTrip.id == schema.TripBooking.scheduled_trip_id,
+            )
+            .where(
+                schema.ScheduledTrip.driver_user_id == driver_user_id,
+                schema.PayoutAdjustment.decision_status == schema.PayoutAdjustmentDecision.INCLUDED,
+            )
+            .options(
+                joinedload(schema.PayoutAdjustment.origin_booking).joinedload(
+                    schema.TripBooking.scheduled_trip
+                ),
+                joinedload(schema.PayoutAdjustment.applications),
+            )
+            .order_by(schema.PayoutAdjustment.created_at.asc())
+        )
+        result = await self.db.execute(stmt)
+        adjustments = result.unique().scalars().all()
+
+        open_adjustments = [
+            adjustment
+            for adjustment in adjustments
+            if self._get_adjustment_remaining_amount(adjustment) > Decimal("0.00")
+        ]
+
+        return {
+            "items": [self._serialize_payout_adjustment(adjustment) for adjustment in open_adjustments],
+            "count": len(open_adjustments),
+        }
+
+
+    async def get_payout_adjustment_detail(self, adjustment_id: str):
+        stmt = (
+            select(schema.PayoutAdjustment)
+            .where(schema.PayoutAdjustment.id == adjustment_id)
+            .options(
+                joinedload(schema.PayoutAdjustment.origin_booking).joinedload(
+                    schema.TripBooking.scheduled_trip
+                ),
+                joinedload(schema.PayoutAdjustment.applications),
+            )
+        )
+        result = await self.db.execute(stmt)
+        adjustment = result.unique().scalar_one_or_none()
+
+        if adjustment is None:
+            raise HTTPException(status_code=404, detail="Payout adjustment not found")
+
+        return self._serialize_payout_adjustment(adjustment)
+
+
+    async def update_payout_adjustment_decision(
+        self,
+        *,
+        adjustment_id: str,
+        admin_user_id: str,
+        payload,
+    ):
+        stmt = (
+            select(schema.PayoutAdjustment)
+            .where(schema.PayoutAdjustment.id == adjustment_id)
+            .options(
+                joinedload(schema.PayoutAdjustment.origin_booking).joinedload(
+                    schema.TripBooking.scheduled_trip
+                ),
+                joinedload(schema.PayoutAdjustment.applications),
+            )
+        )
+        result = await self.db.execute(stmt)
+        adjustment = result.unique().scalar_one_or_none()
+
+        if adjustment is None:
+            raise HTTPException(status_code=404, detail="Payout adjustment not found")
+
+        if payload.decision_status == schema.PayoutAdjustmentDecision.PENDING:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "pending_not_allowed_for_decision_update",
+                    "message": "Decision update must be INCLUDED or EXCLUDED.",
+                },
+            )
+
+        adjustment.decision_status = payload.decision_status
+        adjustment.decided_by_admin_id = admin_user_id
+        adjustment.decided_at = datetime.now(timezone.utc)
+
+        if payload.admin_note is not None:
+            adjustment.admin_note = (payload.admin_note or "").strip() or None
+
+        self.db.add(adjustment)
+        await self.db.commit()
+
+        return {
+            "message": "Payout adjustment decision updated successfully.",
+            "adjustment": self._serialize_payout_adjustment(adjustment),
         }
 
     async def list_booking_transfers(
@@ -1489,90 +1732,20 @@ class AdminService:
         booking_id: str,
         linked_account_id: Optional[str] = None,
         require_completed: bool = True,
+        adjustments_to_apply: Optional[list[dict]] = None,
+        applied_by_admin_id: Optional[str] = None,
     ):
         payout_service = RoutePayoutService(self.db)
         result = await payout_service.trigger_transfer_for_booking(
             booking_id=booking_id,
             linked_account_id=linked_account_id,
             require_completed=require_completed,
+            adjustments_to_apply=adjustments_to_apply or [],
+            applied_by_admin_id=applied_by_admin_id,
         )
         return {
             "message": "Booking payout trigger completed.",
             "result": result,
-        }
-
-    async def trigger_driver_monthly_payouts(
-        self,
-        driver_user_id: str,
-        month: int,
-        year: int,
-        linked_account_id: Optional[str] = None,
-    ):
-        driver = await self.fetch_driver_by_id(driver_user_id)
-        if not driver:
-            raise HTTPException(status_code=404, detail="Driver not found")
-
-        stmt = (
-            select(schema.TripBooking)
-            .join(
-                schema.ScheduledTrip,
-                schema.ScheduledTrip.id == schema.TripBooking.scheduled_trip_id,
-            )
-            .where(
-                schema.ScheduledTrip.driver_user_id == driver_user_id,
-                schema.TripBooking.booking_status == schema.BookingStatus.COMPLETED,
-                func.extract("month", schema.TripBooking.completed_at) == month,
-                func.extract("year", schema.TripBooking.completed_at) == year,
-                schema.TripBooking.transfer_status.in_(
-                    [
-                        schema.TransferStatus.NOT_READY,
-                        schema.TransferStatus.READY,
-                        schema.TransferStatus.FAILED,
-                    ]
-                ),
-            )
-            .order_by(schema.TripBooking.completed_at.asc())
-        )
-        result = await self.db.execute(stmt)
-        bookings = result.scalars().all()
-
-        payout_service = RoutePayoutService(self.db)
-
-        results = []
-        success_count = 0
-        failure_count = 0
-
-        for booking in bookings:
-            try:
-                payout_result = await payout_service.trigger_transfer_for_booking(
-                    booking_id=booking.id,
-                    linked_account_id=linked_account_id,
-                    require_completed=True,
-                )
-                results.append(
-                    {
-                        "booking_id": booking.id,
-                        "status": "success",
-                        "result": payout_result,
-                    }
-                )
-                success_count += 1
-            except Exception as exc:
-                results.append(
-                    {
-                        "booking_id": booking.id,
-                        "status": "failed",
-                        "error": str(exc),
-                    }
-                )
-                failure_count += 1
-
-        return {
-            "message": "Driver monthly payout batch completed.",
-            "total_selected": len(bookings),
-            "success_count": success_count,
-            "failure_count": failure_count,
-            "results": results,
         }
 
     async def trigger_bulk_payouts(

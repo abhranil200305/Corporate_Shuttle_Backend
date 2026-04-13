@@ -33,6 +33,8 @@ from app.admin.structs.dto import (
     VehicleInspectionUpdate,
     VehicleVerificationUpdate,
     VerificationUpdate,
+    PayoutAdjustmentCreateRequest,
+    PayoutAdjustmentDecisionRequest,
 )
 from app.auth.dependencies import (
     get_current_active_user,
@@ -2654,18 +2656,74 @@ async def get_payout_booking_detail(
     service = AdminService(db)
     return await service.get_payout_booking_detail(booking_id)
 
+@router.post("/payouts/bookings/{booking_id}/adjustments")
+async def create_payout_adjustment(
+    booking_id: str,
+    payload: PayoutAdjustmentCreateRequest,
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminService(db)
+    return await service.create_payout_adjustment(
+        booking_id=booking_id,
+        admin_user_id=current_admin.id,
+        payload=payload,
+    )
+
+
+@router.get("/payouts/bookings/{booking_id}/adjustments")
+async def list_booking_payout_adjustments(
+    booking_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_booking_payout_adjustments(booking_id)
+
+
+@router.get("/payouts/drivers/{driver_user_id}/open-adjustments")
+async def list_driver_open_payout_adjustments(
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_driver_open_payout_adjustments(driver_user_id)
+
+
+@router.patch("/payouts/adjustments/{adjustment_id}/decision")
+async def update_payout_adjustment_decision(
+    adjustment_id: str,
+    payload: PayoutAdjustmentDecisionRequest,
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminService(db)
+    return await service.update_payout_adjustment_decision(
+        adjustment_id=adjustment_id,
+        admin_user_id=current_admin.id,
+        payload=payload,
+    )
+
 
 @router.post("/payouts/bookings/{booking_id}/trigger")
 async def trigger_booking_payout(
     booking_id: str,
     payload: TriggerBookingPayoutRequest,
     db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
     service = AdminService(db)
     return await service.trigger_booking_payout(
         booking_id=booking_id,
         linked_account_id=payload.linked_account_id,
         require_completed=payload.require_completed,
+        adjustments_to_apply=[
+            {
+                "adjustment_id": item.adjustment_id,
+                "applied_amount": item.applied_amount,
+            }
+            for item in payload.adjustments_to_apply
+        ],
+        applied_by_admin_id=current_admin.id,
     )
 
 

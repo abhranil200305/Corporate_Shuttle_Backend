@@ -19,6 +19,9 @@ from app.db.schema import (
     BookingTransferStatus,
     DriverPayoutDetails,
     LinkedAccountStatus,
+    PayoutAdjustment,
+    PayoutAdjustmentApplication,
+    PayoutAdjustmentDecision,
     PlatformSettings,
     ScheduledTrip,
     TransferStatus,
@@ -142,6 +145,9 @@ class RoutePayoutService:
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.transfer),
                 selectinload(TripBooking.scheduled_trip),
+                selectinload(TripBooking.applied_payout_adjustment_applications).selectinload(
+                    PayoutAdjustmentApplication.adjustment
+                ),
             )
         )
         result = await self.db.execute(stmt)
@@ -177,6 +183,156 @@ class RoutePayoutService:
         if settings is None:
             return Decimal("0.00")
         return self._quantize_money(settings.commission_percent)
+    
+    def _get_adjustment_applied_total(
+    self,
+    adjustment: PayoutAdjustment,
+) -> Decimal:
+        total = Decimal("0.00")
+        for application in adjustment.applications:
+            total += self._quantize_money(application.applied_amount)
+        return self._quantize_money(total)
+
+
+    def _get_adjustment_remaining_amount(
+        self,
+        adjustment: PayoutAdjustment,
+    ) -> Decimal:
+        remaining = self._quantize_money(adjustment.amount) - self._get_adjustment_applied_total(adjustment)
+        if remaining < Decimal("0.00"):
+            return Decimal("0.00")
+        return self._quantize_money(remaining)
+
+
+    @staticmethod
+    def _normalize_adjustment_allocations(
+        adjustments_to_apply: list[dict[str, Any]] | None,
+    ) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for raw in adjustments_to_apply or []:
+            adjustment_id = str(raw.get("adjustment_id") or "").strip()
+            if not adjustment_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "missing_adjustment_id",
+                        "message": "Each adjustment allocation must include adjustment_id.",
+                    },
+                )
+
+            if adjustment_id in seen_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "duplicate_adjustment_allocation",
+                        "message": "The same adjustment cannot be allocated twice in one payout trigger.",
+                        "adjustment_id": adjustment_id,
+                    },
+                )
+            seen_ids.add(adjustment_id)
+
+            try:
+                applied_amount = Decimal(str(raw.get("applied_amount")))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "invalid_applied_amount",
+                        "message": "Applied amount must be a valid decimal value.",
+                        "adjustment_id": adjustment_id,
+                    },
+                ) from exc
+
+            if applied_amount <= Decimal("0.00"):
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "non_positive_applied_amount",
+                        "message": "Applied amount must be greater than 0.",
+                        "adjustment_id": adjustment_id,
+                    },
+                )
+
+            normalized.append(
+                {
+                    "adjustment_id": adjustment_id,
+                    "applied_amount": applied_amount,
+                }
+            )
+
+        return normalized
+
+
+    async def _get_allocatable_adjustments(
+        self,
+        *,
+        driver_user_id: str,
+        adjustment_ids: list[str],
+    ) -> dict[str, PayoutAdjustment]:
+        if not adjustment_ids:
+            return {}
+
+        stmt = (
+            select(PayoutAdjustment)
+            .join(TripBooking, TripBooking.id == PayoutAdjustment.origin_booking_id)
+            .join(ScheduledTrip, ScheduledTrip.id == TripBooking.scheduled_trip_id)
+            .where(
+                PayoutAdjustment.id.in_(adjustment_ids),
+                ScheduledTrip.driver_user_id == driver_user_id,
+            )
+            .options(
+                selectinload(PayoutAdjustment.applications),
+                selectinload(PayoutAdjustment.origin_booking).selectinload(TripBooking.scheduled_trip),
+            )
+        )
+        result = await self.db.execute(stmt)
+        adjustments = result.scalars().unique().all()
+        return {adjustment.id: adjustment for adjustment in adjustments}
+
+
+    def _serialize_payout_adjustment_application(
+        self,
+        application: PayoutAdjustmentApplication,
+    ) -> dict[str, Any]:
+        return {
+            "id": application.id,
+            "payout_adjustment_id": application.payout_adjustment_id,
+            "applied_on_booking_id": application.applied_on_booking_id,
+            "booking_transfer_id": application.booking_transfer_id,
+            "applied_by_admin_id": application.applied_by_admin_id,
+            "applied_amount": application.applied_amount,
+            "applied_at": application.applied_at,
+            "created_at": application.created_at,
+            "updated_at": application.updated_at,
+        }
+
+
+    async def _create_adjustment_applications(
+        self,
+        *,
+        booking: TripBooking,
+        booking_transfer_id: str | None,
+        applied_by_admin_id: str,
+        normalized_allocations: list[dict[str, Any]],
+    ) -> list[PayoutAdjustmentApplication]:
+        applications: list[PayoutAdjustmentApplication] = []
+
+        for item in normalized_allocations:
+            application = PayoutAdjustmentApplication(
+                payout_adjustment_id=item["adjustment_id"],
+                applied_on_booking_id=booking.id,
+                booking_transfer_id=booking_transfer_id,
+                applied_by_admin_id=applied_by_admin_id,
+                applied_amount=self._quantize_money(item["applied_amount"]),
+                applied_at=utcnow(),
+            )
+            self.db.add(application)
+            applications.append(application)
+
+        await self.db.flush()
+        return applications
     
     # ---------------------------------------------------------
     # business helpers
@@ -678,12 +834,14 @@ class RoutePayoutService:
     # public trigger
     # ---------------------------------------------------------
     async def trigger_transfer_for_booking(
-        self,
-        booking_id: str,
-        *,
-        linked_account_id: str | None = None,
-        require_completed: bool = True,
-    ) -> dict[str, Any]:
+    self,
+    booking_id: str,
+    *,
+    linked_account_id: str | None = None,
+    require_completed: bool = True,
+    adjustments_to_apply: list[dict[str, Any]] | None = None,
+    applied_by_admin_id: str | None = None,
+) -> dict[str, Any]:
         booking = await self._get_booking_obj(booking_id)
         self._ensure_transfer_trigger_allowed(
             booking,
@@ -712,6 +870,146 @@ class RoutePayoutService:
 
         await self._ensure_booking_snapshot_values(booking)
 
+        normalized_allocations = self._normalize_adjustment_allocations(adjustments_to_apply)
+
+        if normalized_allocations and not applied_by_admin_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "applied_by_admin_required",
+                    "message": "Admin identity is required when applying payout adjustments.",
+                },
+            )
+
+        selected_adjustment_total = Decimal("0.00")
+        adjustment_map: dict[str, PayoutAdjustment] = {}
+
+        if normalized_allocations:
+            adjustment_map = await self._get_allocatable_adjustments(
+                driver_user_id=booking.scheduled_trip.driver_user_id,
+                adjustment_ids=[item["adjustment_id"] for item in normalized_allocations],
+            )
+
+            if len(adjustment_map) != len(normalized_allocations):
+                found_ids = set(adjustment_map.keys())
+                requested_ids = {item["adjustment_id"] for item in normalized_allocations}
+                missing_ids = sorted(requested_ids - found_ids)
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "payout_adjustment_not_found_for_driver",
+                        "message": "One or more selected payout adjustments were not found for this driver.",
+                        "missing_adjustment_ids": missing_ids,
+                    },
+                )
+
+            for item in normalized_allocations:
+                adjustment = adjustment_map[item["adjustment_id"]]
+
+                if adjustment.decision_status != PayoutAdjustmentDecision.INCLUDED:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "adjustment_not_included",
+                            "message": "Only INCLUDED payout adjustments can be applied.",
+                            "adjustment_id": adjustment.id,
+                            "decision_status": adjustment.decision_status.value,
+                        },
+                    )
+
+                remaining_amount = self._get_adjustment_remaining_amount(adjustment)
+                applied_amount = self._quantize_money(item["applied_amount"])
+
+                if applied_amount > remaining_amount:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "applied_amount_exceeds_remaining_adjustment_balance",
+                            "message": "Applied amount exceeds the remaining open balance for the selected adjustment.",
+                            "adjustment_id": adjustment.id,
+                            "remaining_amount": remaining_amount,
+                            "requested_applied_amount": applied_amount,
+                        },
+                    )
+
+                selected_adjustment_total += applied_amount
+
+        selected_adjustment_total = self._quantize_money(selected_adjustment_total)
+        gross_driver_payout_amount = self._quantize_money(booking.driver_payout_amount)
+
+        if selected_adjustment_total > gross_driver_payout_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "applied_adjustments_exceed_booking_payout",
+                    "message": "Applied payout adjustments exceed this booking's gross driver payout amount.",
+                    "gross_driver_payout_amount": gross_driver_payout_amount,
+                    "applied_adjustment_amount": selected_adjustment_total,
+                },
+            )
+
+        net_transfer_amount = self._quantize_money(
+            gross_driver_payout_amount - selected_adjustment_total
+        )
+
+        if net_transfer_amount == Decimal("0.00"):
+            if booking.transfer is not None:
+                if booking.transfer.razorpay_transfer_id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "provider_transfer_already_started",
+                            "message": "Cannot fully withhold this payout after a provider transfer has already been started.",
+                        },
+                    )
+                await self.db.delete(booking.transfer)
+                await self.db.flush()
+
+            applications = []
+            if normalized_allocations:
+                applications = await self._create_adjustment_applications(
+                    booking=booking,
+                    booking_transfer_id=None,
+                    applied_by_admin_id=applied_by_admin_id,  # type: ignore[arg-type]
+                    normalized_allocations=normalized_allocations,
+                )
+
+            booking.transfer_status = TransferStatus.WITHHELD
+            booking.transfer_ready_at = booking.transfer_ready_at or utcnow()
+            booking.transfer_processed_at = None
+            booking.withheld_at = utcnow()
+
+            self.db.add(booking)
+            await self.db.commit()
+
+            return {
+                "message": "Payout fully absorbed by applied adjustments.",
+                "booking_id": booking.id,
+                "driver_user_id": booking.scheduled_trip.driver_user_id,
+                "source_booking_payment_id": source_payment.id,
+                "source_razorpay_payment_id": source_payment.razorpay_payment_id,
+                "linked_account_id": resolved_linked_account_id,
+                "linked_account_source": (
+                    "override"
+                    if (linked_account_id or "").strip()
+                    else "driver_payout_details"
+                ),
+                "payout_details_found": payout_details is not None,
+                "commission_percent_snapshot": booking.commission_percent_snapshot,
+                "commission_amount": booking.commission_amount,
+                "driver_payout_amount": booking.driver_payout_amount,
+                "applied_adjustment_amount": selected_adjustment_total,
+                "net_transfer_amount": net_transfer_amount,
+                "booking_transfer_status": booking.transfer_status,
+                "transfer_row_status": None,
+                "razorpay_transfer_id": None,
+                "transfer_processed_at": None,
+                "applied_adjustments": [
+                    self._serialize_payout_adjustment_application(application)
+                    for application in applications
+                ],
+            }
+
         transfer = booking.transfer
         if transfer is None:
             transfer = BookingTransfer(
@@ -719,7 +1017,7 @@ class RoutePayoutService:
                 driver_user_id=booking.scheduled_trip.driver_user_id,
                 source_booking_payment_id=source_payment.id,
                 linked_account_id=resolved_linked_account_id,
-                amount=booking.driver_payout_amount,
+                amount=net_transfer_amount,
                 status=BookingTransferStatus.CREATED,
             )
             self.db.add(transfer)
@@ -728,20 +1026,23 @@ class RoutePayoutService:
             transfer.driver_user_id = booking.scheduled_trip.driver_user_id
             transfer.source_booking_payment_id = source_payment.id
             transfer.linked_account_id = resolved_linked_account_id
-            transfer.amount = booking.driver_payout_amount
+            transfer.amount = net_transfer_amount
             transfer.status = BookingTransferStatus.CREATED
             transfer.failure_reason = None
             self.db.add(transfer)
             await self.db.flush()
 
-        # Persist the fact that this booking is now commercially ready before external I/O.
+        booking.withheld_at = None
+        self.db.add(booking)
+
+        # Persist commercial readiness before provider I/O.
         await self.db.commit()
 
         try:
             provider_response = await self._create_transfer_from_payment(
                 razorpay_payment_id=source_payment.razorpay_payment_id,  # type: ignore[arg-type]
                 linked_account_id=resolved_linked_account_id,
-                amount_subunits=self._to_subunits(booking.driver_payout_amount),
+                amount_subunits=self._to_subunits(net_transfer_amount),
                 booking=booking,
             )
         except HTTPException as exc:
@@ -809,6 +1110,15 @@ class RoutePayoutService:
             booking.transfer.processed_at = utcnow()
             booking.transfer_processed_at = booking.transfer.processed_at
 
+        created_applications: list[PayoutAdjustmentApplication] = []
+        if normalized_allocations:
+            created_applications = await self._create_adjustment_applications(
+                booking=booking,
+                booking_transfer_id=booking.transfer.id,
+                applied_by_admin_id=applied_by_admin_id,  # type: ignore[arg-type]
+                normalized_allocations=normalized_allocations,
+            )
+
         self.db.add(booking.transfer)
         self.db.add(booking)
         await self.db.commit()
@@ -837,10 +1147,16 @@ class RoutePayoutService:
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
             "driver_payout_amount": booking.driver_payout_amount,
+            "applied_adjustment_amount": selected_adjustment_total,
+            "net_transfer_amount": net_transfer_amount,
             "booking_transfer_status": booking.transfer_status,
             "transfer_row_status": booking.transfer.status,
             "razorpay_transfer_id": booking.transfer.razorpay_transfer_id,
             "transfer_processed_at": booking.transfer.processed_at,
+            "applied_adjustments": [
+                self._serialize_payout_adjustment_application(application)
+                for application in created_applications
+            ],
         }
     
     #by dwaipayan

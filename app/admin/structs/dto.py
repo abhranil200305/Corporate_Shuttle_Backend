@@ -115,11 +115,6 @@ class DriverPayoutDetailsUpsert(BaseModel):
     phone_number: str = Field(..., min_length=1, max_length=20)
 
 
-class TriggerBookingPayoutRequest(BaseModel):
-    linked_account_id: Optional[str] = Field(default=None, max_length=64)
-    require_completed: bool = True
-
-
 class TriggerDriverMonthlyPayoutRequest(BaseModel):
     month: int = Field(..., ge=1, le=12)
     year: int = Field(..., ge=2000, le=2100)
@@ -210,6 +205,9 @@ class PayoutBookingListItem(BaseModel):
     completed_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+    applied_adjustment_amount: Decimal = Decimal("0.00")
+    net_payout_amount: Decimal = Decimal("0.00")
+    withheld_at: Optional[datetime] = None
 
 
 class PayoutBookingListResponse(BaseModel):
@@ -235,3 +233,61 @@ class RefundQueueResponse(BaseModel):
     items: List[RefundQueueItem]
     count: int
 
+class PayoutAdjustmentCreateRequest(BaseModel):
+    adjustment_type: schema.PayoutAdjustmentType
+    amount: Decimal = Field(..., gt=0)
+    reason_code: Optional[str] = Field(default=None, max_length=64)
+    reason_text: str = Field(..., min_length=1)
+    admin_note: Optional[str] = None
+
+
+class PayoutAdjustmentDecisionRequest(BaseModel):
+    decision_status: schema.PayoutAdjustmentDecision
+    admin_note: Optional[str] = None
+
+
+class PayoutAdjustmentAllocationInput(BaseModel):
+    adjustment_id: str = Field(..., min_length=1, max_length=36)
+    applied_amount: Decimal = Field(..., gt=0)
+
+
+class PayoutAdjustmentApplicationItem(BaseModel):
+    id: str
+    payout_adjustment_id: str
+    applied_on_booking_id: str
+    booking_transfer_id: Optional[str] = None
+    applied_by_admin_id: str
+    applied_amount: Decimal
+    applied_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class PayoutAdjustmentItem(BaseModel):
+    id: str
+    origin_booking_id: str
+    origin_driver_user_id: Optional[str] = None
+    adjustment_type: schema.PayoutAdjustmentType
+    amount: Decimal
+    applied_total: Decimal
+    remaining_amount: Decimal
+    reason_code: Optional[str] = None
+    reason_text: str
+    admin_note: Optional[str] = None
+    decision_status: schema.PayoutAdjustmentDecision
+    created_by_admin_id: str
+    decided_by_admin_id: Optional[str] = None
+    decided_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+    applications: List[PayoutAdjustmentApplicationItem] = Field(default_factory=list)
+
+
+class PayoutAdjustmentListResponse(BaseModel):
+    items: List[PayoutAdjustmentItem]
+    count: int
+
+class TriggerBookingPayoutRequest(BaseModel):
+    linked_account_id: Optional[str] = Field(default=None, max_length=64)
+    require_completed: bool = True
+    adjustments_to_apply: List[PayoutAdjustmentAllocationInput] = Field(default_factory=list)
