@@ -522,23 +522,41 @@ async def stop_action(
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # Missed boarding
-        if mode == "arrive" and not booking.boarded and boarding_stop_seq < current_stop_seq:
-            await notification_service.notify_user(
-                user_id=booking.passenger_user_id,
-                title="Missed Boarding",
-                message="You missed your boarding stop!",
-                data={"trip_id": trip.id},
-            )
+        # -------------------------------
+# Missed boarding
+# -------------------------------
+    if (
+        mode == "arrive"
+        and booking.booking_status == BookingStatus.BOOKED
+        and boarding_stop_seq < current_stop_seq
+    ):
+        # Optional: mark as missed
+        booking.booking_status = BookingStatus.MISSED
 
-        # Missed drop
-        if mode == "depart" and booking.boarded and drop_stop_seq < current_stop_seq:
-            await notification_service.notify_user(
-                user_id=booking.passenger_user_id,
-                title="Missed Drop",
-                message="Bus passed your drop stop!",
-                data={"trip_id": trip.id},
-            )
+        await notification_service.notify_user(
+            user_id=booking.passenger_user_id,
+            title="Missed Boarding",
+            message="You missed your boarding stop!",
+            data={"trip_id": trip.id},
+        )
+
+    # -------------------------------
+    # Missed drop
+    # -------------------------------
+    if (
+        mode == "depart"
+        and booking.booking_status == BookingStatus.BOARDED
+        and drop_stop_seq < current_stop_seq
+    ):
+        # Optional: mark as completed/missed logic (depends on your business rule)
+        # booking.booking_status = BookingStatus.COMPLETED
+
+        await notification_service.notify_user(
+            user_id=booking.passenger_user_id,
+            title="Missed Drop",
+            message="Bus passed your drop stop!",
+            data={"trip_id": trip.id},
+        )
 
     return {
         "message": f"{mode} success",
