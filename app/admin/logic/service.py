@@ -3,8 +3,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import HTTPException
-from sqlalchemy import desc, func, select, update
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db import schema
 from app.notifications.hub import WSHub
@@ -862,6 +862,56 @@ class AdminService:
 
     #         result = await self.db.execute(stmt)
     #     return result.unique().scalars().all()
+
+    async def handle_premature_trip_end(db: Session, trip_id: str):
+        try:
+            # 1. Update the Trip Status
+            # We move it to PREMATURE_END as requested
+            trip_stmt = (
+                update(schema.ScheduledTrip)
+                .where(schema.ScheduledTrip.id == trip_id)
+                .values(
+                    status=schema.ScheduledTripStatus.PREMATURE_END,
+                    updated_at=datetime.utcnow(),
+                )
+            )
+            db.execute(trip_stmt)
+
+            cancel_bookings_stmt = (
+                update(schema.TripBooking)
+                .where(
+                    and_(
+                        schema.TripBooking.scheduled_trip_id == trip_id,
+                        schema.TripBooking.booking_status.in_(
+                            [
+                                schema.BookingStatus.BOOKED,
+                                schema.BookingStatus.BOARDED,
+                                schema.BookingStatus.PENDING_PAYMENT,
+                            ]
+                        ),
+                    )
+                )
+                .values(
+                    booking_status=schema.BookingStatus.CANCELLED,
+                    cancelled_at=datetime.utcnow(),
+                    # Note: You may want to flag these for automatic refund processing
+                    refund_retry_after=datetime.utcnow(),
+                )
+            )
+
+            result = db.execute(cancel_bookings_stmt)
+            affected_bookings_count = result.rowcount
+
+            db.commit()
+            return {
+                "status": "success",
+                "cancelled_bookings": affected_bookings_count,
+                "trip_status": "premature_end",
+            }
+
+        except Exception as e:
+            db.rollback()
+            raise e
 
     # ============================================================
     # payout management, by Anubhab Dey
@@ -2000,7 +2050,7 @@ class AdminService:
             "linked_account_status": payout.linked_account_status,
             "provider_account": provider_account,
         }
-    
+
     async def fetch_vehicle_details_by_id(self, vehicle_id: str):
         stmt = (
             select(schema.Vehicle)
