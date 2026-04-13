@@ -311,25 +311,6 @@ async def get_passenger_details(
         },
         "booking_history": {
             "total_count": len(p.passenger_bookings),
-            # "bookings": [
-            #     {
-            #         "booking_id": b.id,
-            #         "status": b.booking_status,
-            #         "fare": float(b.fare_amount),
-            #         "created_at": b.created_at,
-            #         "pickup_stop": {
-            #             "id": b.pickup_stop.id,
-            #             "name": b.pickup_stop.name,  # Assuming stop_name is the field
-            #             "sequence": b.pickup_sequence_no_snapshot,
-            #         },
-            #         "dropoff_stop": {
-            #             "id": b.pickup_stop.id,
-            #             "name": b.pickup_stop.name,
-            #             "sequence": b.dropoff_sequence_no_snapshot,
-            #         },
-            #     }
-            #     for b in p.passenger_bookings
-            # ],
             "bookings": [
                 {
                     "booking_id": b.id,
@@ -350,6 +331,53 @@ async def get_passenger_details(
                 for b in p.passenger_bookings
             ],
         },
+    }
+
+
+@router.get("/vehicle/details/{vehicle_id}")
+async def get_vehicle_data(
+    vehicle_id: str, db: AsyncSession = Depends(get_async_session)
+):
+    service = AdminService(db)
+    vehicle = await service.fetch_vehicle_details_by_id(vehicle_id)
+
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="Vehicle not found")
+
+    return {
+        "vehicle_id": vehicle.id,
+        # "registration": {
+        #     "number": vehicle.registration_number,
+        #     "valid_till": vehicle.registration_valid_till,
+        # },
+        # "specs": {
+        #     "name": vehicle.vehicle_name,
+        #     "model": vehicle.vehicle_model,
+        #     "color": vehicle.color,
+        #     "seats": vehicle.seat_count,
+        #     "has_ac": vehicle.has_ac,
+        # },
+        # "verification": {
+        #     "status": vehicle.verification_status,
+        #     "requested_at": vehicle.verification_requested_at,
+        #     "reviewed_at": vehicle.reviewed_at,
+        #     "rejection_reason": vehicle.rejection_reason,
+        # },
+        "physical_inspection": {
+            "status": vehicle.inspection_status,
+            # "created_at": vehicle.inspection_created_at,
+            "reviewed_at": vehicle.inspection_reviewed_at,
+            "reason": vehicle.inspection_reason,
+        },
+        # "files": {
+        #     "rc_url": vehicle.rc_file_path,
+        #     "rear_photo_url": vehicle.rear_photo_file_path,
+        # },
+        # "driver_info": {
+        #     "user_id": vehicle.driver_user_id,
+        #     "email": vehicle.driver.email if vehicle.driver else None
+        # },
+        "is_active": vehicle.is_active,
     }
 
 
