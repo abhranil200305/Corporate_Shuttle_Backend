@@ -142,6 +142,7 @@ class TransferStatus(str, enum.Enum):
     NOT_READY = "not_ready"
     READY = "ready"
     TRANSFERRED = "transferred"
+    WITHHELD = "withheld"
     REVERSED = "reversed"
     FAILED = "failed"
 
@@ -174,6 +175,15 @@ class VehicleInspectionStatus(str, enum.Enum):
     PENDING = "pending"
     APPROVED = "approved"
     REJECTED = "rejected"
+
+class PayoutAdjustmentType(str, enum.Enum):
+    FINE = "fine"
+    DEDUCTION = "deduction"
+
+class PayoutAdjustmentDecision(str, enum.Enum):
+    PENDING = "pending"
+    INCLUDED = "included"
+    EXCLUDED = "excluded"
 
 class EmergencyStopRequestStatus(str, enum.Enum):
     APPROVED = "approved"
@@ -260,6 +270,24 @@ class User(UUIDPKMixin, TimestampMixin, Base):
     created_transfers_for_driver: Mapped[list["BookingTransfer"]] = relationship(
         back_populates="driver",
         foreign_keys="BookingTransfer.driver_user_id",
+        passive_deletes=True,
+    )
+
+    created_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+        back_populates="created_by_admin",
+        foreign_keys="PayoutAdjustment.created_by_admin_id",
+        passive_deletes=True,
+    )
+
+    decided_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+        back_populates="decided_by_admin",
+        foreign_keys="PayoutAdjustment.decided_by_admin_id",
+        passive_deletes=True,
+    )
+
+    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+        back_populates="applied_by_admin",
+        foreign_keys="PayoutAdjustmentApplication.applied_by_admin_id",
         passive_deletes=True,
     )
 
@@ -1102,6 +1130,11 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
+    withheld_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     boarded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -1168,6 +1201,19 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
         uselist=False,
     )
+
+    originated_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+        back_populates="origin_booking",
+        foreign_keys="PayoutAdjustment.origin_booking_id",
+        passive_deletes=True,
+    )
+
+    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+        back_populates="applied_on_booking",
+        foreign_keys="PayoutAdjustmentApplication.applied_on_booking_id",
+        passive_deletes=True,
+    )
+
     rating: Mapped["BookingRating | None"] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
@@ -1290,6 +1336,12 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+        back_populates="booking_transfer",
+        foreign_keys="PayoutAdjustmentApplication.booking_transfer_id",
+        passive_deletes=True,
+    )
+
     linked_account_id: Mapped[str] = mapped_column(String(64), nullable=False)
     razorpay_transfer_id: Mapped[str | None] = mapped_column(
         String(64), unique=True, nullable=True
@@ -1325,6 +1377,202 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("amount >= 0", name="ck_booking_transfers_amount_nonnegative"),
+    )
+
+class PayoutAdjustment(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "payout_adjustments"
+
+    origin_booking_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trip_bookings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    adjustment_type: Mapped[PayoutAdjustmentType] = mapped_column(
+        enum_type(PayoutAdjustmentType, "payout_adjustment_type"),
+        nullable=False,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    reason_code: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    reason_text: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+
+    admin_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    decision_status: Mapped[PayoutAdjustmentDecision] = mapped_column(
+        enum_type(PayoutAdjustmentDecision, "payout_adjustment_decision"),
+        nullable=False,
+        default=PayoutAdjustmentDecision.PENDING,
+    )
+
+    created_by_admin_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    decided_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    origin_booking: Mapped["TripBooking"] = relationship(
+        back_populates="originated_payout_adjustments",
+        foreign_keys=[origin_booking_id],
+    )
+
+    created_by_admin: Mapped["User"] = relationship(
+        back_populates="created_payout_adjustments",
+        foreign_keys=[created_by_admin_id],
+    )
+
+    decided_by_admin: Mapped["User | None"] = relationship(
+        back_populates="decided_payout_adjustments",
+        foreign_keys=[decided_by_admin_id],
+    )
+
+    applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+        back_populates="adjustment",
+        foreign_keys="PayoutAdjustmentApplication.payout_adjustment_id",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_payout_adjustments_amount_positive",
+        ),
+        CheckConstraint(
+            "reason_text <> ''",
+            name="ck_payout_adjustments_reason_text_nonempty",
+        ),
+        CheckConstraint(
+            "("
+            "(decision_status = 'pending' AND decided_by_admin_id IS NULL AND decided_at IS NULL)"
+            " OR "
+            "(decision_status IN ('included', 'excluded') AND decided_by_admin_id IS NOT NULL AND decided_at IS NOT NULL)"
+            ")",
+            name="ck_payout_adjustments_decision_consistent",
+        ),
+        Index(
+            "ix_payout_adjustments_origin_booking_decision",
+            "origin_booking_id",
+            "decision_status",
+        ),
+        Index(
+            "ix_payout_adjustments_created_by_admin",
+            "created_by_admin_id",
+        ),
+        Index(
+            "ix_payout_adjustments_decided_by_admin",
+            "decided_by_admin_id",
+        ),
+    )
+
+class PayoutAdjustmentApplication(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "payout_adjustment_applications"
+
+    payout_adjustment_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("payout_adjustments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    applied_on_booking_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trip_bookings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    booking_transfer_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("booking_transfers.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+    applied_by_admin_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    applied_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    applied_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    adjustment: Mapped["PayoutAdjustment"] = relationship(
+        back_populates="applications",
+        foreign_keys=[payout_adjustment_id],
+    )
+
+    applied_on_booking: Mapped["TripBooking"] = relationship(
+        back_populates="applied_payout_adjustment_applications",
+        foreign_keys=[applied_on_booking_id],
+    )
+
+    booking_transfer: Mapped["BookingTransfer | None"] = relationship(
+        back_populates="applied_payout_adjustment_applications",
+        foreign_keys=[booking_transfer_id],
+    )
+
+    applied_by_admin: Mapped["User"] = relationship(
+        back_populates="applied_payout_adjustment_applications",
+        foreign_keys=[applied_by_admin_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "applied_amount > 0",
+            name="ck_payout_adjustment_applications_amount_positive",
+        ),
+        UniqueConstraint(
+            "payout_adjustment_id",
+            "applied_on_booking_id",
+            name="uq_payout_adjustment_application_once_per_booking",
+        ),
+        Index(
+            "ix_payout_adjustment_applications_adjustment",
+            "payout_adjustment_id",
+        ),
+        Index(
+            "ix_payout_adjustment_applications_applied_booking",
+            "applied_on_booking_id",
+        ),
+        Index(
+            "ix_payout_adjustment_applications_transfer",
+            "booking_transfer_id",
+        ),
+        Index(
+            "ix_payout_adjustment_applications_applied_by_admin",
+            "applied_by_admin_id",
+        ),
     )
 
 
