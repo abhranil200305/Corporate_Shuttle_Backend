@@ -127,7 +127,7 @@ class ScheduledTripStatus(str, enum.Enum):
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     PREMATURE_END = "premature_end"
-
+    PREMATURED_END_REQUEST = "premature_end_requested"
 
 class BookingStatus(str, enum.Enum):
     PENDING_PAYMENT = "pending_payment"
@@ -175,6 +175,10 @@ class VehicleInspectionStatus(str, enum.Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
 
+class EmergencyStopRequestStatus(str, enum.Enum):
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    PENDING = "pending"
 
 # ============================================================
 # auth / users
@@ -559,6 +563,10 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     DateTime(timezone=True),
     nullable=True,
     )
+    inspection_reason: Mapped[str | None] = mapped_column(
+    Text,
+    nullable=True,
+    )
 
     inspection_status: Mapped[VehicleInspectionStatus | None] = mapped_column(
         enum_type(VehicleInspectionStatus, "vehicle_inspection_status"),
@@ -854,6 +862,10 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         String(36),
         ForeignKey("vehicles.id", ondelete="RESTRICT"),
         nullable=False,
+    )
+    emergency_stop_request_status: Mapped[EmergencyStopRequestStatus | None] = mapped_column(
+    enum_type(EmergencyStopRequestStatus, "emergency_stop_request_status"),
+    nullable=True,
     )
 
     planned_start_at: Mapped[datetime] = mapped_column(
