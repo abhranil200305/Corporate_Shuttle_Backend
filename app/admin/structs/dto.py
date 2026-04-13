@@ -114,11 +114,23 @@ class DriverPayoutDetailsUpsert(BaseModel):
     ifsc_code: str = Field(..., min_length=1, max_length=20)
     phone_number: str = Field(..., min_length=1, max_length=20)
 
+class BookingPayoutAdjustmentAllocationInput(BaseModel):
+    adjustment_id: str = Field(..., min_length=1, max_length=36)
+    applied_amount: Decimal = Field(..., gt=0)
+
+
+class BookingPayoutExecutionInput(BaseModel):
+    booking_id: str = Field(..., min_length=1, max_length=36)
+    adjustments_to_apply: List[BookingPayoutAdjustmentAllocationInput] = Field(
+        default_factory=list
+    )
+
 
 class TriggerDriverMonthlyPayoutRequest(BaseModel):
     month: int = Field(..., ge=1, le=12)
     year: int = Field(..., ge=2000, le=2100)
     linked_account_id: Optional[str] = Field(default=None, max_length=64)
+    booking_items: List[BookingPayoutExecutionInput] = Field(default_factory=list)
 
 
 class BulkPayoutTriggerRequest(BaseModel):
@@ -130,6 +142,7 @@ class BulkPayoutTriggerRequest(BaseModel):
     require_completed: bool = True
     only_ready: bool = True
     limit: int = Field(default=100, ge=1, le=500)
+    booking_items: List[BookingPayoutExecutionInput] = Field(default_factory=list)
 
 
 class PayoutDashboardResponse(BaseModel):

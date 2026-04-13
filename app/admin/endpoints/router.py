@@ -1,4 +1,5 @@
 from typing import List, Optional
+from urllib import request
 
 from fastapi import (
     APIRouter,
@@ -348,37 +349,11 @@ async def get_vehicle_data(
 
     return {
         "vehicle_id": vehicle.id,
-        # "registration": {
-        #     "number": vehicle.registration_number,
-        #     "valid_till": vehicle.registration_valid_till,
-        # },
-        # "specs": {
-        #     "name": vehicle.vehicle_name,
-        #     "model": vehicle.vehicle_model,
-        #     "color": vehicle.color,
-        #     "seats": vehicle.seat_count,
-        #     "has_ac": vehicle.has_ac,
-        # },
-        # "verification": {
-        #     "status": vehicle.verification_status,
-        #     "requested_at": vehicle.verification_requested_at,
-        #     "reviewed_at": vehicle.reviewed_at,
-        #     "rejection_reason": vehicle.rejection_reason,
-        # },
         "physical_inspection": {
             "status": vehicle.inspection_status,
-            # "created_at": vehicle.inspection_created_at,
             "reviewed_at": vehicle.inspection_reviewed_at,
             "reason": vehicle.inspection_reason,
         },
-        # "files": {
-        #     "rc_url": vehicle.rc_file_path,
-        #     "rear_photo_url": vehicle.rear_photo_file_path,
-        # },
-        # "driver_info": {
-        #     "user_id": vehicle.driver_user_id,
-        #     "email": vehicle.driver.email if vehicle.driver else None
-        # },
         "is_active": vehicle.is_active,
     }
 
@@ -1470,6 +1445,17 @@ async def cancel_trip_by_id(
     await db.commit()
 
     return {"status": "success", "message": "Trip cancelled and users notified."}
+
+
+@router.post("/trips/{trip_id}/premature-end")
+async def premature_end_trip(
+    trip_id: str,
+    db: AsyncSession = Depends(get_async_session),
+    # current_user: User = Depends(get_current_admin_user) # Logic to check is_admin
+):
+    hub = get_ws_hub(request)
+    service = AdminService(db, ws_hub=hub)
+    return await service.handle_premature_trip_end(db, trip_id)
 
 
 # async def cancel_trip_by_id(
@@ -2732,6 +2718,7 @@ async def trigger_driver_monthly_payouts(
     driver_user_id: str,
     payload: TriggerDriverMonthlyPayoutRequest,
     db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
     service = AdminService(db)
     return await service.trigger_driver_monthly_payouts(
@@ -2739,6 +2726,8 @@ async def trigger_driver_monthly_payouts(
         month=payload.month,
         year=payload.year,
         linked_account_id=payload.linked_account_id,
+        booking_items=payload.booking_items,
+        applied_by_admin_id=current_admin.id,
     )
 
 
@@ -2746,9 +2735,13 @@ async def trigger_driver_monthly_payouts(
 async def trigger_bulk_payouts(
     payload: BulkPayoutTriggerRequest,
     db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
     service = AdminService(db)
-    return await service.trigger_bulk_payouts(payload)
+    return await service.trigger_bulk_payouts(
+        payload,
+        applied_by_admin_id=current_admin.id,
+    )
 
 
 @router.get("/payouts/transfers")
