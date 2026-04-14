@@ -1245,6 +1245,7 @@ async def get_specific_trip_status(
             "passengers": [
                 {
                     # FIX: Access .passenger_profile.full_name
+                    "passenger_id": b.passenger.passenger_profile.user_id,
                     "name": b.passenger.passenger_profile.full_name
                     if b.passenger and b.passenger.passenger_profile
                     else "Unknown Passenger",
