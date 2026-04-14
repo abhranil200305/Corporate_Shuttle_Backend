@@ -8,6 +8,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
+import secrets
 from typing import Any
 from uuid import uuid4
 
@@ -197,6 +198,26 @@ class PassengerService:
             )
 
         return minutes
+    
+    @staticmethod
+    def _generate_booking_otp(length: int = 6) -> str:
+        if length <= 0:
+            raise ValueError("Booking OTP length must be positive.")
+        upper_bound = 10 ** length
+        return f"{secrets.randbelow(upper_bound):0{length}d}"
+
+    @staticmethod
+    def _should_expose_booking_otp(booking: TripBooking) -> bool:
+        return booking.booking_status not in (
+            BookingStatus.COMPLETED,
+            BookingStatus.CANCELLED,
+            BookingStatus.MISSED,
+        )
+
+    def _serialize_booking_otp(self, booking: TripBooking) -> str | None:
+        if not self._should_expose_booking_otp(booking):
+            return None
+        return booking.otp
 
     @classmethod
     def _get_payment_hold_expires_at(cls) -> datetime:
@@ -648,6 +669,7 @@ class PassengerService:
             "route_id": booking.route_id,
             "pickup_stop_id": booking.pickup_stop_id,
             "dropoff_stop_id": booking.dropoff_stop_id,
+            "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
@@ -735,6 +757,7 @@ class PassengerService:
             "route_id": booking.route_id,
             "pickup_stop_id": booking.pickup_stop_id,
             "dropoff_stop_id": booking.dropoff_stop_id,
+            "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
@@ -763,6 +786,7 @@ class PassengerService:
             "route_id": booking.route_id,
             "pickup_stop_id": booking.pickup_stop_id,
             "dropoff_stop_id": booking.dropoff_stop_id,
+            "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
@@ -1017,6 +1041,7 @@ class PassengerService:
         return {
             "booking_id": booking.id,
             "scheduled_trip_id": booking.scheduled_trip_id,
+            "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "trip_status": trip.status,
             "boarding_scan_completed": boarding_scan_completed,
@@ -2096,6 +2121,7 @@ class PassengerService:
         try:
             booking = TripBooking(
                 passenger_user_id=current_user.id,
+                otp=self._generate_booking_otp(),
                 scheduled_trip_id=trip.id,
                 route_id=trip.route_id,
                 pickup_stop_id=payload.pickup_stop_id,
