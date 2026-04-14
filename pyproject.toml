@@ -1,0 +1,14 @@
+[tool.ruff]
+indent-width = 4
+fix = true
+unsafe-fixes = true
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+fixable = ["ALL"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "tab"
+docstring-code-format = false
+skip-magic-trailing-comma = true
