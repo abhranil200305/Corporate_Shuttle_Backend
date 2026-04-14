@@ -300,3 +300,28 @@ async def submit_vehicle(
         await asyncio.gather(*tasks)
 
     return vehicle
+
+# ---------------------------
+# Get Inspection Status
+# ---------------------------
+@router.get("/inspection-status")
+async def get_vehicle_inspection_status(
+    current_driver: User = Depends(get_current_active_user),
+    session: AsyncSession = Depends(get_async_session)
+):
+    # Fetch vehicle
+    result = await session.execute(
+        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
+    )
+    vehicle = result.scalar_one_or_none()
+
+    if not vehicle:
+        raise HTTPException(status_code=404, detail="No vehicle found")
+
+    return {
+        "vehicle_id": vehicle.id,
+        "inspection_status": vehicle.inspection_status,
+        "inspection_reason": vehicle.inspection_reason,
+        "inspection_created_at": vehicle.inspection_created_at,
+        "inspection_reviewed_at": vehicle.inspection_reviewed_at,
+    }
