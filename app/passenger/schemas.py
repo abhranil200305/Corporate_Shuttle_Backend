@@ -210,6 +210,7 @@ class TripBookingResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    otp: str | None
     booking_status: str
     fare_amount: Decimal
     commission_percent_snapshot: Decimal
@@ -236,6 +237,7 @@ class BookingDetailResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    otp: str | None
     booking_status: str
     fare_amount: Decimal
     payment_hold_expires_at: datetime | None
@@ -263,6 +265,7 @@ class CurrentTripBookingResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    otp: str | None
     booking_status: str
     fare_amount: Decimal
     payment_hold_expires_at: datetime | None
@@ -302,6 +305,7 @@ class CurrentTripSegmentStopResponse(BaseModel):
 class CurrentTripStatusResponse(BaseModel):
     booking_id: str
     scheduled_trip_id: str
+    otp: str | None
     booking_status: str
     trip_status: str
 
