@@ -26,6 +26,7 @@ from app.db.schema import (
     UserRole,
     TripScanEvent,
 )
+from app.db.schema import ScanType  
 from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
 from geopy.distance import geodesic
@@ -350,12 +351,6 @@ async def start_trip(
 # STOP ACTION (STRICT)
 # ============================================================
 
-# ============================================================
-# STOP ACTION (STRICT)
-# ============================================================
-
-from app.db.schema import ScanType   # ✅ ADD THIS IMPORT
-
 @router.post("/{trip_id}/stop-action")
 async def stop_action(
     trip_id: str,
@@ -425,6 +420,35 @@ async def stop_action(
         raise HTTPException(400, "Trip event not found")
 
     current_time = now_utc()
+
+    # =========================================================
+    # 🔥 NEW: BLOCK DEPART IF PASSENGER NOT DROPPED
+    # =========================================================
+    if mode == "depart":
+
+        result = await session.execute(
+            select(TripBooking).where(
+                TripBooking.scheduled_trip_id == trip_id,
+                TripBooking.booking_status == BookingStatus.BOARDED,
+                TripBooking.dropoff_stop_id == stop_id
+            )
+        )
+        drop_pending_bookings = result.scalars().all()
+
+        for booking in drop_pending_bookings:
+            scan_result = await session.execute(
+                select(TripScanEvent).where(
+                    TripScanEvent.booking_id == booking.id,
+                    TripScanEvent.scan_type == ScanType.DROP
+                )
+            )
+            drop_scan = scan_result.scalar_one_or_none()
+
+            if not drop_scan:
+                raise HTTPException(
+                    400,
+                    "Cannot depart. Passenger not dropped at this stop."
+                )
 
     # -------------------------------
     # ARRIVE / DEPART
@@ -500,9 +524,7 @@ async def stop_action(
         if not pickup_rs or not drop_rs or not current_rs:
             continue
 
-        # -------------------------------
         # ARRIVAL → Boarding alert
-        # -------------------------------
         if mode == "arrive" and str(booking.pickup_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
@@ -511,9 +533,7 @@ async def stop_action(
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # -------------------------------
         # DEPART → Drop alert
-        # -------------------------------
         if mode == "depart" and str(booking.dropoff_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
@@ -522,9 +542,7 @@ async def stop_action(
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # =========================================================
-        # 🔥 MISSED BOARDING (FINAL FIX)
-        # =========================================================
+        # MISSED BOARDING
         if (
             mode == "depart"
             and booking.booking_status == BookingStatus.BOOKED
@@ -533,7 +551,7 @@ async def stop_action(
             scan_result = await session.execute(
                 select(TripScanEvent).where(
                     TripScanEvent.booking_id == booking.id,
-                    TripScanEvent.scan_type == ScanType.BOARD   # ✅ FIXED
+                    TripScanEvent.scan_type == ScanType.BOARD
                 )
             )
             scan_event = scan_result.scalar_one_or_none()
@@ -548,9 +566,7 @@ async def stop_action(
                     data={"trip_id": trip.id},
                 )
 
-        # -------------------------------
         # MISSED DROP
-        # -------------------------------
         if (
             mode == "depart"
             and booking.booking_status == BookingStatus.BOARDED
@@ -570,8 +586,9 @@ async def stop_action(
         "time": to_ist(current_time),
         "distance_from_stop_meters": int(distance)
     }
+
 # ============================================================
-# END TRIP (WITH GEO)
+# END TRIP (WITH GEO + PASSENGER VALIDATION)
 # ============================================================
 
 @router.post("/{trip_id}/end")
@@ -593,6 +610,36 @@ async def end_trip(
     if trip.status != ScheduledTripStatus.IN_PROGRESS:
         raise HTTPException(400, "Trip not active")
 
+    current_time = now_utc()
+
+    # =========================
+    # 🚫 BLOCK IF PASSENGERS STILL IN BUS
+    # =========================
+    # Count boarded passengers
+    boarded_result = await session.execute(
+        select(func.count()).select_from(TripScanEvent).where(
+            TripScanEvent.scheduled_trip_id == trip_id,
+            TripScanEvent.scan_type == ScanType.BOARD
+        )
+    )
+    boarded_count = boarded_result.scalar() or 0
+
+    # Count dropped passengers
+    dropped_result = await session.execute(
+        select(func.count()).select_from(TripScanEvent).where(
+            TripScanEvent.scheduled_trip_id == trip_id,
+            TripScanEvent.scan_type == ScanType.DROP
+        )
+    )
+    dropped_count = dropped_result.scalar() or 0
+
+    # 🚨 If mismatch → passengers still inside
+    if boarded_count > dropped_count:
+        raise HTTPException(
+            400,
+            f"Cannot end trip. {boarded_count - dropped_count} passenger(s) still not dropped."
+        )
+
     # =========================
     # GET LAST STOP
     # =========================
@@ -611,8 +658,6 @@ async def end_trip(
     if not last_stop:
         raise HTTPException(400, "Last stop not found")
 
-    current_time = now_utc()
-
     # =========================
     # CASE 1: EARLY END → EMERGENCY
     # =========================
@@ -623,7 +668,7 @@ async def end_trip(
         )
 
     # =========================
-    # CASE 2: NORMAL END (ON TIME / LATE)
+    # CASE 2: GEO VALIDATION
     # =========================
     if not is_within_radius(last_stop, lat, lng):
         raise HTTPException(400, "Use emergency end")
@@ -641,9 +686,12 @@ async def end_trip(
 
     return {
         "message": "Trip completed",
-        "time": to_ist(trip.actual_end_at)
+        "time": to_ist(trip.actual_end_at),
+        "passenger_check": {
+            "boarded": boarded_count,
+            "dropped": dropped_count
+        }
     }
-
 # ============================================================
 # EMERGENCY END (MERGED)
 # ============================================================
