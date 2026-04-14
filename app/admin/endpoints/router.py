@@ -26,6 +26,7 @@ from app.admin.structs.dto import (
     DriverPayoutEligibilityUpdate,
     PayoutAdjustmentCreateRequest,
     PayoutAdjustmentDecisionRequest,
+    PayoutDashboardResponse,
     PayoutSettingsUpdate,
     RouteCreate,
     RouteFareCreate,
@@ -36,9 +37,6 @@ from app.admin.structs.dto import (
     VehicleInspectionUpdate,
     VehicleVerificationUpdate,
     VerificationUpdate,
-    PayoutAdjustmentCreateRequest,
-    PayoutAdjustmentDecisionRequest,
-    PayoutDashboardResponse
 )
 from app.auth.dependencies import (
     get_current_active_user,
@@ -2256,6 +2254,18 @@ async def get_top_pickup_stops(
         raise HTTPException(
             status_code=500, detail="Failed to retrieve top pickup stops analytics"
         )
+
+
+@router.post("/trips/{trip_id}/complete-manually")
+async def admin_complete_trip(
+    trip_id: str,
+    note: str = None,
+    db: AsyncSession = Depends(get_async_session),
+    # Ensure only admins can access this
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminService(db)
+    return await service.manually_complete_trip(trip_id, current_admin.id, note)
 
 
 # ============================================================

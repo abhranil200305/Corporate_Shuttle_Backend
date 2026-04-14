@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db import schema
 from app.notifications.hub import WSHub
-from app.notifications.service import NotificationService
+from app.notifications.service import NotificationService, utcnow
 from app.payments.service import RoutePayoutService
 
 
@@ -729,6 +729,62 @@ class AdminService:
 
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
+
+    async def manually_complete_trip(
+        self, trip_id: str, admin_id: str, note: str = None
+    ):
+        # 1. Fetch the trip
+        stmt = select(schema.ScheduledTrip).where(schema.ScheduledTrip.id == trip_id)
+        result = await self.db.execute(stmt)
+        trip = result.scalar_one_or_none()
+
+        if not trip:
+            raise HTTPException(status_code=404, detail="Trip not found")
+
+        # 2. Validation: Cannot complete if it never started
+        # We check if actual_start_at is null OR if status is not 'started'
+        if (
+            not trip.actual_start_at
+            or trip.status == schema.ScheduledTripStatus.SCHEDULED
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot complete a trip that has not started yet. The driver must start the trip first.",
+            )
+
+        if trip.status in [
+            schema.ScheduledTripStatus.COMPLETED,
+            schema.ScheduledTripStatus.CANCELLED,
+        ]:
+            raise HTTPException(
+                status_code=400, detail=f"Trip is already in {trip.status} state."
+            )
+
+        # 3. Proceed with manual completion
+        trip.status = schema.ScheduledTripStatus.COMPLETED
+        trip.actual_end_at = utcnow()
+
+        # Store why this was done manually in your audit/note field
+        trip.admin_notes = (
+            f"Manually completed by admin {admin_id}. Note: {note}"
+            if note
+            else f"Manually completed by admin {admin_id}"
+        )
+
+        # 4. Force complete all 'booked' bookings associated with this trip
+        update_bookings_stmt = (
+            update(schema.TripBooking)
+            .where(schema.TripBooking.scheduled_trip_id == trip_id)
+            .where(schema.TripBooking.booking_status == schema.BookingStatus.BOOKED)
+            .values(booking_status=schema.BookingStatus.COMPLETED)
+        )
+        await self.db.execute(update_bookings_stmt)
+
+        await self.db.commit()
+        return {
+            "status": "success",
+            "message": f"Trip {trip_id} has been manually closed.",
+        }
 
     async def get_top_booking_routes(self):
         query = (
@@ -2196,9 +2252,9 @@ class AdminService:
             select(schema.TripBooking)
             .options(
                 joinedload(schema.TripBooking.payments),
-                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
-                    schema.PayoutAdjustmentApplication.adjustment
-                ),
+                joinedload(
+                    schema.TripBooking.applied_payout_adjustment_applications
+                ).joinedload(schema.PayoutAdjustmentApplication.adjustment),
             )
             .order_by(schema.TripBooking.created_at.desc())
         )
@@ -2221,26 +2277,21 @@ class AdminService:
                 drivers_not_eligible_count += 1
 
         return {
-            "commission_percent": settings.commission_percent if settings else Decimal("0.00"),
-
+            "commission_percent": settings.commission_percent
+            if settings
+            else Decimal("0.00"),
             "ready_booking_count": agg["ready_booking_count"],
             "ready_total_amount": agg["ready_total_amount"],
-
             "transferred_booking_count": agg["transferred_booking_count"],
             "transferred_total_amount": agg["transferred_total_amount"],
-
             "withheld_booking_count": agg["withheld_booking_count"],
             "withheld_total_amount": agg["withheld_total_amount"],
-
             "failed_booking_count": agg["failed_booking_count"],
             "failed_total_amount": agg["failed_total_amount"],
-
             "reversed_booking_count": agg["reversed_booking_count"],
             "reversed_total_amount": agg["reversed_total_amount"],
-
             "refund_queue_count": agg["refund_queue_count"],
             "refund_queue_total_amount": agg["refund_queue_total_amount"],
-
             "drivers_missing_linked_account_count": drivers_missing_linked_account_count,
             "drivers_not_eligible_count": drivers_not_eligible_count,
         }
