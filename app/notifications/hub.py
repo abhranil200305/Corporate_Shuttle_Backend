@@ -19,6 +19,7 @@ def utcnow() -> datetime:
 
 logger = logging.getLogger(__name__)
 
+
 @dataclass
 class WSConnection:
     websocket: WebSocket
@@ -30,6 +31,11 @@ class WSHub:
     def __init__(self) -> None:
         self._connections: dict[str, dict[str, WSConnection]] = defaultdict(dict)
         self._lock = asyncio.Lock()
+
+    @staticmethod
+    def _is_heartbeat_payload(payload: dict[str, Any]) -> bool:
+        payload_type = str(payload.get("type") or "").strip().lower()
+        return payload_type in {"ping", "pong"}
 
     async def register(self, user_id: str, websocket: WebSocket) -> str:
         connection_id = uuid4().hex
@@ -83,11 +89,11 @@ class WSHub:
             return self._connections.get(user_id, {}).get(connection_id)
 
     async def send_to_connection(
-    self,
-    user_id: str,
-    connection_id: str,
-    payload: dict[str, Any],
-) -> bool:
+        self,
+        user_id: str,
+        connection_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
         connection = await self._get_connection(user_id, connection_id)
         if connection is None:
             raise RuntimeError(
@@ -95,26 +101,30 @@ class WSHub:
             )
 
         safe_payload = jsonable_encoder(payload)
+        is_heartbeat = self._is_heartbeat_payload(safe_payload)
 
-        logger.info(
-            "ws_send_attempt user_id=%s connection_id=%s notification_id=%s title=%r message=%r payload=%s",
-            user_id,
-            connection_id,
-            safe_payload.get("id"),
-            safe_payload.get("title"),
-            safe_payload.get("message"),
-            safe_payload,
-        )
+        if not is_heartbeat:
+            logger.info(
+                "ws_send_attempt user_id=%s connection_id=%s notification_id=%s title=%r message=%r payload=%s",
+                user_id,
+                connection_id,
+                safe_payload.get("id"),
+                safe_payload.get("title"),
+                safe_payload.get("message"),
+                safe_payload,
+            )
 
         async with connection.send_lock:
             await connection.websocket.send_json(safe_payload)
 
-        logger.info(
-            "ws_send_success user_id=%s connection_id=%s notification_id=%s",
-            user_id,
-            connection_id,
-            safe_payload.get("id"),
-        )
+        if not is_heartbeat:
+            logger.info(
+                "ws_send_success user_id=%s connection_id=%s notification_id=%s",
+                user_id,
+                connection_id,
+                safe_payload.get("id"),
+            )
+
         return True
 
     async def send_ping(self, user_id: str, connection_id: str) -> bool:
@@ -170,7 +180,7 @@ class WSHub:
     async def connection_count_for_user(self, user_id: str) -> int:
         async with self._lock:
             return len(self._connections.get(user_id, {}))
-        
+
     async def shutdown(self, *, code: int = 1001) -> None:
         async with self._lock:
             snapshot = {
