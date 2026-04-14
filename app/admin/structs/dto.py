@@ -215,6 +215,10 @@ class PayoutBookingListItem(BaseModel):
     commission_amount: Decimal
     driver_payout_amount: Decimal
     transfer_status: schema.TransferStatus
+    effective_payout_state: str
+    refund_state: Optional[str] = None
+    latest_payment_status: Optional[schema.BookingPaymentStatus] = None
+    payment_statuses: List[schema.BookingPaymentStatus] = Field(default_factory=list)
     transfer_ready_at: Optional[datetime] = None
     transfer_processed_at: Optional[datetime] = None
     cancelled_at: Optional[datetime] = None
@@ -238,6 +242,8 @@ class RefundQueueItem(BaseModel):
     driver_user_id: str
     fare_amount: Decimal
     transfer_status: schema.TransferStatus
+    refund_state: Optional[str] = None
+    latest_payment_status: Optional[schema.BookingPaymentStatus] = None
     refund_retry_after: Optional[datetime] = None
     refund_attempt_count: Optional[int] = None
     cancelled_at: Optional[datetime] = None

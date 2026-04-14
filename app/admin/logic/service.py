@@ -1111,6 +1111,43 @@ class AdminService:
             "created_at": application.created_at,
             "updated_at": application.updated_at,
         }
+    
+    def _get_payment_statuses(self, booking) -> list[schema.BookingPaymentStatus]:
+        return [payment.status for payment in getattr(booking, "payments", []) or []]
+
+    def _has_refunded_payment(self, booking) -> bool:
+        return any(
+            payment.status == schema.BookingPaymentStatus.REFUNDED
+            for payment in getattr(booking, "payments", []) or []
+        )
+
+    def _get_latest_payment_status(self, booking) -> schema.BookingPaymentStatus | None:
+        payments = list(getattr(booking, "payments", []) or [])
+        if not payments:
+            return None
+
+        payments.sort(key=lambda item: item.created_at, reverse=True)
+        return payments[0].status
+
+    def _get_refund_state(self, booking) -> str | None:
+        if booking.booking_status != schema.BookingStatus.CANCELLED:
+            return None
+
+        if self._has_refunded_payment(booking):
+            if booking.transfer_status == schema.TransferStatus.REVERSED:
+                return "reversed_after_transfer"
+            return "refunded_before_transfer"
+
+        if self._booking_has_paid_payment(booking):
+            return "refund_pending"
+
+        return None
+
+    def _get_effective_payout_state(self, booking) -> str:
+        refund_state = self._get_refund_state(booking)
+        if refund_state is not None:
+            return refund_state
+        return booking.transfer_status.value
 
     def _serialize_payout_adjustment(self, adjustment):
         origin_booking = adjustment.origin_booking
@@ -1201,6 +1238,7 @@ class AdminService:
             if (
                 booking.booking_status == schema.BookingStatus.CANCELLED
                 and self._booking_has_paid_payment(booking)
+                and not self._has_refunded_payment(booking)
             ):
                 agg["refund_queue_count"] += 1
                 agg["refund_queue_total_amount"] += fare_amount
@@ -1230,18 +1268,20 @@ class AdminService:
             if passenger and passenger.passenger_profile
             else None
         )
+
         applied_adjustment_amount = Decimal("0.00")
-        for application in (
-            getattr(booking, "applied_payout_adjustment_applications", []) or []
-        ):
-            applied_adjustment_amount += self._quantize_money(
-                application.applied_amount
-            )
+        for application in getattr(booking, "applied_payout_adjustment_applications", []) or []:
+            applied_adjustment_amount += self._quantize_money(application.applied_amount)
 
         applied_adjustment_amount = self._quantize_money(applied_adjustment_amount)
         net_payout_amount = self._quantize_money(
             Decimal(booking.driver_payout_amount or 0) - applied_adjustment_amount
         )
+
+        payment_statuses = self._get_payment_statuses(booking)
+        latest_payment_status = self._get_latest_payment_status(booking)
+        refund_state = self._get_refund_state(booking)
+        effective_payout_state = self._get_effective_payout_state(booking)
 
         return {
             "booking_id": booking.id,
@@ -1250,9 +1290,7 @@ class AdminService:
             "driver_user_id": scheduled_trip.driver_user_id if scheduled_trip else None,
             "driver_name": driver_profile.full_name if driver_profile else None,
             "passenger_user_id": booking.passenger_user_id,
-            "passenger_name": passenger_profile.full_name
-            if passenger_profile
-            else None,
+            "passenger_name": passenger_profile.full_name if passenger_profile else None,
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
@@ -1262,6 +1300,10 @@ class AdminService:
             "applied_adjustment_amount": applied_adjustment_amount,
             "net_payout_amount": net_payout_amount,
             "transfer_status": booking.transfer_status,
+            "effective_payout_state": effective_payout_state,
+            "refund_state": refund_state,
+            "latest_payment_status": latest_payment_status,
+            "payment_statuses": payment_statuses,
             "transfer_ready_at": booking.transfer_ready_at,
             "transfer_processed_at": booking.transfer_processed_at,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
@@ -2188,6 +2230,9 @@ class AdminService:
 
         queued = []
         for booking in bookings:
+            if self._has_refunded_payment(booking):
+                continue
+
             if not self._booking_has_paid_payment(booking):
                 continue
 
@@ -2203,6 +2248,8 @@ class AdminService:
                     ),
                     "fare_amount": booking.fare_amount,
                     "transfer_status": booking.transfer_status,
+                    "refund_state": "refund_pending",
+                    "latest_payment_status": self._get_latest_payment_status(booking),
                     "refund_retry_after": booking.refund_retry_after,
                     "refund_attempt_count": booking.refund_attempt_count,
                     "cancelled_at": booking.cancelled_at,
@@ -2236,13 +2283,52 @@ class AdminService:
         outcome = await payout_service.reconcile_cancelled_booking_refund(booking)
         await self.db.commit()
 
-        refreshed = await self.get_payout_booking_detail(booking_id)
+        refreshed_stmt = (
+            select(schema.TripBooking)
+            .where(schema.TripBooking.id == booking_id)
+            .options(
+                joinedload(schema.TripBooking.transfer),
+                joinedload(schema.TripBooking.payments),
+                joinedload(schema.TripBooking.pickup_stop),
+                joinedload(schema.TripBooking.dropoff_stop),
+                joinedload(schema.TripBooking.originated_payout_adjustments).joinedload(
+                    schema.PayoutAdjustment.applications
+                ),
+                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
+                    schema.PayoutAdjustmentApplication.adjustment
+                ),
+                joinedload(schema.TripBooking.passenger).joinedload(
+                    schema.User.passenger_profile
+                ),
+                joinedload(schema.TripBooking.scheduled_trip)
+                .joinedload(schema.ScheduledTrip.driver)
+                .joinedload(schema.User.driver_profile),
+                joinedload(schema.TripBooking.scheduled_trip).joinedload(
+                    schema.ScheduledTrip.route
+                ),
+            )
+        )
+        refreshed_result = await self.db.execute(refreshed_stmt)
+        refreshed_booking = refreshed_result.unique().scalar_one()
+
         return {
             "message": "Cancelled booking refund reconciliation completed.",
             "outcome": outcome,
-            "booking": refreshed["booking"],
-            "transfer": refreshed["transfer"],
-            "payments": refreshed["payments"],
+            "booking": self._serialize_payout_booking(refreshed_booking),
+            "transfer": None if refreshed_booking.transfer is None else self._serialize_booking_transfer(refreshed_booking.transfer),
+            "payments": [
+                {
+                    "id": payment.id,
+                    "booking_id": payment.booking_id,
+                    "razorpay_order_id": payment.razorpay_order_id,
+                    "razorpay_payment_id": payment.razorpay_payment_id,
+                    "amount": payment.amount,
+                    "status": payment.status,
+                    "created_at": payment.created_at,
+                    "updated_at": payment.updated_at,
+                }
+                for payment in refreshed_booking.payments
+            ],
         }
 
     async def get_payout_dashboard(self):
@@ -2275,7 +2361,7 @@ class AdminService:
 
             if payout is None or not payout.is_payout_eligible:
                 drivers_not_eligible_count += 1
-
+            
         return {
             "commission_percent": settings.commission_percent
             if settings
