@@ -385,7 +385,7 @@ async def stop_action(
     )
     route_stop = result.scalar_one_or_none()
     if not route_stop:
-        raise HTTPException(400, "Stop not found")
+        raise HTTPException(400, "Stop not found in this route")
 
     stop = route_stop.stop
 
@@ -421,11 +421,54 @@ async def stop_action(
 
     current_time = now_utc()
 
+    # -------------------------------
+    # Load ALL route stops (for validation)
+    # -------------------------------
+    result = await session.execute(
+        select(RouteStop).where(RouteStop.route_id == trip.route_id)
+    )
+    route_stops = result.scalars().all()
+
+    route_stop_map = {str(rs.stop_id): rs for rs in route_stops}
+    valid_stop_ids = set(route_stop_map.keys())
+
     # =========================================================
-    # 🔥 NEW: BLOCK DEPART IF PASSENGER NOT DROPPED
+    # 🔥 ROUTE VALIDATION (NEW)
+    # =========================================================
+    result = await session.execute(
+        select(TripBooking).where(
+            TripBooking.scheduled_trip_id == trip_id,
+            TripBooking.booking_status.in_([
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED
+            ])
+        )
+    )
+    all_bookings = result.scalars().all()
+
+    for booking in all_bookings:
+        if (
+            str(booking.pickup_stop_id) not in valid_stop_ids
+            or str(booking.dropoff_stop_id) not in valid_stop_ids
+        ):
+            raise HTTPException(
+                400,
+                "Invalid booking: stop not part of route"
+            )
+
+    # =========================================================
+    # 🔥 BOARDING / DEBOARDING RULES (NEW)
+    # =========================================================
+    if mode == "arrive" and not route_stop.boarding_allowed:
+        raise HTTPException(400, "Boarding not allowed at this stop")
+
+    if mode == "depart" and not route_stop.deboarding_allowed:
+        raise HTTPException(400, "Deboarding not allowed at this stop")
+
+    # =========================================================
+    # 🔥 BLOCK DEPART IF PASSENGER NOT DROPPED (OPTIMIZED)
     # =========================================================
     if mode == "depart":
-
         result = await session.execute(
             select(TripBooking).where(
                 TripBooking.scheduled_trip_id == trip_id,
@@ -435,16 +478,22 @@ async def stop_action(
         )
         drop_pending_bookings = result.scalars().all()
 
-        for booking in drop_pending_bookings:
-            scan_result = await session.execute(
-                select(TripScanEvent).where(
-                    TripScanEvent.booking_id == booking.id,
+        booking_ids = [b.id for b in drop_pending_bookings]
+
+        if booking_ids:
+            result = await session.execute(
+                select(TripScanEvent.booking_id).where(
+                    TripScanEvent.booking_id.in_(booking_ids),
                     TripScanEvent.scan_type == ScanType.DROP
                 )
             )
-            drop_scan = scan_result.scalar_one_or_none()
+            dropped_ids = set(result.scalars().all())
 
-            if not drop_scan:
+            not_dropped = [
+                b for b in drop_pending_bookings if b.id not in dropped_ids
+            ]
+
+            if not_dropped:
                 raise HTTPException(
                     400,
                     "Cannot depart. Passenger not dropped at this stop."
@@ -479,44 +528,14 @@ async def stop_action(
     await session.commit()
 
     # -------------------------------
-    # Notification setup
+    # Notifications
     # -------------------------------
     notification_service = NotificationService(
         db=session,
         ws_hub=getattr(request.app.state, "ws_hub", None)
     )
 
-    # -------------------------------
-    # Load bookings
-    # -------------------------------
-    result = await session.execute(
-        select(TripBooking)
-        .where(
-            TripBooking.scheduled_trip_id == trip_id,
-            TripBooking.booking_status.in_([
-                BookingStatus.BOOKED,
-                BookingStatus.BOARDED
-            ])
-        )
-    )
-    bookings = result.scalars().all()
-
-    # -------------------------------
-    # RouteStop map
-    # -------------------------------
-    result = await session.execute(
-        select(RouteStop).where(RouteStop.route_id == trip.route_id)
-    )
-    route_stops = result.scalars().all()
-
-    route_stop_map = {
-        str(rs.stop_id): rs for rs in route_stops
-    }
-
-    # -------------------------------
-    # MAIN LOOP
-    # -------------------------------
-    for booking in bookings:
+    for booking in all_bookings:
         pickup_rs = route_stop_map.get(str(booking.pickup_stop_id))
         drop_rs = route_stop_map.get(str(booking.dropoff_stop_id))
         current_rs = route_stop_map.get(str(stop_id))
@@ -554,15 +573,13 @@ async def stop_action(
                     TripScanEvent.scan_type == ScanType.BOARD
                 )
             )
-            scan_event = scan_result.scalar_one_or_none()
-
-            if not scan_event:
+            if not scan_result.scalar_one_or_none():
                 booking.booking_status = BookingStatus.MISSED
 
                 await notification_service.notify_user(
                     user_id=booking.passenger_user_id,
                     title="Missed Bus",
-                    message="You did not board the bus and missed your ride.",
+                    message="You missed your ride.",
                     data={"trip_id": trip.id},
                 )
 
@@ -575,7 +592,7 @@ async def stop_action(
                 await notification_service.notify_user(
                     user_id=booking.passenger_user_id,
                     title="Missed Drop",
-                    message="Bus passed your drop stop!",
+                    message="Bus passed your stop!",
                     data={"trip_id": trip.id},
                 )
 
@@ -586,7 +603,6 @@ async def stop_action(
         "time": to_ist(current_time),
         "distance_from_stop_meters": int(distance)
     }
-
 # ============================================================
 # END TRIP (WITH GEO + PASSENGER VALIDATION)
 # ============================================================
