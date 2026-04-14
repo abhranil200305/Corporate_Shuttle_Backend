@@ -11,6 +11,7 @@ class NotificationDataPayload(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     message: str = Field(..., min_length=1)
     data: dict[str, Any] = Field(default_factory=dict)
+    user_ids: list[str] | None = None
 
 
 class NotificationResponse(BaseModel):
@@ -23,6 +24,7 @@ class NotificationResponse(BaseModel):
 
 class DevTriggerNotificationRequest(BaseModel):
     user_id: str = Field(..., min_length=1)
+    user_ids: list[str] | None = None
     title: str = Field(..., min_length=1, max_length=255)
     message: str = Field(..., min_length=1)
     data: dict[str, Any] = Field(default_factory=dict)

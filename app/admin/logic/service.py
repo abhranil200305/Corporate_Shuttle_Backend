@@ -278,14 +278,12 @@ class AdminService:
         trip.cancellation_reason = reason
         trip.admin_note = f"Admin Cancelled at {now}. Reason: {reason}"
 
-        # 4. Cancel all Bookings under this trip ID
-        # This performs a bulk update for efficiency
         booking_update_stmt = (
             update(schema.TripBooking)
             .where(schema.TripBooking.scheduled_trip_id == trip_id)
             .values(
-                booking_status="CANCELLED",  # Adjust to your specific Enum if needed
-                cancel_reason=f"Trip cancelled by admin: {reason}",
+                booking_status="cancelled",  # Adjust to your specific Enum if needed
+                # cancel_reason=f"Trip cancelled by admin: {reason}",
             )
         )
         await self.db.execute(booking_update_stmt)
@@ -1111,7 +1109,7 @@ class AdminService:
             "created_at": application.created_at,
             "updated_at": application.updated_at,
         }
-    
+
     def _get_payment_statuses(self, booking) -> list[schema.BookingPaymentStatus]:
         return [payment.status for payment in getattr(booking, "payments", []) or []]
 
@@ -1270,8 +1268,12 @@ class AdminService:
         )
 
         applied_adjustment_amount = Decimal("0.00")
-        for application in getattr(booking, "applied_payout_adjustment_applications", []) or []:
-            applied_adjustment_amount += self._quantize_money(application.applied_amount)
+        for application in (
+            getattr(booking, "applied_payout_adjustment_applications", []) or []
+        ):
+            applied_adjustment_amount += self._quantize_money(
+                application.applied_amount
+            )
 
         applied_adjustment_amount = self._quantize_money(applied_adjustment_amount)
         net_payout_amount = self._quantize_money(
@@ -1290,7 +1292,9 @@ class AdminService:
             "driver_user_id": scheduled_trip.driver_user_id if scheduled_trip else None,
             "driver_name": driver_profile.full_name if driver_profile else None,
             "passenger_user_id": booking.passenger_user_id,
-            "passenger_name": passenger_profile.full_name if passenger_profile else None,
+            "passenger_name": passenger_profile.full_name
+            if passenger_profile
+            else None,
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
@@ -2294,9 +2298,9 @@ class AdminService:
                 joinedload(schema.TripBooking.originated_payout_adjustments).joinedload(
                     schema.PayoutAdjustment.applications
                 ),
-                joinedload(schema.TripBooking.applied_payout_adjustment_applications).joinedload(
-                    schema.PayoutAdjustmentApplication.adjustment
-                ),
+                joinedload(
+                    schema.TripBooking.applied_payout_adjustment_applications
+                ).joinedload(schema.PayoutAdjustmentApplication.adjustment),
                 joinedload(schema.TripBooking.passenger).joinedload(
                     schema.User.passenger_profile
                 ),
@@ -2315,7 +2319,9 @@ class AdminService:
             "message": "Cancelled booking refund reconciliation completed.",
             "outcome": outcome,
             "booking": self._serialize_payout_booking(refreshed_booking),
-            "transfer": None if refreshed_booking.transfer is None else self._serialize_booking_transfer(refreshed_booking.transfer),
+            "transfer": None
+            if refreshed_booking.transfer is None
+            else self._serialize_booking_transfer(refreshed_booking.transfer),
             "payments": [
                 {
                     "id": payment.id,
@@ -2361,7 +2367,7 @@ class AdminService:
 
             if payout is None or not payout.is_payout_eligible:
                 drivers_not_eligible_count += 1
-            
+
         return {
             "commission_percent": settings.commission_percent
             if settings

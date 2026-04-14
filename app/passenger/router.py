@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, File, Form, UploadFile
+from fastapi import APIRouter, Depends, Query, File, Form, UploadFile, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user
 from app.db.database import get_async_session
 from app.db.schema import BookingStatus, User
+from app.notifications.hub import WSHub
 from app.passenger.schemas import (
     BookingCreateResponse,
     BookingListResponse,
@@ -40,11 +41,17 @@ from app.passenger.service import PassengerService
 router = APIRouter(prefix="/passenger", tags=["passenger"])
 
 
+def get_ws_hub(request: Request) -> WSHub:
+    return request.app.state.ws_hub
+
 async def get_passenger_service(
+    request: Request,
     db: AsyncSession = Depends(get_async_session),
 ) -> PassengerService:
-    return PassengerService(db)
-
+    return PassengerService(
+        db,
+        ws_hub=get_ws_hub(request),
+    )
 
 @router.post("/profile", response_model=PassengerProfileMutationResponse)
 async def create_profile(

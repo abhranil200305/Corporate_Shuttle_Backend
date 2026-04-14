@@ -222,6 +222,7 @@ async def get_driver_details(
             "reg_no": d.vehicle.registration_number if d.vehicle else None,
             "reg_valid_till": d.vehicle.registration_valid_till if d.vehicle else None,
             "model": d.vehicle.vehicle_model if d.vehicle else None,
+            "vehical_name": d.vehicle.vehicle_name if d.vehicle else None,
             "capacity": d.vehicle.seat_count if d.vehicle else 0,
             "has_ac": d.vehicle.has_ac if d.vehicle else False,
             "verification": d.vehicle.verification_status if d.vehicle else "N/A",
@@ -1162,11 +1163,11 @@ async def cancel_trip_by_id(
         raise HTTPException(status_code=status_code, detail=result["error"])
 
     # 2. Notify the Driver
-    if trip.driver_id:
+    if trip.driver_user_id:
         try:
             # Call using the instance 'notif_service'
             await notif_service.notify_user(
-                user_id=trip.driver_id,
+                user_id=trip.driver_user_id,
                 title="Trip Cancelled by Admin",
                 message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
                 data={"type": "Trip_cancel_UPDATE"},

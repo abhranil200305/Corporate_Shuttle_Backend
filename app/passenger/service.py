@@ -1940,7 +1940,7 @@ class PassengerService:
                 },
             )
 
-        if trip.actual_start_at <= utcnow():
+        if trip.actual_start_at is not None and trip.actual_start_at <= utcnow():
             raise HTTPException(
                 status_code=409,
                 detail={

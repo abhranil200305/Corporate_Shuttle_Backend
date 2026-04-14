@@ -259,6 +259,7 @@ async def trigger_dev_notification(
     service = _get_notification_service(request, db)
     return await service.trigger_dev_notification(
         user_id=payload.user_id,
+        user_ids=payload.user_ids,
         title=payload.title,
         message=payload.message,
         data=payload.data,

@@ -17,6 +17,7 @@ import logging
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,6 +37,30 @@ class WSHub:
     def _is_heartbeat_payload(payload: dict[str, Any]) -> bool:
         payload_type = str(payload.get("type") or "").strip().lower()
         return payload_type in {"ping", "pong"}
+
+    @staticmethod
+    def _normalize_target_user_ids(
+        user_id: str,
+        user_ids: list[str] | None = None,
+    ) -> list[str]:
+        primary_user_id = str(user_id or "").strip()
+        if not primary_user_id:
+            raise RuntimeError("Primary user_id cannot be empty.")
+
+        target_user_ids: list[str] = []
+        seen_user_ids: set[str] = set()
+
+        for raw_user_id in [primary_user_id, *(user_ids or [])]:
+            cleaned_user_id = str(raw_user_id or "").strip()
+            if not cleaned_user_id:
+                continue
+            if cleaned_user_id in seen_user_ids:
+                continue
+
+            seen_user_ids.add(cleaned_user_id)
+            target_user_ids.append(cleaned_user_id)
+
+        return target_user_ids
 
     async def register(self, user_id: str, websocket: WebSocket) -> str:
         connection_id = uuid4().hex
@@ -96,9 +121,7 @@ class WSHub:
     ) -> bool:
         connection = await self._get_connection(user_id, connection_id)
         if connection is None:
-            raise RuntimeError(
-                f"WS connection not found for user_id={user_id} connection_id={connection_id}"
-            )
+            return False
 
         safe_payload = jsonable_encoder(payload)
         is_heartbeat = self._is_heartbeat_payload(safe_payload)
@@ -134,30 +157,68 @@ class WSHub:
             {"type": "ping"},
         )
 
-    async def notify_user(self, user_id: str, payload: dict[str, Any]) -> None:
-        async with self._lock:
-            connection_ids = list(self._connections.get(user_id, {}).keys())
+    async def notify_user(
+        self,
+        user_id: str,
+        payload: dict[str, Any],
+        user_ids: list[str] | None = None,
+    ) -> None:
+        target_user_ids = self._normalize_target_user_ids(user_id, user_ids)
 
         logger.info(
-            "ws_notification_emit user_id=%s connection_count=%s notification_id=%s title=%r message=%r payload=%s",
-            user_id,
-            len(connection_ids),
+            "ws_notification_emit_multi target_user_count=%s notification_id=%s title=%r message=%r payload=%s",
+            len(target_user_ids),
             payload.get("id"),
             payload.get("title"),
             payload.get("message"),
             payload,
         )
 
-        if not connection_ids:
-            logger.warning(
-                "ws_notification_emit_no_connections user_id=%s notification_id=%s",
-                user_id,
-                payload.get("id"),
-            )
-            return
+        for target_user_id in target_user_ids:
+            async with self._lock:
+                connection_ids = list(self._connections.get(target_user_id, {}).keys())
 
-        for connection_id in connection_ids:
-            await self.send_to_connection(user_id, connection_id, payload)
+            logger.info(
+                "ws_notification_emit user_id=%s connection_count=%s notification_id=%s title=%r message=%r payload=%s",
+                target_user_id,
+                len(connection_ids),
+                payload.get("id"),
+                payload.get("title"),
+                payload.get("message"),
+                payload,
+            )
+
+            if not connection_ids:
+                logger.warning(
+                    "ws_notification_emit_no_connections user_id=%s notification_id=%s",
+                    target_user_id,
+                    payload.get("id"),
+                )
+                continue
+
+            failed_connection_ids: list[str] = []
+
+            for connection_id in connection_ids:
+                try:
+                    sent = await self.send_to_connection(
+                        target_user_id,
+                        connection_id,
+                        payload,
+                    )
+                    if not sent:
+                        failed_connection_ids.append(connection_id)
+                except Exception as exc:
+                    logger.warning(
+                        "ws_notification_send_failed user_id=%s connection_id=%s notification_id=%s error=%r",
+                        target_user_id,
+                        connection_id,
+                        payload.get("id"),
+                        exc,
+                    )
+                    failed_connection_ids.append(connection_id)
+
+            for connection_id in failed_connection_ids:
+                await self.close_and_unregister(target_user_id, connection_id)
 
     async def close_and_unregister(
         self,
