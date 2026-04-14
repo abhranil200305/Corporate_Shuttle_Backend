@@ -1162,11 +1162,11 @@ async def cancel_trip_by_id(
         raise HTTPException(status_code=status_code, detail=result["error"])
 
     # 2. Notify the Driver
-    if trip.driver_id:
+    if trip.driver_user_id:
         try:
             # Call using the instance 'notif_service'
             await notif_service.notify_user(
-                user_id=trip.driver_id,
+                user_id=trip.driver_user_id,
                 title="Trip Cancelled by Admin",
                 message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
                 data={"type": "Trip_cancel_UPDATE"},
