@@ -1,4 +1,5 @@
 [tool.ruff]
+line-length = 79
 indent-width = 4
 fix = true
 unsafe-fixes = true
