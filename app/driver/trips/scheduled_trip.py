@@ -354,6 +354,8 @@ async def start_trip(
 # STOP ACTION (STRICT)
 # ============================================================
 
+from app.db.schema import ScanType   # ✅ ADD THIS IMPORT
+
 @router.post("/{trip_id}/stop-action")
 async def stop_action(
     trip_id: str,
@@ -393,15 +395,15 @@ async def stop_action(
     stop = route_stop.stop
 
     # -------------------------------
-    # GEO VALIDATION (WITH BUFFER)
+    # GEO VALIDATION
     # -------------------------------
-    stop_coords = (float(stop.lat), float(stop.lng))
-    driver_coords = (driver_lat, driver_lng)
-
-    distance = geodesic(stop_coords, driver_coords).meters
+    distance = geodesic(
+        (float(stop.lat), float(stop.lng)),
+        (driver_lat, driver_lng)
+    ).meters
 
     gps_buffer = 50
-    allowed_radius = stop.radius_meters + gps_buffer
+    allowed_radius = (stop.radius_meters or 0) + gps_buffer
 
     if distance > allowed_radius:
         raise HTTPException(
@@ -425,7 +427,7 @@ async def stop_action(
     current_time = now_utc()
 
     # -------------------------------
-    # Arrival / Departure Logic
+    # ARRIVE / DEPART
     # -------------------------------
     if mode == "arrive":
         if event.arrival_time:
@@ -453,7 +455,7 @@ async def stop_action(
     await session.commit()
 
     # -------------------------------
-    # Notifications setup
+    # Notification setup
     # -------------------------------
     notification_service = NotificationService(
         db=session,
@@ -499,7 +501,7 @@ async def stop_action(
             continue
 
         # -------------------------------
-        # ARRIVAL → Notify passenger
+        # ARRIVAL → Boarding alert
         # -------------------------------
         if mode == "arrive" and str(booking.pickup_stop_id) == str(stop_id):
             await notification_service.notify_user(
@@ -521,7 +523,7 @@ async def stop_action(
             )
 
         # =========================================================
-        # 🔥 MISSED BOARDING (FIXED CORRECTLY)
+        # 🔥 MISSED BOARDING (FINAL FIX)
         # =========================================================
         if (
             mode == "depart"
@@ -531,7 +533,7 @@ async def stop_action(
             scan_result = await session.execute(
                 select(TripScanEvent).where(
                     TripScanEvent.booking_id == booking.id,
-                    TripScanEvent.scan_type == "BOARD"
+                    TripScanEvent.scan_type == ScanType.BOARD   # ✅ FIXED
                 )
             )
             scan_event = scan_result.scalar_one_or_none()
@@ -552,12 +554,8 @@ async def stop_action(
         if (
             mode == "depart"
             and booking.booking_status == BookingStatus.BOARDED
-            and str(booking.dropoff_stop_id) != str(stop_id)
         ):
-            drop_rs = route_stop_map.get(str(booking.dropoff_stop_id))
-            current_rs = route_stop_map.get(str(stop_id))
-
-            if drop_rs and current_rs and drop_rs.sequence_no < current_rs.sequence_no:
+            if drop_rs.sequence_no < current_rs.sequence_no:
                 await notification_service.notify_user(
                     user_id=booking.passenger_user_id,
                     title="Missed Drop",
