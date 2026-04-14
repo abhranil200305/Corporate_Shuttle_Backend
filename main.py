@@ -40,6 +40,8 @@ from app.notifications import router as notifications_router
 from app.notifications.hub import WSHub
 from app.driver.trips.route_stops import router as trip_stops_router
 from app.driver.trips.emergencytrip_status import router as emergency_status_router
+from app.driver.scan_events.otp import router as otp_router
+from app.driver.trips.near_stop import router as driver_trip_router
 
 import logging
 
@@ -182,6 +184,9 @@ app.include_router(driver_scan_router)
 app.include_router(driver_stats_router)
 app.include_router(driver_ratings_router)
 app.include_router(trip_stops_router)
+app.include_router(otp_router)
+app.include_router(driver_trip_router)
+
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",
