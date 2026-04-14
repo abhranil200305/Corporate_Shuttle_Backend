@@ -24,6 +24,8 @@ from app.admin.structs.dto import (
     DriverLinkedAccountUpdate,
     DriverPayoutDetailsUpsert,
     DriverPayoutEligibilityUpdate,
+    PayoutAdjustmentCreateRequest,
+    PayoutAdjustmentDecisionRequest,
     PayoutSettingsUpdate,
     RouteCreate,
     RouteFareCreate,
@@ -174,7 +176,7 @@ async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session))
 
 
 # -----------------------------
-# Admin: Specific Driver Details
+# Admin: Specific Driver Details Using User_id
 # -----------------------------
 @router.get("/driver/{user_id}")
 async def get_driver_details(
@@ -254,6 +256,9 @@ async def get_driver_details(
     }
 
 
+# -----------------------------
+# Admin: Specific Vehical Details Using User_id
+# -----------------------------
 @router.get("/driver/vehicle/{user_id}")
 async def get_driver_details_vechicals(
     user_id: str, db: AsyncSession = Depends(get_async_session)
@@ -288,7 +293,7 @@ async def get_driver_details_vechicals(
 
 
 # -----------------------------
-# Admin: Specific Passenger Details
+# Admin: Specific Passenger Details Using User_id
 # -----------------------------
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
@@ -338,6 +343,9 @@ async def get_passenger_details(
     }
 
 
+# -----------------------------
+# Admin: Specific Vehicals Details Using Vehicle_id
+# -----------------------------
 @router.get("/vehicle/details/{vehicle_id}")
 async def get_vehicle_data(
     vehicle_id: str, db: AsyncSession = Depends(get_async_session)
@@ -359,7 +367,11 @@ async def get_vehicle_data(
     }
 
 
-# check the users who has been inactive from last 3 months
+# -----------------------------
+# Admin: Check the users who has been inactive from last 3 months
+# -----------------------------
+
+
 @router.get("/reports/inactive-users")
 async def get_inactive_users(
     months: int = 3, db: AsyncSession = Depends(get_async_session)
@@ -386,11 +398,12 @@ async def get_inactive_users(
     ]
 
 
-# active,inactive for the driver and passenger
+# -----------------------------
+# Admin: Active,inactive for the driver and passenger Using User_id
+# -----------------------------
 @router.post("/driver/activate/{user_id}")
 async def activate_driver(user_id: str, db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
-    # Optional: Check if driver exists first
     driver = await service.fetch_driver_by_id(user_id)
     if not driver:
         return {"error": "Driver not found"}, 404
@@ -413,53 +426,9 @@ async def deactivate_driver(
     return {"message": f"Driver {user_id} has been deactivated successfully"}
 
 
-# ----------------- driver profiles verification ---------------------------
-# @router.post("/driver/verify/{user_id}")
-# async def verify_driver(
-#     user_id: str,
-#     data: VerificationUpdate,
-#     request: Request,
-#     db: AsyncSession = Depends(get_async_session),
-# ):
-#     hub = get_ws_hub(request)
-#     service = AdminService(db, ws_hub=hub)
-#     notif_service = NotificationService(db, ws_hub=hub)
-#     # 1. Check if the driver profile exists
-#     driver = await service.fetch_driver_by_id(user_id)
-#     if not driver or not driver.driver_profile:
-#         return {"error": "Driver profile not found"}, 404
-
-#     # 2. Update the status
-#     await service.update_driver_verification(
-#         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
-#     )
-
-
-#     # --- ADD NOTIFICATION HERE ---
-#     title = (
-#         "Profile Verified!" if data.status == "verified" else "Profile Action Required"
-#     )
-#     message = (
-#         "Your profile has been verified. You can now accept rides."
-#         if data.status == "verified"
-#         else f"Your profile was not approved. Reason: {data.rejection_reason}"
-#     )
-#     try:
-#         await NotificationService.notify_user(
-#         user_id=user_id,
-#         title=title,
-#         message=message,
-#         data={"type": "verification_update", "status": data.status},
-#     )
-#     except Exception as e: # Correct Python exception syntax
-#         print(f"Notification failed: {e}")
-#     await db.commit()
-#     return {
-#         # "message": f"Driver verification status updated to {data.status}",
-#         "message": f"Driver verification status updated to {data.status}",
-#         "user_id": user_id,
-#         # "user_id": user_id,
-#     }
+# -----------------------------
+# Admin:  driver profiles verification
+# -----------------------------
 @router.post("/driver/verify/{user_id}")
 async def verify_driver(
     user_id: str,
@@ -505,46 +474,9 @@ async def verify_driver(
     }
 
 
-# ----------------- driver vehical verification ---------------------------
-# @router.post("/vehicle/verify/{user_id}")
-# async def verify_vehicle(
-#     user_id: str,
-#     data: VehicleVerificationUpdate,
-#     request: Request,
-#     db: AsyncSession = Depends(get_async_session),
-# ):
-#     hub = get_ws_hub(request)
-#     service = AdminService(db, ws_hub=hub)
-
-#     # 1. Check if the vehicle exists for this user
-#     driver = await service.fetch_driver_by_id(user_id)  # Reuse your fetch logic
-#     if not driver or not driver.vehicle:
-#         return {"error": "Vehicle record not found for this user"}, 404
-
-#     # 2. Update the vehicle status
-#     await service.update_vehicle_verification(
-#         user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
-#     )
-#     # --- ADD NOTIFICATION HERE ---
-#     status_msg = "approved" if data.status == "verified" else "rejected"
-#     try:
-#         await NotificationService.notify_user(
-#         user_id=user_id,
-#         title="Vehicle Verification Update",
-#         message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
-#         data={"type": "vehicle_update", "status": data.status},
-#     )
-#     except Exception as e:
-#         print(f"Notification failed: {e}")
-
-#     await db.commit()
-#     return {
-#         "message": f"Vehicle verification status updated to {data.status}",
-#         "user_id": user_id,
-#         "registration_number": driver.vehicle.registration_number,
-#     }
-
-
+# -----------------------------
+# Admin:  driver vehical verification
+# -----------------------------
 @router.post("/vehicle/verify/{user_id}")
 async def verify_vehicle(
     user_id: str,
@@ -595,6 +527,9 @@ async def verify_vehicle(
     }
 
 
+# -----------------------------
+# Admin:  Vechicals Physicals Inspections Using Vehicle Id
+# -----------------------------
 @router.post("/vehicle/inspect/{vehicle_id}")
 async def resolve_vehicle_inspection(
     vehicle_id: str,
@@ -624,7 +559,9 @@ async def resolve_vehicle_inspection(
     }
 
 
-# app/admin/endpoints/router.py
+# -----------------------------
+# Admin:  Check Which Drivers Data has been Verified by Admin
+# -----------------------------
 
 
 @router.get("/drivers/verified_data")
@@ -664,6 +601,9 @@ async def get_fully_verified_fleet(db: AsyncSession = Depends(get_async_session)
 
 
 # ------------------- add stops and routes -----------------------------
+# -----------------------------
+# Admin:  Upload stops data using JSONL File by admin
+# -----------------------------
 
 
 @router.post("/stops/bulk-upload")
@@ -695,6 +635,9 @@ async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
     ]
 
 
+# -----------------------------
+# Admin:  Upload Single stops at a time
+# -----------------------------
 @router.post("/stops/add-single")
 async def add_single_stop(
     data: StopCreate, db: AsyncSession = Depends(get_async_session)
@@ -730,6 +673,9 @@ async def add_single_stop(
     }
 
 
+# -----------------------------
+# Admin: Delete the Stops Using Stop_ID
+# -----------------------------
 @router.delete("/stops/{stop_id}")
 async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session)):
     # 1. Search for the stop
@@ -762,173 +708,10 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
     }
 
 
-# @router.post("/routes/create")
-# async def create_route(
-#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
-# ):
-#     # 1. Create the Route Entry
-#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
-#     db.add(new_route)
-#     await db.flush()
-
-#     # 2. Map the sequence in RouteStop
-#     route_stops = []
-#     for index, stop_data in enumerate(data.stops):
-#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
-#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
-
-#         rs = schema.RouteStop(
-#             route_id=new_route.id,
-#             stop_id=stop_data.stop_id,
-#             sequence_no=index + 1,
-#             boarding_allowed=stop_data.boarding_allowed,
-#             deboarding_allowed=stop_data.deboarding_allowed,
-#             assume_time_diff_minutes=time_diff,
-#         )
-#         route_stops.append(rs)
-
-#     db.add_all(route_stops)
-#     await db.commit()
-
-#     return {
-#         "status": "success",
-#         "route_id": new_route.id,
-#         "stops_count": len(data.stops),
-#     }
-
-
-# @router.post("/routes/create")
-# async def create_route(
-#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
-# ):
-#     # 1. PRE-CHECK: Look for duplicate Name or Code
-#     # We use 'or_' because both must be unique
-#     from sqlalchemy import or_
-
-#     stmt = select(schema.Route).where(
-#         or_(
-#             schema.Route.name == data.name.strip(),
-#             schema.Route.code == data.code.strip(),
-#         )
-#     )
-#     result = await db.execute(stmt)
-#     existing_route = result.scalar_one_or_none()
-
-#     if existing_route:
-#         # Determine which one caused the conflict for a better error message
-#         conflict_field = "Name" if existing_route.name == data.name.strip() else "Code"
-#         raise HTTPException(
-#             status_code=400,
-#             detail={
-#                 "error": "duplicate_route",
-#                 "message": f"A route with this {conflict_field} already exists. Please use a unique value.",
-#             },
-#         )
-
-#     # 2. Create the Route Entry
-#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
-#     db.add(new_route)
-
-#     # We flush here to get the new_route.id for the RouteStops
-#     await db.flush()
-
-#     # 3. Map the sequence in RouteStop
-#     route_stops = []
-#     for index, stop_data in enumerate(data.stops):
-#         # Logic: If it's the first stop, force 0. Otherwise, use provided time.
-#         time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
-
-#         rs = schema.RouteStop(
-#             route_id=new_route.id,
-#             stop_id=stop_data.stop_id,
-#             sequence_no=index + 1,
-#             boarding_allowed=stop_data.boarding_allowed,
-#             deboarding_allowed=stop_data.deboarding_allowed,
-#             assume_time_diff_minutes=time_diff,
-#         )
-#         route_stops.append(rs)
-
-#     db.add_all(route_stops)
-
-#     try:
-#         await db.commit()
-#     except Exception:
-#         await db.rollback()
-#         raise HTTPException(status_code=500, detail="Failed to save route stops.")
-
-#     return {
-#         "status": "success",
-#         "route_id": new_route.id,
-#         "stops_count": len(data.stops),
-#     }
-
-
-# @router.post("/routes/create")
-# async def create_route(
-#     data: RouteCreate, db: AsyncSession = Depends(get_async_session)
-# ):
-#     # 1. Duplicate Check (Name/Code)
-#     from sqlalchemy import or_
-
-#     stmt = select(schema.Route).where(
-#         or_(
-#             schema.Route.name == data.name.strip(),
-#             schema.Route.code == data.code.strip(),
-#         )
-#     )
-#     result = await db.execute(stmt)
-#     if result.scalar_one_or_none():
-#         raise HTTPException(
-#             status_code=400, detail="Route Name or Code already exists."
-#         )
-
-#     # 2. Basic Validation: A route needs at least 2 stops
-#     if len(data.stops) < 2:
-#         raise HTTPException(
-#             status_code=400, detail="A route must have at least 2 stops."
-#         )
-
-#     # 3. Create the Route Entry
-#     new_route = schema.Route(name=data.name.strip(), code=data.code.strip())
-#     db.add(new_route)
-#     await db.flush()  # Get the new_route.id
-
-#     # 4. Map the Bulk List to the Sequence
-#     route_stops = []
-
-#     # Python's enumerate gives us the order perfectly
-#     for index, stop_data in enumerate(data.stops):
-#         # The first stop (index 0) is the START, so time_diff is always 0
-#         actual_time_diff = 0 if index == 0 else stop_data.assume_time_diff_minutes
-
-#         rs = schema.RouteStop(
-#             route_id=new_route.id,
-#             stop_id=stop_data.stop_id,
-#             sequence_no=index + 1,  # 1, 2, 3...
-#             boarding_allowed=stop_data.boarding_allowed,
-#             deboarding_allowed=stop_data.deboarding_allowed,
-#             assume_time_diff_minutes=actual_time_diff,
-#         )
-#         route_stops.append(rs)
-
-#     db.add_all(route_stops)
-
-#     try:
-#         await db.commit()
-#     except Exception:
-#         await db.rollback()
-#         raise HTTPException(
-#             status_code=500, detail="Database error while saving stops."
-#         )
-
-#     return {
-#         "status": "success",
-#         "route_id": new_route.id,
-#         "total_stops_added": len(route_stops),
-#     }
-
-
 # ----------------- specific routes create -------------------------
+# -----------------------------
+# Admin: Create a new Routes
+# -----------------------------
 
 
 @router.post("/routes/create")
@@ -969,65 +752,9 @@ async def create_route_identity(
         )
 
 
-# @router.post("/routes/{route_id}/stops")
-# async def add_bulk_stops(
-#     route_id: str,
-#     data: BulkStopAddRequest,
-#     db: AsyncSession = Depends(get_async_session),
-# ) -> dict:
-#     # 1. Check if the route exists
-#     route = await db.get(schema.Route, route_id)
-#     if not route:
-#         raise HTTPException(status_code=404, detail="Route ID not found.")
-
-#     # 2. Find where the current sequence ends
-#     seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
-#         schema.RouteStop.route_id == route_id
-#     )
-#     result = await db.execute(seq_stmt)
-#     last_seq = result.scalar() or 0
-
-#     # 3. Create stop entries in order
-#     new_entries = []
-#     for i, stop_info in enumerate(data.stops):
-#         current_seq = last_seq + i + 1
-
-#         # If this is the absolute beginning of a route, force time to 0
-#         time_gap = 0 if current_seq == 1 else stop_info.assume_time_diff_minutes
-
-#         rs = schema.RouteStop(
-#             route_id=route_id,
-#             stop_id=stop_info.stop_id,
-#             sequence_no=current_seq,
-#             boarding_allowed=stop_info.boarding_allowed,
-#             deboarding_allowed=stop_info.deboarding_allowed,
-#             assume_time_diff_minutes=time_gap,
-#         )
-#         new_entries.append(rs)
-
-#     db.add_all(new_entries)
-
-#     try:
-#         await db.commit()
-#     except Exception as e:
-#         await db.rollback()
-#         raise HTTPException(
-#             status_code=500,
-#             detail={
-#                 "error": "db_error",
-#                 "message": "Failed to save stops.",
-#                 "debug": str(e),
-#             },
-#         )
-
-#     return {
-#         "status": "success",
-#         "route_id": route_id,
-#         "added_count": len(new_entries),
-#         "total_sequence": last_seq + len(new_entries),
-#     }
-
-
+# -----------------------------
+# Admin: Add Stops into routes using Route_ID
+# -----------------------------
 @router.post("/routes/{route_id}/stops")
 async def add_bulk_stops(
     route_id: str,
@@ -1119,6 +846,9 @@ async def add_bulk_stops(
     }
 
 
+# -----------------------------
+# Admin: Check all Existings Routes
+# -----------------------------
 @router.get("/routes/all")
 async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
     # We use joinedload to count stops without extra queries
@@ -1144,6 +874,9 @@ async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
     ]
 
 
+# -----------------------------
+# Admin: Check Routes Data using routes_id
+# -----------------------------
 @router.get("/routes/{route_id}")
 async def get_route_details(
     route_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1186,6 +919,9 @@ async def get_route_details(
     }
 
 
+# -----------------------------
+# Admin: Change the routes into Active to Deactive and Vice Versa
+# -----------------------------
 @router.patch("/routes/{route_id}/toggle")
 async def toggle_route(
     route_id: str,
@@ -1207,7 +943,9 @@ async def toggle_route(
     }
 
 
-# ------------------------  routs fares routes --------------------------
+# -----------------------------
+# Admin: Set Fares of each a specific routes
+# -----------------------------
 @router.post("/routes/fares/bulk-set")
 async def set_route_fares(
     data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
@@ -1254,6 +992,9 @@ async def set_route_fares(
     }
 
 
+# -----------------------------
+# Admin: Check Fares of a Specific routes using routes_id
+# -----------------------------
 @router.get("/routes/{route_id}/fares")
 async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_session)):
     # Fetch fares with stop names for the Admin to read easily
@@ -1282,6 +1023,9 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
     ]
 
 
+# -----------------------------
+# Admin: Check all details of a Specific Routes using route_id
+# -----------------------------
 @router.get("/routes/{route_id}/full-report")
 async def get_route_and_trip_details(
     route_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1350,7 +1094,9 @@ async def get_route_and_trip_details(
     }
 
 
-# ----------------------  trips routes -------------------
+# -----------------------------
+# Admin: Get all trips using all details
+# -----------------------------
 
 
 @router.get("/trips/monitor")
@@ -1391,6 +1137,9 @@ async def monitor_all_trips(
     ]
 
 
+# -----------------------------
+# Admin: Cancel a Specific Trip Using Trip_id
+# -----------------------------
 @router.patch("/trips/{trip_id}/cancel")
 async def cancel_trip_by_id(
     trip_id: str,
@@ -1448,6 +1197,9 @@ async def cancel_trip_by_id(
     return {"status": "success", "message": "Trip cancelled and users notified."}
 
 
+# -----------------------------
+# Admin: Cancel a Specific Trip Using Trip_id any time before trip ended
+# -----------------------------
 @router.post("/trips/{trip_id}/premature-end")
 async def premature_end_trip(
     trip_id: str,
@@ -1457,108 +1209,6 @@ async def premature_end_trip(
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
     return await service.handle_premature_trip_end(db, trip_id)
-
-
-# async def cancel_trip_by_id(
-#     trip_id: str,
-#     request: Request,
-#     reason: str = Body(..., embed=True),
-#     db: AsyncSession = Depends(get_async_session),  # 1. ADD THIS
-# ):
-#     hub = get_ws_hub(request)  # 2. GET HUB
-#     service = AdminService(db, ws_hub=hub)
-#     trip = await service.get_trip_by_id(trip_id)
-#     if not trip:
-#         raise HTTPException(status_code=404, detail="Trip not found")
-
-#     result = await service.cancel_trip(trip_id, reason)
-
-#     if not result["success"]:
-#         # If it's a timing error, use 400. If it's a missing trip, use 404.
-#         status_code = 404 if "not found" in result["error"] else 400
-#         raise HTTPException(status_code=status_code, detail=result["error"])
-#     if trip.driver_id:
-#         try:
-#             await NotificationService.notify_user(
-#             user_id=trip.driver_id,
-#             title="Trip Cancelled by Admin",
-#             message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-#             data={"type": "Trip_cancel_UPDATE"},
-#         )
-#         except Exception as e:
-#            print(f"Notification failed: {e}")
-
-#     for booking in trip.bookings:
-#         try:
-#             await NotificationService.notify_user(
-#             user_id=booking.passenger_id,
-#             title="Urgent: Trip Cancelled",
-#             message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-#             data={"type": "Trip_cancel_UPDATE"},
-#         )
-#         except Exception as e: # Correct Python exception syntax
-#            print(f"Notification failed: {e}")
-#     await db.commit()
-#     return {"status": "success", "message": "Trip cancelled and users notified."}
-
-
-# @router.patch("/trips/{trip_id}/cancel")
-# async def cancel_trip_by_id(
-#     trip_id: str,
-#     reason: str = Body(..., embed=True),
-#     db: AsyncSession = Depends(get_async_session),
-# ):
-#     service = AdminService(db)
-#     success = await service.cancel_trip(trip_id, reason)
-
-#     if not success:
-#         raise HTTPException(status_code=404, detail="Trip not found in database.")
-
-#     return {"status": "success", "message": f"Trip {trip_id} has been cancelled."}
-
-
-# @router.get("/trips/{trip_id}")
-# async def get_specific_trip_status(
-#     trip_id: str, db: AsyncSession = Depends(get_async_session)
-# ):
-#     service = AdminService(db)
-#     trip = await service.get_trip_by_id(trip_id)
-
-#     if not trip:
-#         raise HTTPException(status_code=404, detail="Trip not found")
-
-#     return {
-#         "trip_id": trip.id,
-#         "status": trip.status,  # ACTIVE, COMPLETED, or CANCELLED
-#         "route": {"name": trip.route.name, "code": trip.route.code},
-#         "assignment": {
-#             # "driver": trip.driver.full_name,
-#             "driver": trip.driver.driver_profile.full_name
-#             if trip.driver and trip.driver.driver_profile
-#             else "No Driver Assigned",
-#             "vehicle": trip.vehicle.registration_number,
-#         },
-#         "timing": {
-#             "planned_start": trip.planned_start_at,
-#             "actual_start": trip.actual_start_at,
-#             "planned_end": trip.planned_end_at,
-#             "actual_end": trip.actual_end_at,
-#         },
-#         "occupancy": {
-#     "total_bookings": len(trip.bookings),
-#     "passengers": [
-#         {
-#             # Access passenger_profile instead of passenger directly
-#             "name": b.passenger.passenger_profile.full_name
-#             if b.passenger and b.passenger.passenger_profile
-#             else "Unknown Passenger",
-#             "status": b.booking_status
-#         }
-#         for b in trip.bookings
-#     ],
-# },
-#         "admin_note": trip.admin_note,
-#     }
 
 
 @router.get("/trips/{trip_id}")
@@ -1609,7 +1259,9 @@ async def get_specific_trip_status(
     }
 
 
-# ----------------------   check all bookings ------------------------------
+# -----------------------------
+# Admin:Check All bookings Using Trip ID
+# -----------------------------
 @router.get("/trips/{trip_id}/bookings")
 async def get_all_bookings_for_trip(
     trip_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1664,6 +1316,9 @@ async def batch_process_driver_payouts(
 
 
 # ---------------- drivers ratings -------------------------
+# -----------------------------
+# Admin: Get all Drivers Ratings
+# -----------------------------
 @router.get("/driver-ratings")
 async def view_driver_ratings(db: AsyncSession = Depends(get_async_session)):
     service = AdminService(db)
@@ -1789,35 +1444,6 @@ async def handle_ticket(
     await db.commit()
 
     return {"message": f"Ticket {action}ed successfully"}
-
-
-# async def handle_ticket(
-#     ticket_id: str,
-#     action: str,  # 'resolve' or 'reject'
-#     request: Request,
-#     note: str = Body(..., embed=True),
-#     current_admin: schema.User = Depends(get_current_admin),
-#     db: AsyncSession = Depends(get_async_session),
-# ):
-#     hub = get_ws_hub(request)
-#     service = AdminService(db, ws_hub=hub)
-#     ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
-#     if not ticket:
-#         raise HTTPException(status_code=404, detail="Ticket not found")
-
-#     status_msg = "resolved" if action == "resolve" else "rejected"
-#     try:
-#         await NotificationService.notify_user(
-#          user_id=ticket.user_id,
-#          title=f"Support Ticket {status_msg.capitalize()}",
-#          message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-#          data={"type":"TICKET_UPDATE"},
-#      )
-#     except Exception as e: # Correct Python exception syntax
-#         print(f"Notification failed: {e}")
-
-#     await db.commit()
-#     return {"message": f"Ticket {action} successfully"}
 
 
 # app/users/endpoints/router.py
@@ -2397,8 +2023,94 @@ async def get_rating_summary(
     return {"average_platform_rating": round(float(avg_rating), 2)}
 
 
-# ----------------------    ALL TRANSACTIONS --------------------------------
+# -----------------------------
+# Admin: Get all Transactions Details
+# -----------------------------
+
+
 @router.get("/transactions/all")
+# async def get_all_transactions(
+#     skip: int = 0,
+#     limit: int = 50,
+#     status: schema.BookingStatus = None,
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     service = AdminService(db)
+#     bookings = await service.fetch_detailed_transactions(skip, limit, status)
+
+#     report = []
+#     for b in bookings:
+#         # 1. Payout Consistency Calculation
+#         audit_payout = b.fare_amount - b.commission_amount
+#         is_payout_correct = audit_payout == b.driver_payout_amount
+#         trip_status = b.scheduled_trip.status if b.scheduled_trip else "unknown"
+
+#         report.append(
+#             {
+#                 "booking_id": b.id,
+#                 "timestamp": b.created_at,
+#                 "status": b.booking_status,
+#                 "trip_overall_status": trip_status,
+#                 "passenger": {
+#                     "name": b.passenger.passenger_profile.full_name
+#                     if (b.passenger and b.passenger.passenger_profile)
+#                     else "N/A",
+#                     "email": b.passenger.email if b.passenger else "N/A",
+#                 },
+#                 "trip_details": {
+#                     "route_name": b.route.name if b.route else "N/A",
+#                     "driver_name": b.scheduled_trip.driver.driver_profile.full_name
+#                     if (b.scheduled_trip and b.scheduled_trip.driver)
+#                     else "Unknown",
+#                 },
+#                 "financials": {
+#                     "total_fare": float(b.fare_amount),
+#                     "admin_earned": float(b.commission_amount),
+#                     "driver_payout": float(b.driver_payout_amount),
+#                     "audit_passed": is_payout_correct,
+#                 },
+#                 # NEW: Driver Transfer Data (from BookingTransfer table)
+#                 "transfer_details": {
+#                     "transfer_id": b.transfer.razorpay_transfer_id
+#                     if b.transfer
+#                     else None,
+#                     "status": b.transfer.status if b.transfer else "not_initiated",
+#                     "processed_at": b.transfer.processed_at if b.transfer else None,
+#                     "failure_reason": b.transfer.failure_reason if b.transfer else None,
+#                 },
+#                 # NEW: Adjustments (from PayoutAdjustment table)
+#                 "payout_adjustments": [
+#                     {
+#                         "type": adj.adjustment_type,
+#                         "amount": float(adj.amount),
+#                         "reason": adj.reason_text,
+#                         "status": adj.decision_status,
+#                     }
+#                     for adj in b.originated_payout_adjustments
+#                 ],
+#                 "refund_info": {
+#                     "is_refunded": b.booking_status in ["cancelled", "refunded"],
+#                     "cancelled_at": b.cancelled_at,
+#                     "reason": "Trip Ended Prematurely by Admin"
+#                     if trip_status == "premature_end"
+#                     else "Standard Cancellation",
+#                 }
+#                 if b.booking_status in ["cancelled", "refunded"]
+#                 else None,
+#                 "payment_gateway": [
+#                     {
+#                         "razorpay_order_id": p.razorpay_order_id,
+#                         "razorpay_payment_id": p.razorpay_payment_id,
+#                         "payment_status": p.status,
+#                     }
+#                     for p in b.payments
+#                 ],
+#             }
+#         )
+
+#     return {"total_count": len(report), "data": report}
+
+
 async def get_all_transactions(
     skip: int = 0,
     limit: int = 50,
@@ -2480,6 +2192,9 @@ async def get_all_transactions(
     return {"total_count": len(report), "data": report}
 
 
+# -----------------------------
+# Admin: Get all Most Booked Routes
+# -----------------------------
 @router.get(
     "/analytics/most-booked-routes",
     response_model=List[dict],
@@ -2509,6 +2224,9 @@ async def get_most_booked_routes(
         )
 
 
+# -----------------------------
+# Admin: Get all top Pick-up_Stops
+# -----------------------------
 @router.get(
     "/analytics/top-pickup-stops",
     response_model=List[dict],
@@ -2642,6 +2360,7 @@ async def get_payout_booking_detail(
 ):
     service = AdminService(db)
     return await service.get_payout_booking_detail(booking_id)
+
 
 @router.post("/payouts/bookings/{booking_id}/adjustments")
 async def create_payout_adjustment(
@@ -2821,99 +2540,3 @@ async def get_driver_linked_account_provider_detail(
 ):
     service = AdminService(db)
     return await service.get_driver_linked_account_provider_detail(driver_user_id)
-
-
-# ----------------- transactions details ---------------------
-# @router.get("/transactions/all")
-# async def get_all_transactions(
-#     skip: int = 0,
-#     limit: int = 50,
-#     status: schema.BookingStatus = None,
-#     db: AsyncSession = Depends(get_async_session),
-#     # current_admin: schema.User = Depends(get_admin_user) # Logic to verify Admin role
-# ):
-#     """
-#     Fetches every detail of a transaction:
-#     Passenger, Driver, Route, Payment IDs, and QR Scans.
-#     """
-
-#     # 1. Build the Query with deep joins
-#     stmt = (
-#         select(schema.TripBooking)
-#         .options(
-#             joinedload(schema.TripBooking.passenger).joinedload(
-#                 schema.User.passenger_profile
-#             ),
-#             joinedload(schema.TripBooking.scheduled_trip)
-#             .joinedload(schema.ScheduledTrip.driver)
-#             .joinedload(schema.User.driver_profile),
-#             joinedload(schema.TripBooking.route),
-#             joinedload(schema.TripBooking.pickup_stop),
-#             joinedload(schema.TripBooking.dropoff_stop),
-#             joinedload(schema.TripBooking.payments),  # Razorpay Order/Payment IDs
-#             joinedload(schema.TripBooking.scan_events),  # Board/Drop QR history
-#         )
-#         .order_by(schema.TripBooking.created_at.desc())
-#         .offset(skip)
-#         .limit(limit)
-#     )
-
-#     if status:
-#         stmt = stmt.where(schema.TripBooking.booking_status == status)
-
-#     result = await db.execute(stmt)
-#     bookings = result.unique().scalars().all()
-
-#     # 2. Format the response for the Admin UI
-#     report = []
-#     for b in bookings:
-#         # Calculate expected payout vs actual for audit
-#         audit_payout = b.fare_amount - b.commission_amount
-#         is_payout_correct = audit_payout == b.driver_payout_amount
-
-#         report.append(
-#             {
-#                 "booking_id": b.id,
-#                 "timestamp": b.created_at,
-#                 "status": b.booking_status,
-#                 "passenger": {
-#                     "name": b.passenger.passenger_profile.full_name
-#                     if b.passenger.passenger_profile
-#                     else "N/A",
-#                     "email": b.passenger.email,
-#                 },
-#                 "trip_details": {
-#                     "route_name": b.route.name,
-#                     "pickup": b.pickup_stop.name,
-#                     "dropoff": b.dropoff_stop.name,
-#                     "driver_name": b.scheduled_trip.driver.driver_profile.full_name
-#                     if b.scheduled_trip.driver.driver_profile
-#                     else "Unknown",
-#                 },
-#                 "financials": {
-#                     "total_fare": float(b.fare_amount),
-#                     "commission_percent": float(b.commission_percent_snapshot),
-#                     "admin_earned": float(b.commission_amount),
-#                     "driver_payout": float(b.driver_payout_amount),
-#                     "audit_passed": is_payout_correct,
-#                 },
-#                 "payment_gateway": [
-#                     {
-#                         "razorpay_order_id": p.razorpay_order_id,
-#                         "razorpay_payment_id": p.razorpay_payment_id,
-#                         "payment_status": p.status,
-#                     }
-#                     for p in b.payments
-#                 ],
-#                 "security_scans": [
-#                     {
-#                         "type": s.scan_type,
-#                         "time": s.created_at,
-#                         "at_correct_stop": s.within_radius,
-#                     }
-#                     for s in b.scan_events
-#                 ],
-#             }
-#         )
-
-#     return {"total_count": len(report), "data": report}
