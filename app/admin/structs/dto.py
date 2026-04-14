@@ -154,6 +154,9 @@ class PayoutDashboardResponse(BaseModel):
     transferred_booking_count: int
     transferred_total_amount: Decimal
 
+    withheld_booking_count: int
+    withheld_total_amount: Decimal
+
     failed_booking_count: int
     failed_total_amount: Decimal
 
