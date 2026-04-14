@@ -5,16 +5,16 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime, timedelta, timezone
-from decimal import Decimal, ROUND_HALF_UP
-from pathlib import Path
 import secrets
+from datetime import datetime, timedelta, timezone
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import and_, cast, func, or_, select, Numeric
+from sqlalchemy import Numeric, and_, cast, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -24,7 +24,6 @@ from app.db.schema import (
     BookingPaymentStatus,
     BookingRating,
     BookingStatus,
-    DriverProfile,
     PassengerProfile,
     PlatformSettings,
     Route,
@@ -39,18 +38,17 @@ from app.db.schema import (
     User,
     UserRole,
 )
-
+from app.notifications.hub import WSHub
+from app.notifications.service import NotificationService
 from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
     FarePreviewRequest,
+    LegAvailableSeatsRequest,
     PassengerProfileUpsertRequest,
     VerifyBookingPaymentRequest,
-    LegAvailableSeatsRequest
 )
 
-from app.notifications.hub import WSHub
-from app.notifications.service import NotificationService
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -1825,7 +1823,7 @@ class PassengerService:
         received_signature: str,
     ) -> None:
         secret = self._get_razorpay_key_secret()
-        message = f"{order_id}|{payment_id}".encode("utf-8")
+        message = f"{order_id}|{payment_id}".encode()
         generated_signature = hmac.new(
             secret.encode("utf-8"),
             message,

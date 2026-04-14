@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query, File, Form, UploadFile, Request
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user
@@ -9,8 +9,8 @@ from app.db.schema import BookingStatus, User
 from app.notifications.hub import WSHub
 from app.passenger.schemas import (
     BookingCreateResponse,
-    BookingListResponse,
     BookingDetailResponse,
+    BookingListResponse,
     BookingMutationResponse,
     BookingQRResponse,
     BookingRatingMutationResponse,
@@ -18,23 +18,23 @@ from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
     CurrentTripBookingListResponse,
+    CurrentTripStatusResponse,
     FarePreviewRequest,
     FarePreviewResponse,
+    LegAvailableSeatsRequest,
+    LegAvailableSeatsResponse,
     PassengerProfileMutationResponse,
     PassengerProfileResponse,
     PassengerProfileUpsertRequest,
     RouteListResponse,
     RouteResponse,
+    ScheduledTripDriverVehicleInfoResponse,
     ScheduledTripListResponse,
     ScheduledTripResponse,
-    VerifyBookingPaymentRequest,
-    ScheduledTripDriverVehicleInfoResponse,
-    LegAvailableSeatsRequest,
-    LegAvailableSeatsResponse,
-    CurrentTripStatusResponse,
     SupportTicketCreateResponse,
     SupportTicketListResponse,
     SupportTicketResponse,
+    VerifyBookingPaymentRequest,
 )
 from app.passenger.service import PassengerService
 
