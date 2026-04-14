@@ -278,14 +278,13 @@ class AdminService:
         trip.cancellation_reason = reason
         trip.admin_note = f"Admin Cancelled at {now}. Reason: {reason}"
 
-        # 4. Cancel all Bookings under this trip ID
-        # This performs a bulk update for efficiency
+
         booking_update_stmt = (
             update(schema.TripBooking)
             .where(schema.TripBooking.scheduled_trip_id == trip_id)
             .values(
                 booking_status="CANCELLED",  # Adjust to your specific Enum if needed
-                cancel_reason=f"Trip cancelled by admin: {reason}",
+                #cancel_reason=f"Trip cancelled by admin: {reason}",
             )
         )
         await self.db.execute(booking_update_stmt)
