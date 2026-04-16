@@ -24,18 +24,18 @@ from app.db.schema import (
 router = APIRouter(prefix="/driver/otp", tags=["Driver OTP"])
 
 
-# ============================================================
+# =========================
 # REQUEST BODY
-# ============================================================
+# =========================
 class OTPVerifyRequest(BaseModel):
     otp_code: str
     lat: float
     lng: float
 
 
-# ============================================================
+# =========================
 # HAVERSINE
-# ============================================================
+# =========================
 def haversine(lat1, lon1, lat2, lon2):
     lat1, lon1, lat2, lon2 = map(radians, [lat1, lon1, lat2, lon2])
     dlon = lon2 - lon1
@@ -47,9 +47,9 @@ def haversine(lat1, lon1, lat2, lon2):
     return 6371 * c * 1000
 
 
-# ============================================================
-# OTP VERIFY ENDPOINT
-# ============================================================
+# =========================
+# OTP VERIFY
+# =========================
 @router.post("/{trip_id}/verify")
 async def verify_otp_scan(
     trip_id: str,
@@ -68,64 +68,48 @@ async def verify_otp_scan(
         raise HTTPException(403, "Not your trip")
 
     # =========================================
-    # 2. FIND BOOKING BY OTP
+    # 2. FIND BOOKING USING OTP
     # =========================================
     result = await db.execute(
         select(TripBooking).where(
-            TripBooking.scheduled_trip_id == trip_id
+            TripBooking.scheduled_trip_id == trip_id,
+            TripBooking.otp == data.otp_code
         )
     )
-    bookings = result.scalars().all()
-
-    booking = None
-
-    for b in bookings:
-        # BOARD OTP
-        if (
-            b.booking_status == BookingStatus.BOOKED
-            and b.boarding_otp == data.otp_code
-        ):
-            booking = b
-            break
-
-        # DROP OTP
-        elif (
-            b.booking_status == BookingStatus.BOARDED
-            and b.drop_otp == data.otp_code
-        ):
-            booking = b
-            break
+    booking = result.scalars().first()
 
     if not booking:
         raise HTTPException(400, "Invalid OTP")
 
     # =========================================
-    # 3. DETECT TYPE
+    # 3. VALID BOOKING STATE
+    # =========================================
+    if booking.booking_status not in [
+        BookingStatus.BOOKED,
+        BookingStatus.BOARDED,
+    ]:
+        raise HTTPException(400, "Booking not valid for OTP scan")
+
+    # =========================================
+    # 4. DETECT TYPE
     # =========================================
     if booking.booking_status == BookingStatus.BOOKED:
         scan_type = ScanType.BOARD
+        stop_id = booking.pickup_stop_id
 
-    elif booking.booking_status == BookingStatus.BOARDED:
+    else:  # BOARDED
         scan_type = ScanType.DROP
-
-    else:
-        raise HTTPException(400, "Invalid booking state")
+        stop_id = booking.dropoff_stop_id
 
     # =========================================
-    # 4. STOP
+    # 5. STOP VALIDATION
     # =========================================
-    stop_id = (
-        booking.pickup_stop_id
-        if scan_type == ScanType.BOARD
-        else booking.dropoff_stop_id
-    )
-
     stop = await db.get(Stop, stop_id)
     if not stop:
         raise HTTPException(404, "Stop not found")
 
     # =========================================
-    # 5. DISTANCE CHECK
+    # 6. DISTANCE CHECK
     # =========================================
     distance = haversine(
         data.lat,
@@ -138,7 +122,7 @@ async def verify_otp_scan(
         raise HTTPException(400, "Not within stop radius")
 
     # =========================================
-    # 6. SAVE SCAN EVENT
+    # 7. SAVE SCAN EVENT
     # =========================================
     scan_event = TripScanEvent(
         scheduled_trip_id=trip_id,
@@ -155,7 +139,7 @@ async def verify_otp_scan(
     db.add(scan_event)
 
     # =========================================
-    # 7. UPDATE BOOKING
+    # 8. UPDATE BOOKING
     # =========================================
     now = datetime.now(timezone.utc)
 
@@ -164,14 +148,21 @@ async def verify_otp_scan(
         booking.boarded_at = now
         booking.boarded_near_stop_id = stop.id
 
-    elif scan_type == ScanType.DROP:
+    else:  # DROP
         booking.booking_status = BookingStatus.COMPLETED
         booking.completed_at = now
         booking.completed_near_stop_id = stop.id
 
     db.add(booking)
+
+    # =========================================
+    # 9. COMMIT
+    # =========================================
     await db.commit()
 
+    # =========================================
+    # RESPONSE
+    # =========================================
     return {
         "message": "OTP verified successfully",
         "scan_type": scan_type.value,
