@@ -844,35 +844,55 @@ class AdminService:
 		result = await self.db.execute(query)
 		return result.all()
 
+		# async def get_most_popular_pickup_stops(self):
+		#     query = (
+		#         select(
+		#           schema.Stop.id.label("stop_id"),
+		#           schema.Stop.name.label("stop_name"),
+		#           func.count(schema.TripBooking.id).label("booking_count"),
+		#     )
+		#     .join(
+		#         schema.TripBooking,
+		#         schema.Stop.id == schema.TripBooking.pickup_stop_id,
+		#     )
+		#     # Optional: Filter for only 'completed' or 'booked' to ignore failed payments
+		#     .where(schema.TripBooking.booking_status.in_([
+		#         schema.BookingStatus.BOOKED,
+		#         schema.BookingStatus.BOARDED,
+		#         schema.BookingStatus.COMPLETED
+		#     ]))
+		#     .group_by(
+		#         schema.Stop.id,
+		#         schema.Stop.name,
+		#     )
+		#     .order_by(desc("booking_count"))
+		#     .limit(10)  # Optional: only get top 10
+		# )
+
+		# result = await self.db.execute(query)
+		# return result.all()
+
 	async def get_most_popular_pickup_stops(self):
 		query = (
 			select(
-				schema.Route.id.label("route_id"),
-				schema.Route.name.label("route_name"),
 				schema.Stop.id.label("stop_id"),
 				schema.Stop.name.label("stop_name"),
 				func.count(schema.TripBooking.id).label("booking_count"),
 			)
 			.join(
-				schema.ScheduledTrip,
-				schema.Route.id == schema.ScheduledTrip.route_id,
-			)
-			.join(
 				schema.TripBooking,
-				schema.ScheduledTrip.id
-				== schema.TripBooking.scheduled_trip_id,
+				schema.Stop.id == schema.TripBooking.pickup_stop_id,
 			)
-			# We join Stop specifically on the pickup_stop_id
-			.join(
-				schema.Stop,
-				schema.TripBooking.pickup_stop_id == schema.Stop.id,
+			.where(
+				schema.TripBooking.booking_status.in_(
+					[
+						schema.BookingStatus.BOOKED,
+						schema.BookingStatus.BOARDED,
+						schema.BookingStatus.COMPLETED,
+					]
+				)
 			)
-			.group_by(
-				schema.Route.id,
-				schema.Route.name,
-				schema.Stop.id,
-				schema.Stop.name,
-			)
+			.group_by(schema.Stop.id, schema.Stop.name)
 			.order_by(desc("booking_count"))
 		)
 
