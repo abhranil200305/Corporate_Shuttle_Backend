@@ -1412,7 +1412,9 @@ async def list_tickets(
         for t in tickets
     ]
 
-
+# -----------------------------
+# Admin: Get All Support Queries
+# -----------------------------
 @router.post("/tickets/{ticket_id}/action")
 async def handle_ticket(
     ticket_id: str,
@@ -2350,7 +2352,7 @@ async def patch_driver_payout_eligibility(
 ):
     service = AdminService(db)
     return await service.update_driver_payout_eligibility(driver_user_id, payload)
-
+ 
 
 @router.get("/payouts/bookings")
 async def list_payout_bookings(
