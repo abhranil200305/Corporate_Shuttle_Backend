@@ -190,6 +190,10 @@ class EmergencyStopRequestStatus(str, enum.Enum):
     REJECTED = "rejected"
     PENDING = "pending"
 
+class VehicleOwnershipType(str, enum.Enum):
+    SELF = "self"
+    RENTED = "rented"
+
 # ============================================================
 # auth / users
 # ============================================================
@@ -577,6 +581,15 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
         enum_type(VehicleVerificationStatus, "vehicle_verification_status"),
         nullable=False,
         default=VehicleVerificationStatus.DRAFT,
+    )
+    ownership_type: Mapped[VehicleOwnershipType] = mapped_column(
+    enum_type(VehicleOwnershipType, "vehicle_ownership_type"),
+    nullable=True,
+    )
+
+    authentication_file_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
     )
     verification_requested_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),

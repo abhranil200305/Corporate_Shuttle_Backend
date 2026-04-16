@@ -17,6 +17,7 @@ from app.db.schema import (
     User,
     UserRole,
     DriverProfile,
+    VehicleOwnershipType,
     DriverVerificationStatus
 )
 from app.driver.schemas import VehicleOut
@@ -66,13 +67,37 @@ async def register_vehicle(
     color: str = Form(...),
     seat_count: int = Form(...),
     has_ac: bool = Form(False),
+
+    ownership_type: str = Form(...),  # ✅ NEW FIELD
+
     rc_file: UploadFile = File(...),
     rear_photo: UploadFile = File(...),
+    authentication_file: UploadFile | None = File(None),  # ✅ NEW FILE
+
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers allowed")
+
+    # ✅ Parse ownership_type
+    try:
+        ownership_enum = VehicleOwnershipType(ownership_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid ownership_type")
+
+    # ❗ BUSINESS RULE
+    if ownership_enum == VehicleOwnershipType.RENTED and not authentication_file:
+        raise HTTPException(
+            status_code=400,
+            detail="Authentication file is required for rented vehicles"
+        )
+
+    if ownership_enum == VehicleOwnershipType.SELF and authentication_file:
+        raise HTTPException(
+            status_code=400,
+            detail="Authentication file should not be uploaded for self-owned vehicles"
+        )
 
     # Parse Date
     registration_valid_till_dt = parse_registration_date(registration_valid_till)
@@ -96,7 +121,9 @@ async def register_vehicle(
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Vehicle already exists")
 
+    # ---------------------------
     # Save files
+    # ---------------------------
     rc_filename = f"{registration_number}_rc_{rc_file.filename}"
     rear_filename = f"{registration_number}_rear_{rear_photo.filename}"
 
@@ -109,6 +136,20 @@ async def register_vehicle(
     with open(rear_path, "wb") as f:
         shutil.copyfileobj(rear_photo.file, f)
 
+    # ✅ Authentication file (only if rented)
+    auth_path_str = None
+    if authentication_file:
+        auth_filename = f"{registration_number}_auth_{authentication_file.filename}"
+        auth_path = UPLOAD_DIR / auth_filename
+
+        with open(auth_path, "wb") as f:
+            shutil.copyfileobj(authentication_file.file, f)
+
+        auth_path_str = str(auth_path)
+
+    # ---------------------------
+    # Create Vehicle
+    # ---------------------------
     vehicle = Vehicle(
         driver_user_id=current_driver.id,
         registration_number=registration_number,
@@ -120,6 +161,8 @@ async def register_vehicle(
         has_ac=has_ac,
         rc_file_path=str(rc_path),
         rear_photo_file_path=str(rear_path),
+        ownership_type=ownership_enum,  # ✅ IMPORTANT
+        authentication_file_path=auth_path_str,  # ✅ IMPORTANT
         verification_status=VehicleVerificationStatus.DRAFT,
     )
 
@@ -128,8 +171,6 @@ async def register_vehicle(
     await session.refresh(vehicle)
 
     return vehicle
-
-
 # ---------------------------
 # View Vehicle
 # ---------------------------
