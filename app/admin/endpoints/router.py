@@ -1443,7 +1443,7 @@ async def handle_ticket(
             title=f"Support Ticket {status_msg.capitalize()}",
             message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
             data={"type": "TICKET_UPDATE"},
-            commit=False,  # Keep it False so we commit everything once at the end
+            commit=True,  # Keep it False so we commit everything once at the end
         )
     except Exception as e:
         # Log the error so the admin knows the DB updated but the alert failed
