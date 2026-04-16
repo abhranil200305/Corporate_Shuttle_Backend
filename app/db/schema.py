@@ -1753,3 +1753,36 @@ class SupportTicket(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint("description <> ''", name="ck_support_description_nonempty"),
         Index("ix_support_user_status", "user_id", "status"),
     )
+
+class JobLease(Base):
+    __tablename__ = "job_leases"
+
+    job_name: Mapped[str] = mapped_column(
+        String,
+        primary_key=True,
+        nullable=False,
+    )
+    owner_id: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+    )
+    lease_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    heartbeat_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+        onupdate=utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint("job_name <> ''", name="ck_job_leases_job_name_nonempty"),
+        CheckConstraint("owner_id <> ''", name="ck_job_leases_owner_id_nonempty"),
+        Index("ix_job_leases_lease_expires_at", "lease_expires_at"),
+    )
