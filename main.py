@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager, suppress
+import os
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -54,6 +55,47 @@ logging.basicConfig(
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
+logger = logging.getLogger(__name__)
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "true" if default else "false").strip().lower()
+    return raw in {"1", "true", "yes", "y", "on"}
+
+
+def _should_run_background_jobs() -> bool:
+    return _get_bool_env("RUN_BACKGROUND_JOBS", True)
+
+
+def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
+    ws_hub = app.state.ws_hub
+
+    task_specs: list[tuple[str, object]] = [
+        ("payment-reconcile-loop", payment_reconcile_loop),
+        ("cancelled-booking-refund-loop", cancelled_booking_refund_loop),
+        ("unstarted-trip-cancel-loop", unstarted_trip_cancel_loop),
+        ("driver-trip-reminder-loop", driver_trip_reminder_loop),
+        (
+            "vehicle-registration-expiry-reminder-loop",
+            vehicle_registration_expiry_reminder_loop,
+        ),
+        (
+            "vehicle-inspection-status-reminder-loop",
+            vehicle_inspection_status_reminder_loop,
+        ),
+    ]
+
+    tasks: list[asyncio.Task] = []
+
+    for task_name, runner in task_specs:
+        task = asyncio.create_task(
+            runner(ws_hub),
+            name=task_name,
+        )
+        tasks.append(task)
+
+    return tasks
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -67,72 +109,30 @@ async def lifespan(app: FastAPI):
         await dispose_database_engine()
         raise
          
-    reconcile_task = asyncio.create_task(
-        payment_reconcile_loop(app.state.ws_hub),
-        name="payment-reconcile-loop",
-    )
-    app.state.payment_reconcile_task = reconcile_task
+    app.state.background_job_tasks = []
 
-    cancelled_booking_refund_task = asyncio.create_task(
-        cancelled_booking_refund_loop(app.state.ws_hub),
-        name="cancelled-booking-refund-loop",
-    )
-    app.state.cancelled_booking_refund_task = cancelled_booking_refund_task
-
-    unstarted_trip_cancel_task = asyncio.create_task(
-        unstarted_trip_cancel_loop(app.state.ws_hub),
-        name="unstarted-trip-cancel-loop",
-    )
-    app.state.unstarted_trip_cancel_task = unstarted_trip_cancel_task
-
-    driver_trip_reminder_task = asyncio.create_task(
-        driver_trip_reminder_loop(app.state.ws_hub),
-        name="driver-trip-reminder-loop",
-    )
-    app.state.driver_trip_reminder_task = driver_trip_reminder_task
-
-    vehicle_registration_expiry_reminder_task = asyncio.create_task(
-        vehicle_registration_expiry_reminder_loop(app.state.ws_hub),
-        name="vehicle-registration-expiry-reminder-loop",
-    )
-    app.state.vehicle_registration_expiry_reminder_task = (
-        vehicle_registration_expiry_reminder_task
-    )
-    vehicle_inspection_status_reminder_task = asyncio.create_task(
-        vehicle_inspection_status_reminder_loop(app.state.ws_hub),
-        name="vehicle-inspection-status-reminder-loop",
-    )
-    app.state.vehicle_inspection_status_reminder_task = (
-        vehicle_inspection_status_reminder_task
-    )
+    if _should_run_background_jobs():
+        app.state.background_job_tasks = _create_background_job_tasks(app)
+        logger.info(
+            "Background jobs started count=%s",
+            len(app.state.background_job_tasks),
+        )
+    else:
+        logger.info("Background jobs are disabled by RUN_BACKGROUND_JOBS")
 
     try:
         yield
     finally:
-        reconcile_task.cancel()
-        cancelled_booking_refund_task.cancel()
-        unstarted_trip_cancel_task.cancel()
-        driver_trip_reminder_task.cancel()
-        vehicle_registration_expiry_reminder_task.cancel()
-        vehicle_inspection_status_reminder_task.cancel()
+        background_job_tasks: list[asyncio.Task] = list(
+            getattr(app.state, "background_job_tasks", [])
+        )
 
-        with suppress(asyncio.CancelledError):
-            await reconcile_task
+        for task in background_job_tasks:
+            task.cancel()
 
-        with suppress(asyncio.CancelledError):
-            await cancelled_booking_refund_task
-
-        with suppress(asyncio.CancelledError):
-            await unstarted_trip_cancel_task
-
-        with suppress(asyncio.CancelledError):
-            await driver_trip_reminder_task
-
-        with suppress(asyncio.CancelledError):
-            await vehicle_registration_expiry_reminder_task
-        
-        with suppress(asyncio.CancelledError):
-            await vehicle_inspection_status_reminder_task
+        for task in background_job_tasks:
+            with suppress(asyncio.CancelledError):
+                await task
 
         ws_hub = getattr(app.state, "ws_hub", None)
         if ws_hub is not None:
