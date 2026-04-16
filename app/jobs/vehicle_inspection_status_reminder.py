@@ -374,7 +374,6 @@ async def _process_vehicle_id(
         return "skip_not_due"
 
     title, message, data, data_json = built
-    admin_ids = await _fetch_active_admin_user_ids(db)
 
     driver_outcome = await _send_to_recipient(
         db=db,
@@ -389,20 +388,25 @@ async def _process_vehicle_id(
     admin_sent = 0
     admin_skipped = 0
 
-    for admin_user_id in admin_ids:
-        admin_outcome = await _send_to_recipient(
-            db=db,
-            ws_hub=ws_hub,
-            user_id=admin_user_id,
-            title=title,
-            message=message,
-            data=data,
-            data_json=data_json,
-        )
-        if admin_outcome == "sent":
-            admin_sent += 1
-        else:
-            admin_skipped += 1
+    should_notify_admins = data.get("reminder_kind") != "rejected_daily"
+
+    if should_notify_admins:
+        admin_ids = await _fetch_active_admin_user_ids(db)
+
+        for admin_user_id in admin_ids:
+            admin_outcome = await _send_to_recipient(
+                db=db,
+                ws_hub=ws_hub,
+                user_id=admin_user_id,
+                title=title,
+                message=message,
+                data=data,
+                data_json=data_json,
+            )
+            if admin_outcome == "sent":
+                admin_sent += 1
+            else:
+                admin_skipped += 1
 
     return (
         f"{driver_outcome}"
