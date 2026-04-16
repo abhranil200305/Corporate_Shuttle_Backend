@@ -9,6 +9,7 @@ from app.db.database import get_async_session
 from app.db.schema import (
     ScheduledTrip,
     RouteStop,
+    Route,   # ✅ IMPORTANT (added)
     Stop,
     User,
 )
@@ -21,9 +22,6 @@ router = APIRouter(prefix="/driver/trips", tags=["Driver Trips"])
 # Haversine Distance (in meters)
 # ---------------------------------------
 def haversine_distance(lat1, lng1, lat2, lng2):
-    """
-    Calculate distance between two lat/lng in meters
-    """
     R = 6371000  # Earth radius in meters
 
     lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
@@ -56,7 +54,7 @@ async def check_near_stop(
         .where(ScheduledTrip.id == trip_id)
         .options(
             selectinload(ScheduledTrip.route)
-            .selectinload("route_stops")
+            .selectinload(Route.route_stops)   # ✅ FIXED
             .selectinload(RouteStop.stop)
         )
     )
@@ -66,6 +64,9 @@ async def check_near_stop(
 
     if not trip:
         raise HTTPException(status_code=404, detail="Trip not found")
+
+    if not trip.route:
+        raise HTTPException(status_code=400, detail="Trip has no route")
 
     # ---------------------------------------
     # 2. Sort stops by sequence
@@ -105,7 +106,6 @@ async def check_near_stop(
         raise HTTPException(status_code=404, detail="No stop found")
 
     if min_distance > nearest_stop.radius_meters:
-        # ❌ Not inside radius
         raise HTTPException(
             status_code=307,
             detail={
@@ -123,8 +123,8 @@ async def check_near_stop(
         "stop": {
             "id": nearest_stop.id,
             "name": nearest_stop.name,
-            "lat": nearest_stop.lat,
-            "lng": nearest_stop.lng,
+            "lat": float(nearest_stop.lat),
+            "lng": float(nearest_stop.lng),
             "radius_meters": nearest_stop.radius_meters,
         },
         "distance_meters": round(min_distance, 2),
