@@ -7,16 +7,23 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import AsyncSessionLocal, engine
+from app.db.database import AsyncSessionLocal
 from app.db.schema import ScheduledTrip, ScheduledTripStatus, UserNotification
+from app.jobs.lease import (
+    get_job_owner_id,
+    release_job_lease,
+    try_acquire_or_renew_job_lease,
+)
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
+
+_JOB_NAME = "driver_trip_reminder"
 
 
 def utcnow() -> datetime:
@@ -32,12 +39,14 @@ def _get_interval_seconds() -> int:
     return max(5, value)
 
 
-def _get_lock_key() -> int:
-    raw = os.getenv("DRIVER_TRIP_REMINDER_LOCK_KEY", "82024004").strip()
+def _get_lease_seconds() -> int:
+    default_value = max(_get_interval_seconds() + 60, 120)
+    raw = os.getenv("DRIVER_TRIP_REMINDER_LEASE_SECONDS", str(default_value)).strip()
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        return 82024004
+        return default_value
+    return max(30, value)
 
 
 def _seconds_until_next_minute() -> float:
@@ -216,7 +225,7 @@ async def _run_reminder_window(
     for trip_id in trip_ids:
         try:
             outcome = await _process_trip_id(
-                trip_id = trip_id,
+                trip_id=trip_id,
                 ws_hub=ws_hub,
                 reminder_key=reminder_key,
                 title=title,
@@ -240,64 +249,62 @@ async def _run_reminder_window(
 async def send_driver_trip_reminders_once(
     ws_hub: WSHub | None = None,
 ) -> None:
-    lock_key = _get_lock_key()
+    lease_seconds = _get_lease_seconds()
+    owner_id = get_job_owner_id()
 
-    async with engine.connect() as conn:
-        acquired = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
-                    {"key": lock_key},
-                )
-            ).scalar()
+    async with AsyncSessionLocal() as lease_db:
+        acquired = await try_acquire_or_renew_job_lease(
+            db=lease_db,
+            job_name=_JOB_NAME,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
         )
 
-        if not acquired:
-            logger.info("driver_trip_reminder skipped: advisory lock not acquired")
-            return
+    if not acquired:
+        logger.info(
+            "driver_trip_reminder skipped: job lease not acquired owner_id=%s",
+            owner_id,
+        )
+        return
 
+    try:
+        async with AsyncSessionLocal() as db:
+            await _run_reminder_window(
+                db,
+                ws_hub=ws_hub,
+                reminder_key="driver_trip_prestart_15m",
+                offset_from_start=timedelta(minutes=-15),
+                title="Trip starts in 15 minutes",
+                message="Your scheduled trip starts in 15 minutes.",
+            )
+
+            await _run_reminder_window(
+                db,
+                ws_hub=ws_hub,
+                reminder_key="driver_trip_poststart_5m",
+                offset_from_start=timedelta(minutes=5),
+                title="Trip start overdue by 5 minutes",
+                message="Your scheduled trip was due to start 5 minutes ago. Please start it now.",
+            )
+
+            await _run_reminder_window(
+                db,
+                ws_hub=ws_hub,
+                reminder_key="driver_trip_poststart_10m",
+                offset_from_start=timedelta(minutes=10),
+                title="Trip start overdue by 10 minutes",
+                message="Your scheduled trip was due to start 10 minutes ago. Please start it immediately. Auto-cancellation happens soon.",
+            )
+    finally:
         try:
-            async with AsyncSessionLocal(bind=conn) as db:
-                await _run_reminder_window(
-                    db,
-                    ws_hub=ws_hub,
-                    reminder_key="driver_trip_prestart_15m",
-                    offset_from_start=timedelta(minutes=-15),
-                    title="Trip starts in 15 minutes",
-                    message="Your scheduled trip starts in 15 minutes.",
+            async with AsyncSessionLocal() as lease_db:
+                await release_job_lease(
+                    db=lease_db,
+                    job_name=_JOB_NAME,
+                    owner_id=owner_id,
                 )
-
-                await _run_reminder_window(
-                    db,
-                    ws_hub=ws_hub,
-                    reminder_key="driver_trip_poststart_5m",
-                    offset_from_start=timedelta(minutes=5),
-                    title="Trip start overdue by 5 minutes",
-                    message="Your scheduled trip was due to start 5 minutes ago. Please start it now.",
-                )
-
-                await _run_reminder_window(
-                    db,
-                    ws_hub=ws_hub,
-                    reminder_key="driver_trip_poststart_10m",
-                    offset_from_start=timedelta(minutes=10),
-                    title="Trip start overdue by 10 minutes",
-                    message="Your scheduled trip was due to start 10 minutes ago. Please start it immediately. Auto-cancellation happens soon.",
-                )
-        finally:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
-
-            try:
-                await conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": lock_key},
-                )
-                await conn.commit()
-            except Exception:
-                logger.exception("driver_trip_reminder advisory unlock failed")
+        except Exception:
+            logger.exception("driver_trip_reminder lease release failed")
 
 
 async def driver_trip_reminder_loop(

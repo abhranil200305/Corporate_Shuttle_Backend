@@ -8,15 +8,22 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import AsyncSessionLocal, engine
+from app.db.database import AsyncSessionLocal
 from app.db.schema import UserNotification, Vehicle
+from app.jobs.lease import (
+    get_job_owner_id,
+    release_job_lease,
+    try_acquire_or_renew_job_lease,
+)
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
+
+_JOB_NAME = "vehicle_registration_expiry_reminder"
 
 
 def utcnow() -> datetime:
@@ -49,12 +56,13 @@ def _get_batch_size() -> int:
     return max(1, value)
 
 
-def _get_lock_key() -> int:
-    raw = os.getenv("VEHICLE_REGISTRATION_REMINDER_LOCK_KEY", "82024005").strip()
+def _get_lease_seconds() -> int:
+    raw = os.getenv("VEHICLE_REGISTRATION_REMINDER_LEASE_SECONDS", "1800").strip()
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        return 82024005
+        return 1800
+    return max(60, value)
 
 
 def _serialize_data(data: dict[str, Any]) -> str:
@@ -292,90 +300,87 @@ async def send_vehicle_registration_expiry_reminders_once(
     if not effective_slot_key:
         effective_slot_key = effective_local_now.strftime("%H%M")
 
-    lock_key = _get_lock_key()
     batch_size = _get_batch_size()
     warning_days = _get_warning_days()
+    lease_seconds = _get_lease_seconds()
+    owner_id = get_job_owner_id()
     upper_bound_utc = effective_local_now.astimezone(timezone.utc) + timedelta(days=warning_days + 1)
 
-    async with engine.connect() as conn:
-        acquired = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
-                    {"key": lock_key},
-                )
-            ).scalar()
+    async with AsyncSessionLocal() as lease_db:
+        acquired = await try_acquire_or_renew_job_lease(
+            db=lease_db,
+            job_name=_JOB_NAME,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
         )
 
-        if not acquired:
+    if not acquired:
+        logger.info(
+            "vehicle_registration_expiry_reminder skipped: job lease not acquired owner_id=%s slot=%s",
+            owner_id,
+            effective_slot_key,
+        )
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            total_processed = 0
+
+            while True:
+                vehicle_ids = await _fetch_candidate_vehicle_ids(
+                    db,
+                    upper_bound_utc=upper_bound_utc,
+                    limit=batch_size,
+                )
+                await db.rollback()
+
+                if not vehicle_ids:
+                    break
+
+                for vehicle_id in vehicle_ids:
+                    try:
+                        outcome = await _process_vehicle_id(
+                            db,
+                            vehicle_id=vehicle_id,
+                            scheduled_local_now=effective_local_now,
+                            slot_key=effective_slot_key,
+                            ws_hub=ws_hub,
+                        )
+                        total_processed += 1
+                        logger.info(
+                            "vehicle_registration_expiry_reminder vehicle_id=%s slot=%s outcome=%s",
+                            vehicle_id,
+                            effective_slot_key,
+                            outcome,
+                        )
+                    except Exception:
+                        await db.rollback()
+                        logger.exception(
+                            "vehicle_registration_expiry_reminder vehicle_id=%s slot=%s outcome=error",
+                            vehicle_id,
+                            effective_slot_key,
+                        )
+
+                if len(vehicle_ids) < batch_size:
+                    break
+
             logger.info(
-                "vehicle_registration_expiry_reminder skipped: advisory lock not acquired"
+                "vehicle_registration_expiry_reminder done slot=%s processed=%s",
+                effective_slot_key,
+                total_processed,
             )
-            return
-
+    finally:
         try:
-            async with AsyncSessionLocal(bind=conn) as db:
-                total_processed = 0
-
-                while True:
-                    vehicle_ids = await _fetch_candidate_vehicle_ids(
-                        db,
-                        upper_bound_utc=upper_bound_utc,
-                        limit=batch_size,
-                    )
-                    await db.rollback()
-
-                    if not vehicle_ids:
-                        break
-
-                    for vehicle_id in vehicle_ids:
-                        try:
-                            outcome = await _process_vehicle_id(
-                                db,
-                                vehicle_id=vehicle_id,
-                                scheduled_local_now=effective_local_now,
-                                slot_key=effective_slot_key,
-                                ws_hub=ws_hub,
-                            )
-                            total_processed += 1
-                            logger.info(
-                                "vehicle_registration_expiry_reminder vehicle_id=%s slot=%s outcome=%s",
-                                vehicle_id,
-                                effective_slot_key,
-                                outcome,
-                            )
-                        except Exception:
-                            await db.rollback()
-                            logger.exception(
-                                "vehicle_registration_expiry_reminder vehicle_id=%s slot=%s outcome=error",
-                                vehicle_id,
-                                effective_slot_key,
-                            )
-
-                    if len(vehicle_ids) < batch_size:
-                        break
-
-                logger.info(
-                    "vehicle_registration_expiry_reminder done slot=%s processed=%s",
-                    effective_slot_key,
-                    total_processed,
+            async with AsyncSessionLocal() as lease_db:
+                await release_job_lease(
+                    db=lease_db,
+                    job_name=_JOB_NAME,
+                    owner_id=owner_id,
                 )
-        finally:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
-
-            try:
-                await conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": lock_key},
-                )
-                await conn.commit()
-            except Exception:
-                logger.exception(
-                    "vehicle_registration_expiry_reminder advisory unlock failed"
-                )
+        except Exception:
+            logger.exception(
+                "vehicle_registration_expiry_reminder lease release failed"
+            )
 
 
 async def vehicle_registration_expiry_reminder_loop(

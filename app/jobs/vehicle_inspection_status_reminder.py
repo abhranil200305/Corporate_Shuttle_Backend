@@ -8,10 +8,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from sqlalchemy import and_, or_, select, text
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.database import AsyncSessionLocal, engine
+from app.db.database import AsyncSessionLocal
 from app.db.schema import (
     User,
     UserNotification,
@@ -19,10 +19,17 @@ from app.db.schema import (
     Vehicle,
     VehicleInspectionStatus,
 )
+from app.jobs.lease import (
+    get_job_owner_id,
+    release_job_lease,
+    try_acquire_or_renew_job_lease,
+)
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
+
+_JOB_NAME = "vehicle_inspection_status_reminder"
 
 
 def utcnow() -> datetime:
@@ -46,12 +53,13 @@ def _get_batch_size() -> int:
     return max(1, value)
 
 
-def _get_lock_key() -> int:
-    raw = os.getenv("VEHICLE_INSPECTION_REMINDER_LOCK_KEY", "82024006").strip()
+def _get_lease_seconds() -> int:
+    raw = os.getenv("VEHICLE_INSPECTION_REMINDER_LEASE_SECONDS", "1800").strip()
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        return 82024006
+        return 1800
+    return max(60, value)
 
 
 def _get_auto_pending_after_days() -> int:
@@ -145,9 +153,9 @@ def _build_notification_payload(
 
     inspection_created_local = None
     if vehicle.inspection_created_at is not None:
-        inspection_created_local = _ensure_tzaware(vehicle.inspection_created_at).astimezone(
-            scheduled_local_now.tzinfo
-        )
+        inspection_created_local = _ensure_tzaware(
+            vehicle.inspection_created_at
+        ).astimezone(scheduled_local_now.tzinfo)
 
     if auto_switched_from_approved:
         cycle_text = (
@@ -229,17 +237,18 @@ async def _notification_already_sent(
     return result.scalar_one_or_none() is not None
 
 
-async def _fetch_candidate_vehicle_ids(
+async def _fetch_candidate_vehicle_batch(
     db: AsyncSession,
     *,
     now_utc: datetime,
     limit: int,
-    offset: int,
-) -> list[str]:
+    after_created_at: datetime | None,
+    after_vehicle_id: str | None,
+) -> list[tuple[str, datetime]]:
     auto_pending_cutoff = now_utc - timedelta(days=_get_auto_pending_after_days())
 
     stmt = (
-        select(Vehicle.id)
+        select(Vehicle.id, Vehicle.created_at)
         .where(
             Vehicle.is_active.is_(True),
             Vehicle.driver_user_id.is_not(None),
@@ -262,10 +271,22 @@ async def _fetch_candidate_vehicle_ids(
             Vehicle.id.asc(),
         )
         .limit(limit)
-        .offset(offset)
     )
+
+    if after_created_at is not None and after_vehicle_id is not None:
+        stmt = stmt.where(
+            or_(
+                Vehicle.created_at > after_created_at,
+                and_(
+                    Vehicle.created_at == after_created_at,
+                    Vehicle.id > after_vehicle_id,
+                ),
+            )
+        )
+
     result = await db.execute(stmt)
-    return list(result.scalars().all())
+    rows = result.all()
+    return [(row[0], row[1]) for row in rows]
 
 
 async def _fetch_active_admin_user_ids(db: AsyncSession) -> list[str]:
@@ -405,93 +426,94 @@ async def send_vehicle_inspection_status_reminders_once(
         effective_local_now = effective_local_now.replace(tzinfo=tz)
 
     effective_slot_key = slot_key or effective_local_now.strftime("%H%M")
-    lock_key = _get_lock_key()
     batch_size = _get_batch_size()
+    lease_seconds = _get_lease_seconds()
+    owner_id = get_job_owner_id()
+    now_utc = effective_local_now.astimezone(timezone.utc)
 
-    async with engine.connect() as conn:
-        acquired = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
-                    {"key": lock_key},
-                )
-            ).scalar()
+    async with AsyncSessionLocal() as lease_db:
+        acquired = await try_acquire_or_renew_job_lease(
+            db=lease_db,
+            job_name=_JOB_NAME,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
         )
 
-        if not acquired:
+    if not acquired:
+        logger.info(
+            "vehicle_inspection_status_reminder skipped: job lease not acquired owner_id=%s slot=%s",
+            owner_id,
+            effective_slot_key,
+        )
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            total_processed = 0
+            cursor_created_at: datetime | None = None
+            cursor_vehicle_id: str | None = None
+
+            while True:
+                batch = await _fetch_candidate_vehicle_batch(
+                    db,
+                    now_utc=now_utc,
+                    limit=batch_size,
+                    after_created_at=cursor_created_at,
+                    after_vehicle_id=cursor_vehicle_id,
+                )
+                await db.rollback()
+
+                if not batch:
+                    break
+
+                for vehicle_id, _created_at in batch:
+                    try:
+                        outcome = await _process_vehicle_id(
+                            db,
+                            vehicle_id=vehicle_id,
+                            scheduled_local_now=effective_local_now,
+                            slot_key=effective_slot_key,
+                            ws_hub=ws_hub,
+                        )
+                        total_processed += 1
+                        logger.info(
+                            "vehicle_inspection_status_reminder vehicle_id=%s slot=%s outcome=%s",
+                            vehicle_id,
+                            effective_slot_key,
+                            outcome,
+                        )
+                    except Exception:
+                        await db.rollback()
+                        logger.exception(
+                            "vehicle_inspection_status_reminder vehicle_id=%s slot=%s outcome=error",
+                            vehicle_id,
+                            effective_slot_key,
+                        )
+
+                last_vehicle_id, last_created_at = batch[-1]
+                cursor_vehicle_id = last_vehicle_id
+                cursor_created_at = last_created_at
+
+                if len(batch) < batch_size:
+                    break
+
             logger.info(
-                "vehicle_inspection_status_reminder skipped: advisory lock not acquired"
+                "vehicle_inspection_status_reminder done slot=%s processed=%s",
+                effective_slot_key,
+                total_processed,
             )
-            return
-
+    finally:
         try:
-            async with AsyncSessionLocal(bind=conn) as db:
-                total_processed = 0
-                offset = 0
-                now_utc = effective_local_now.astimezone(timezone.utc)
-
-                while True:
-                    vehicle_ids = await _fetch_candidate_vehicle_ids(
-                        db,
-                        now_utc=now_utc,
-                        limit=batch_size,
-                        offset=offset,
-                    )
-                    await db.rollback()
-
-                    if not vehicle_ids:
-                        break
-
-                    for vehicle_id in vehicle_ids:
-                        try:
-                            outcome = await _process_vehicle_id(
-                                db,
-                                vehicle_id=vehicle_id,
-                                scheduled_local_now=effective_local_now,
-                                slot_key=effective_slot_key,
-                                ws_hub=ws_hub,
-                            )
-                            total_processed += 1
-                            logger.info(
-                                "vehicle_inspection_status_reminder vehicle_id=%s slot=%s outcome=%s",
-                                vehicle_id,
-                                effective_slot_key,
-                                outcome,
-                            )
-                        except Exception:
-                            await db.rollback()
-                            logger.exception(
-                                "vehicle_inspection_status_reminder vehicle_id=%s slot=%s outcome=error",
-                                vehicle_id,
-                                effective_slot_key,
-                            )
-
-                    if len(vehicle_ids) < batch_size:
-                        break
-
-                    offset += len(vehicle_ids)
-
-                logger.info(
-                    "vehicle_inspection_status_reminder done slot=%s processed=%s",
-                    effective_slot_key,
-                    total_processed,
+            async with AsyncSessionLocal() as lease_db:
+                await release_job_lease(
+                    db=lease_db,
+                    job_name=_JOB_NAME,
+                    owner_id=owner_id,
                 )
-        finally:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
-
-            try:
-                await conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": lock_key},
-                )
-                await conn.commit()
-            except Exception:
-                logger.exception(
-                    "vehicle_inspection_status_reminder advisory unlock failed"
-                )
+        except Exception:
+            logger.exception(
+                "vehicle_inspection_status_reminder lease release failed"
+            )
 
 
 async def vehicle_inspection_status_reminder_loop(

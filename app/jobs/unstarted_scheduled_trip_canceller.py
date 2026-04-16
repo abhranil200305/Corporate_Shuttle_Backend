@@ -5,11 +5,11 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import AsyncSessionLocal, engine
+from app.db.database import AsyncSessionLocal
 from app.db.schema import (
     BookingPaymentStatus,
     BookingStatus,
@@ -17,10 +17,17 @@ from app.db.schema import (
     ScheduledTripStatus,
     TripBooking,
 )
+from app.jobs.lease import (
+    get_job_owner_id,
+    release_job_lease,
+    try_acquire_or_renew_job_lease,
+)
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 
 logger = logging.getLogger(__name__)
+
+_JOB_NAME = "unstarted_trip_cancel"
 
 
 def utcnow() -> datetime:
@@ -45,12 +52,14 @@ def _get_interval_seconds() -> int:
     return max(5, value)
 
 
-def _get_lock_key() -> int:
-    raw = os.getenv("UNSTARTED_TRIP_CANCEL_LOCK_KEY", "82024003").strip()
+def _get_lease_seconds() -> int:
+    default_value = max(_get_interval_seconds() + 60, 120)
+    raw = os.getenv("UNSTARTED_TRIP_CANCEL_LEASE_SECONDS", str(default_value)).strip()
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        return 82024003
+        return default_value
+    return max(30, value)
 
 
 def _get_start_grace_minutes() -> int:
@@ -200,72 +209,70 @@ async def _cancel_trip_and_bookings(
 async def cancel_unstarted_trips_once(
     ws_hub: WSHub | None = None,
 ) -> None:
-    lock_key = _get_lock_key()
     batch_size = _get_batch_size()
+    lease_seconds = _get_lease_seconds()
+    owner_id = get_job_owner_id()
 
-    async with engine.connect() as conn:
-        acquired = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
-                    {"key": lock_key},
-                )
-            ).scalar()
+    async with AsyncSessionLocal() as lease_db:
+        acquired = await try_acquire_or_renew_job_lease(
+            db=lease_db,
+            job_name=_JOB_NAME,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
         )
 
-        if not acquired:
-            logger.info("unstarted_trip_cancel skipped: advisory lock not acquired")
-            return
+    if not acquired:
+        logger.info(
+            "unstarted_trip_cancel skipped: job lease not acquired owner_id=%s",
+            owner_id,
+        )
+        return
 
+    try:
+        async with AsyncSessionLocal() as db:
+            total_processed = 0
+
+            while True:
+                trip_ids = await _fetch_overdue_trip_ids(db, batch_size)
+                await db.rollback()
+
+                if not trip_ids:
+                    break
+
+                for trip_id in trip_ids:
+                    try:
+                        outcome = await _cancel_trip_and_bookings(
+                            db,
+                            trip_id,
+                            ws_hub=ws_hub,
+                        )
+                        total_processed += 1
+                        logger.info(
+                            "unstarted_trip_cancel trip_id=%s outcome=%s",
+                            trip_id,
+                            outcome,
+                        )
+                    except Exception:
+                        await db.rollback()
+                        logger.exception(
+                            "unstarted_trip_cancel trip_id=%s outcome=error",
+                            trip_id,
+                        )
+
+                if len(trip_ids) < batch_size:
+                    break
+
+            logger.info("unstarted_trip_cancel done processed=%s", total_processed)
+    finally:
         try:
-            async with AsyncSessionLocal(bind=conn) as db:
-                total_processed = 0
-
-                while True:
-                    trip_ids = await _fetch_overdue_trip_ids(db, batch_size)
-                    await db.rollback()
-
-                    if not trip_ids:
-                        break
-
-                    for trip_id in trip_ids:
-                        try:
-                            outcome = await _cancel_trip_and_bookings(
-                                db,
-                                trip_id,
-                                ws_hub=ws_hub,
-                            )
-                            total_processed += 1
-                            logger.info(
-                                "unstarted_trip_cancel trip_id=%s outcome=%s",
-                                trip_id,
-                                outcome,
-                            )
-                        except Exception:
-                            await db.rollback()
-                            logger.exception(
-                                "unstarted_trip_cancel trip_id=%s outcome=error",
-                                trip_id,
-                            )
-
-                    if len(trip_ids) < batch_size:
-                        break
-
-                logger.info("unstarted_trip_cancel done processed=%s", total_processed)
-        finally:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
-
-            try:
-                await conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": lock_key},
+            async with AsyncSessionLocal() as lease_db:
+                await release_job_lease(
+                    db=lease_db,
+                    job_name=_JOB_NAME,
+                    owner_id=owner_id,
                 )
-                await conn.commit()
-            except Exception:
-                logger.exception("unstarted_trip_cancel advisory unlock failed")
+        except Exception:
+            logger.exception("unstarted_trip_cancel lease release failed")
 
 
 async def unstarted_trip_cancel_loop(

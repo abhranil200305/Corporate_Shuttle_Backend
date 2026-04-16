@@ -5,17 +5,24 @@ import logging
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.database import AsyncSessionLocal, engine
+from app.db.database import AsyncSessionLocal
 from app.db.schema import BookingStatus, TripBooking
+from app.jobs.lease import (
+    get_job_owner_id,
+    release_job_lease,
+    try_acquire_or_renew_job_lease,
+)
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 from app.passenger.service import PassengerService
 
 logger = logging.getLogger(__name__)
+
+_JOB_NAME = "payment_reconcile"
 
 
 def utcnow() -> datetime:
@@ -40,12 +47,14 @@ def _get_interval_seconds() -> int:
     return max(5, value)
 
 
-def _get_lock_key() -> int:
-    raw = os.getenv("PAYMENT_RECONCILE_LOCK_KEY", "82024001").strip()
+def _get_lease_seconds() -> int:
+    default_value = max(_get_interval_seconds() + 60, 120)
+    raw = os.getenv("PAYMENT_RECONCILE_LEASE_SECONDS", str(default_value)).strip()
     try:
-        return int(raw)
+        value = int(raw)
     except ValueError:
-        return 82024001
+        return default_value
+    return max(30, value)
 
 
 def _seconds_until_next_minute() -> float:
@@ -71,7 +80,7 @@ async def _fetch_pending_booking_ids(
 
 async def _notify_payment_reconcile_outcome(
     *,
-    db,
+    db: AsyncSession,
     ws_hub: WSHub | None,
     booking: TripBooking,
     outcome: str,
@@ -169,72 +178,70 @@ async def _process_booking_id(
 async def reconcile_pending_booking_payments_once(
     ws_hub: WSHub | None = None,
 ) -> None:
-    lock_key = _get_lock_key()
     batch_size = _get_batch_size()
+    lease_seconds = _get_lease_seconds()
+    owner_id = get_job_owner_id()
 
-    async with engine.connect() as conn:
-        acquired = bool(
-            (
-                await conn.execute(
-                    text("SELECT pg_try_advisory_lock(:key)"),
-                    {"key": lock_key},
-                )
-            ).scalar()
+    async with AsyncSessionLocal() as lease_db:
+        acquired = await try_acquire_or_renew_job_lease(
+            db=lease_db,
+            job_name=_JOB_NAME,
+            owner_id=owner_id,
+            lease_seconds=lease_seconds,
         )
 
-        if not acquired:
-            logger.info("payment_reconcile skipped: advisory lock not acquired")
-            return
+    if not acquired:
+        logger.info(
+            "payment_reconcile skipped: job lease not acquired owner_id=%s",
+            owner_id,
+        )
+        return
 
+    try:
+        async with AsyncSessionLocal() as db:
+            total_processed = 0
+
+            while True:
+                booking_ids = await _fetch_pending_booking_ids(db, batch_size)
+                await db.rollback()
+
+                if not booking_ids:
+                    break
+
+                for booking_id in booking_ids:
+                    try:
+                        outcome = await _process_booking_id(
+                            db,
+                            booking_id,
+                            ws_hub=ws_hub,
+                        )
+                        total_processed += 1
+                        logger.info(
+                            "payment_reconcile booking_id=%s outcome=%s",
+                            booking_id,
+                            outcome,
+                        )
+                    except Exception:
+                        await db.rollback()
+                        logger.exception(
+                            "payment_reconcile booking_id=%s outcome=error",
+                            booking_id,
+                        )
+
+                if len(booking_ids) < batch_size:
+                    break
+
+            logger.info("payment_reconcile done processed=%s", total_processed)
+    finally:
         try:
-            async with AsyncSessionLocal(bind=conn) as db:
-                total_processed = 0
-
-                while True:
-                    booking_ids = await _fetch_pending_booking_ids(db, batch_size)
-                    await db.rollback()
-
-                    if not booking_ids:
-                        break
-
-                    for booking_id in booking_ids:
-                        try:
-                            outcome = await _process_booking_id(
-                                db,
-                                booking_id,
-                                ws_hub=ws_hub,
-                            )
-                            total_processed += 1
-                            logger.info(
-                                "payment_reconcile booking_id=%s outcome=%s",
-                                booking_id,
-                                outcome,
-                            )
-                        except Exception:
-                            await db.rollback()
-                            logger.exception(
-                                "payment_reconcile booking_id=%s outcome=error",
-                                booking_id,
-                            )
-
-                    if len(booking_ids) < batch_size:
-                        break
-
-                logger.info("payment_reconcile done processed=%s", total_processed)
-        finally:
-            try:
-                await conn.rollback()
-            except Exception:
-                pass
-
-            try:
-                await conn.execute(
-                    text("SELECT pg_advisory_unlock(:key)"),
-                    {"key": lock_key},
+            async with AsyncSessionLocal() as lease_db:
+                await release_job_lease(
+                    db=lease_db,
+                    job_name=_JOB_NAME,
+                    owner_id=owner_id,
                 )
-                await conn.commit()
-            except Exception:
-                logger.exception("payment_reconcile advisory unlock failed")
+        except Exception:
+            logger.exception("payment_reconcile lease release failed")
 
 
 async def payment_reconcile_loop(
