@@ -604,7 +604,7 @@ async def stop_action(
         "distance_from_stop_meters": int(distance)
     }
 # ============================================================
-# END TRIP (WITH GEO + PASSENGER VALIDATION)
+# END TRIP (WITH GEO + PASSENGER + STOP VALIDATION)
 # ============================================================
 
 @router.post("/{trip_id}/end")
@@ -629,9 +629,29 @@ async def end_trip(
     current_time = now_utc()
 
     # =========================
+    # 🚫 BLOCK IF STOPS NOT COMPLETED
+    # =========================
+    result = await session.execute(
+        select(TripEvent).where(
+            TripEvent.scheduled_trip_id == trip_id
+        )
+    )
+    trip_events = result.scalars().all()
+
+    incomplete_stops = [
+        e.stop_id for e in trip_events
+        if e.arrival_time is None or e.departure_time is None
+    ]
+
+    if incomplete_stops:
+        raise HTTPException(
+            400,
+            f"Cannot end trip. Some stops are not completed (arrival/departure missing). Count={len(incomplete_stops)}"
+        )
+
+    # =========================
     # 🚫 BLOCK IF PASSENGERS STILL IN BUS
     # =========================
-    # Count boarded passengers
     boarded_result = await session.execute(
         select(func.count()).select_from(TripScanEvent).where(
             TripScanEvent.scheduled_trip_id == trip_id,
@@ -640,7 +660,6 @@ async def end_trip(
     )
     boarded_count = boarded_result.scalar() or 0
 
-    # Count dropped passengers
     dropped_result = await session.execute(
         select(func.count()).select_from(TripScanEvent).where(
             TripScanEvent.scheduled_trip_id == trip_id,
@@ -649,7 +668,6 @@ async def end_trip(
     )
     dropped_count = dropped_result.scalar() or 0
 
-    # 🚨 If mismatch → passengers still inside
     if boarded_count > dropped_count:
         raise HTTPException(
             400,
@@ -675,7 +693,7 @@ async def end_trip(
         raise HTTPException(400, "Last stop not found")
 
     # =========================
-    # CASE 1: EARLY END → EMERGENCY
+    # ❌ EARLY END BLOCK
     # =========================
     if current_time < trip.planned_end_at:
         raise HTTPException(
@@ -684,7 +702,7 @@ async def end_trip(
         )
 
     # =========================
-    # CASE 2: GEO VALIDATION
+    # 📍 GEO VALIDATION
     # =========================
     if not is_within_radius(last_stop, lat, lng):
         raise HTTPException(400, "Use emergency end")
@@ -706,8 +724,10 @@ async def end_trip(
         "passenger_check": {
             "boarded": boarded_count,
             "dropped": dropped_count
-        }
+        },
+        "stops_checked": len(trip_events)
     }
+
 # ============================================================
 # EMERGENCY END (MERGED)
 # ============================================================
