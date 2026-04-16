@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy import and_, desc, func, select, update
-from sqlalchemy.orm import Session, joinedload, selectinload
+from sqlalchemy.orm import joinedload, selectinload
 
 from app.db import schema
 from app.notifications.hub import WSHub
@@ -952,10 +952,9 @@ class AdminService:
         result = await self.db.execute(stmt)
         return result.unique().scalars().all()
 
-    async def handle_premature_trip_end(db: Session, trip_id: str):
+    async def handle_premature_trip_end(self, trip_id: str):
         try:
             # 1. Update the Trip Status
-            # We move it to PREMATURE_END as requested
             trip_stmt = (
                 update(schema.ScheduledTrip)
                 .where(schema.ScheduledTrip.id == trip_id)
@@ -964,8 +963,9 @@ class AdminService:
                     updated_at=datetime.utcnow(),
                 )
             )
-            db.execute(trip_stmt)
+            await self.db.execute(trip_stmt)  # Use self.db and await
 
+            # 2. Cancel related bookings
             cancel_bookings_stmt = (
                 update(schema.TripBooking)
                 .where(
@@ -983,15 +983,15 @@ class AdminService:
                 .values(
                     booking_status=schema.BookingStatus.CANCELLED,
                     cancelled_at=datetime.utcnow(),
-                    # Note: You may want to flag these for automatic refund processing
                     refund_retry_after=datetime.utcnow(),
                 )
             )
 
-            result = db.execute(cancel_bookings_stmt)
+            result = await self.db.execute(cancel_bookings_stmt)
             affected_bookings_count = result.rowcount
 
-            db.commit()
+            await self.db.commit()  # Use await
+
             return {
                 "status": "success",
                 "cancelled_bookings": affected_bookings_count,
@@ -999,7 +999,7 @@ class AdminService:
             }
 
         except Exception as e:
-            db.rollback()
+            await self.db.rollback()  # Use await
             raise e
 
     # ============================================================

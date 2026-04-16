@@ -1,5 +1,4 @@
 from typing import List, Optional
-from urllib import request
 
 from fastapi import (
     APIRouter,
@@ -1202,12 +1201,17 @@ async def cancel_trip_by_id(
 @router.post("/trips/{trip_id}/premature-end")
 async def premature_end_trip(
     trip_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_async_session),
-    # current_user: User = Depends(get_current_admin_user) # Logic to check is_admin
 ):
     hub = get_ws_hub(request)
     service = AdminService(db, ws_hub=hub)
-    return await service.handle_premature_trip_end(db, trip_id)
+    return await service.handle_premature_trip_end(trip_id)
+
+
+# -----------------------------
+# Admin: Get Trip Details using Trip_ID
+# -----------------------------
 
 
 @router.get("/trips/{trip_id}")
@@ -1383,6 +1387,9 @@ async def resolve_trip_issue(
 
 
 # -------------------- support sections ---------------------------
+# -----------------------------
+# Admin: Get All Support Queries
+# -----------------------------
 @router.get("/tickets")
 async def list_tickets(
     status: Optional[schema.SupportStatus] = None,
@@ -1994,6 +2001,7 @@ async def get_driver_reviews(
                         "rating": r.driver_rating,
                         "comment": r.review_text,
                         "created_at": r.created_at,
+                        "trip_ratings":r.trip_rating,
                     },
                 }
             )
