@@ -107,7 +107,7 @@ async def check_near_stop(
 
     if min_distance > nearest_stop.radius_meters:
         raise HTTPException(
-            status_code=307,
+            status_code=200,
             detail={
                 "message": "Not within stop radius",
                 "distance_meters": round(min_distance, 2),
