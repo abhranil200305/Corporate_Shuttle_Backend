@@ -1611,6 +1611,10 @@ async def get_complete_user_audit(
 
 
 # -------------------------  TRANSACTIONS DETAILS BY SPECIFIC USERS --------------------
+# -----------------------------
+# Admin: get Transaction history using user_id
+# -----------------------------
+
 @router.get("/{user_id}/transaction_history")
 async def get_user_transaction_history(
     user_id: str,
@@ -1723,6 +1727,9 @@ async def get_booking_rating(
 
 
 # ------------------  GET BOOKINGS DETAILS BY USER ID ----------------------
+# -----------------------------
+# Admin: GET BOOKINGS DETAILS BY USER ID
+# -----------------------------
 @router.get("/user/{user_id}/bookings/detailed")
 async def get_user_bookings_detailed(
     user_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1781,6 +1788,9 @@ async def get_user_bookings_detailed(
 
 
 # ------------------------ ALL PASSENGERS DETAILS -------------------
+# -----------------------------
+# Admin: Get ALL Passengers Details
+# -----------------------------
 @router.get("/passengers")
 async def get_all_passengers_full_detail(
     skip: int = 0,
