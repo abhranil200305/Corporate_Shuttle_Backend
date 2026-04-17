@@ -139,6 +139,10 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
 					if v
 					else None,
 					"vehical_reviewed_at": v.reviewed_at if v else None,
+					"vehical_owner_ship_type": v.ownership_type if v else None,
+					"vechical_auth_file_path": v.authentication_file_path
+					if v
+					else None,
 				},
 				"account_info": {
 					"account_number": p.bank_account_number if p else None,
@@ -248,6 +252,10 @@ async def get_driver_details(
 			if v
 			else None,
 			"vehical_reviewed_at": v.reviewed_at if v else None,
+			"vehical_owner_ship_type": v.ownership_type if v else None,
+			"vechical_auth_file_path": v.authentication_file_path
+			if v
+			else "NA",
 		},
 		"vehical_physical_inspection": {
 			"inspection_status": d.vehicle.inspection_status
@@ -311,6 +319,10 @@ async def get_driver_details_vechicals(
 			if v
 			else None,
 			"vehical_reviewed_at": v.reviewed_at if v else None,
+			"vehical_owner_ship_type": v.ownership_type if v else None,
+			"vechical_auth_file_path": v.authentication_file_path
+			if v
+			else "NA",
 		},
 	}
 
