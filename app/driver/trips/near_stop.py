@@ -9,7 +9,7 @@ from app.db.database import get_async_session
 from app.db.schema import (
     ScheduledTrip,
     RouteStop,
-    Route,   # ✅ IMPORTANT (added)
+    Route,
     Stop,
     User,
 )
@@ -54,7 +54,7 @@ async def check_near_stop(
         .where(ScheduledTrip.id == trip_id)
         .options(
             selectinload(ScheduledTrip.route)
-            .selectinload(Route.route_stops)   # ✅ FIXED
+            .selectinload(Route.route_stops)
             .selectinload(RouteStop.stop)
         )
     )
@@ -67,6 +67,14 @@ async def check_near_stop(
 
     if not trip.route:
         raise HTTPException(status_code=400, detail="Trip has no route")
+
+    # ---------------------------------------
+    # ✅ NEW: STORE CURRENT LOCATION
+    # ---------------------------------------
+    trip.last_lat = lat
+    trip.last_lng = lng
+    session.add(trip)
+    await session.commit()
 
     # ---------------------------------------
     # 2. Sort stops by sequence
