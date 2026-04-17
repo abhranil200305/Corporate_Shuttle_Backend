@@ -11,8 +11,10 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.admin.endpoints.router import router as admin_router
+from app.system_user import ensure_system_fine_register_user
 from app.auth import router as auth_router
-from app.db.database import dispose_database_engine, ping_database
+from app.db.database import AsyncSessionLocal, dispose_database_engine, ping_database
+from app.db.schema import User, UserRole
 from app.driver import driver_kyc, vehicle
 from app.driver.driverprofile import router as driverprofile_router
 from app.driver.driverprofileshow import router as driverprofileshow_router
@@ -103,6 +105,7 @@ async def lifespan(app: FastAPI):
     try:
         await ping_database(retries=3, delay_seconds=1.0)
         print("✅ Database connected successfully")
+        await ensure_system_fine_register_user(AsyncSessionLocal)
     except Exception as e:
         print("❌ Database connection failed:", e)
         # fail fast so the app does not boot into a half-broken state

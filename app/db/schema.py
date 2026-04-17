@@ -872,6 +872,7 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default=Decimal("0.00"),
     )
+    commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     __table_args__ = (
         CheckConstraint(

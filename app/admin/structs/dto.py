@@ -5,6 +5,14 @@ from pydantic import BaseModel, Field
 
 from app.db import schema
 
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field, field_validator
+
 
 class stopCreate(BaseModel):
     name: str
@@ -313,3 +321,64 @@ class TriggerBookingPayoutRequest(BaseModel):
     linked_account_id: Optional[str] = Field(default=None, max_length=64)
     require_completed: bool = True
     adjustments_to_apply: List[PayoutAdjustmentAllocationInput] = Field(default_factory=list)
+
+
+CommercialRuleType = Literal["driver_trip_cancel", "trip_latency"]
+CommercialFineMode = Literal["flat_per_booking", "percent_of_fare"]
+
+class CommercialRuleConfig(BaseModel):
+    min_minutes_before: int | None = None
+    max_minutes_before: int | None = None
+    min_minutes_late: int | None = None
+    max_minutes_late: int | None = None
+    grace_minutes: int | None = None
+    allowed: bool | None = None
+    fine_mode: CommercialFineMode | None = None
+    fine_value: Decimal | None = Field(default=None, ge=0)
+
+
+class CommercialRuleCreateRequest(BaseModel):
+    rule_type: CommercialRuleType
+    code: str = Field(..., min_length=1, max_length=64)
+    title: str = Field(..., min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    priority: int = Field(default=100, ge=0, le=100000)
+    is_active: bool = True
+    config: CommercialRuleConfig
+
+    @field_validator("code")
+    @classmethod
+    def normalize_code(cls, value: str) -> str:
+        cleaned = value.strip().lower()
+        if not cleaned:
+            raise ValueError("code cannot be empty")
+        return cleaned
+
+
+class CommercialRuleUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    priority: int | None = Field(default=None, ge=0, le=100000)
+    config: CommercialRuleConfig | None = None
+
+
+class CommercialRuleStatusUpdateRequest(BaseModel):
+    is_active: bool
+
+
+class CommercialRuleResponse(BaseModel):
+    id: str
+    rule_type: CommercialRuleType
+    code: str
+    title: str
+    description: str | None
+    priority: int
+    is_active: bool
+    config: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+
+class CommercialRuleListResponse(BaseModel):
+    items: list[CommercialRuleResponse]
+    count: int
