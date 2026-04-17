@@ -1,15 +1,13 @@
-from typing import List, Optional
-
 from fastapi import (
-    APIRouter,
-    Body,
-    Depends,
-    File,
-    HTTPException,
-    Path,
-    Query,
-    Request,
-    UploadFile,
+	APIRouter,
+	Body,
+	Depends,
+	File,
+	HTTPException,
+	Path,
+	Query,
+	Request,
+	UploadFile,
 )
 from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError
@@ -18,29 +16,29 @@ from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
-    BulkPayoutTriggerRequest,
-    BulkStopAddRequest,
-    DriverLinkedAccountUpdate,
-    DriverPayoutDetailsUpsert,
-    DriverPayoutEligibilityUpdate,
-    PayoutAdjustmentCreateRequest,
-    PayoutAdjustmentDecisionRequest,
-    PayoutDashboardResponse,
-    PayoutSettingsUpdate,
-    RouteCreate,
-    RouteFareCreate,
-    RouteStatusUpdate,
-    StopCreate,
-    TriggerBookingPayoutRequest,
-    TriggerDriverMonthlyPayoutRequest,
-    VehicleInspectionUpdate,
-    VehicleVerificationUpdate,
-    VerificationUpdate,
+	BulkPayoutTriggerRequest,
+	BulkStopAddRequest,
+	DriverLinkedAccountUpdate,
+	DriverPayoutDetailsUpsert,
+	DriverPayoutEligibilityUpdate,
+	PayoutAdjustmentCreateRequest,
+	PayoutAdjustmentDecisionRequest,
+	PayoutDashboardResponse,
+	PayoutSettingsUpdate,
+	RouteCreate,
+	RouteFareCreate,
+	RouteStatusUpdate,
+	StopCreate,
+	TriggerBookingPayoutRequest,
+	TriggerDriverMonthlyPayoutRequest,
+	VehicleInspectionUpdate,
+	VehicleVerificationUpdate,
+	VerificationUpdate,
 )
 from app.auth.dependencies import (
-    get_current_active_user,
-    get_current_admin,
-    get_current_user,
+	get_current_active_user,
+	get_current_admin,
+	get_current_user,
 )
 from app.db import schema
 from app.db.database import get_async_session
@@ -52,34 +50,37 @@ from app.payments.service import RoutePayoutService
 
 # Create ONE router for all admin tasks
 router = APIRouter(
-    prefix="/admin",
-    tags=["Admin Management"],
-    dependencies=[Depends(get_current_admin)],  # Protects all routes
+	prefix="/admin",
+	tags=["Admin Management"],
+	dependencies=[Depends(get_current_admin)],  # Protects all routes
 )
 
 ###----Notifications --------
 
 
 def get_ws_hub(request: Request) -> WSHub:
-    return request.app.state.ws_hub
+	return request.app.state.ws_hub
 
 
 @router.post("/send-notification/{user_id}", tags=["Admin Notifications"])
 async def send_admin_notification(
-    user_id: str,
-    payload: NotificationDataPayload,
-    request: Request,
-    db: AsyncSession = Depends(get_async_session),
-    current_user: schema.User = Depends(get_current_admin),
+	user_id: str,
+	payload: NotificationDataPayload,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
 ):
-    hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
 
-    await service.send_user_notification(
-        user_id=user_id, title=payload.title, message=payload.message, data=payload.data
-    )
+	await service.send_user_notification(
+		user_id=user_id,
+		title=payload.title,
+		message=payload.message,
+		data=payload.data,
+	)
 
-    return {"status": "success", "message": f"Notification sent to {user_id}"}
+	return {"status": "success", "message": f"Notification sent to {user_id}"}
 
 
 # -----------------------------
@@ -87,89 +88,93 @@ async def send_admin_notification(
 # -----------------------------
 @router.get("/view/all-drivers")
 async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    drivers = await service.fetch_detailed_drivers()
+	service = AdminService(db)
+	drivers = await service.fetch_detailed_drivers()
 
-    results = []
-    for d in drivers:
-        # Check if profiles exist to avoid NoneType errors
-        p = d.driver_profile
-        v = d.vehicle
+	results = []
+	for d in drivers:
+		# Check if profiles exist to avoid NoneType errors
+		p = d.driver_profile
+		v = d.vehicle
 
-        results.append(
-            {
-                "user_id": d.id,
-                "email": d.email,
-                "is_active": d.is_active,
-                "profile": {
-                    "name": p.full_name if p else None,
-                    "phone": p.phone if p else None,
-                    "verification": p.verification_status if p else "N/A",
-                    "profile_verification_req_date": p.verification_requested_at
-                    if p
-                    else None,
-                    "documents": {
-                        "aadhaar_number": p.aadhaar_number if p else None,
-                        "pan_number": p.pan_number if p else None,
-                        "driving_license_number": p.driving_license_number
-                        if p
-                        else None,
-                        "aadhaar_url": p.aadhaar_file_path if p else None,
-                        "pan_url": p.pan_file_path if p else None,
-                        "dl_url": p.driving_license_file_path if p else None,
-                    },
-                },
-                "bus_details": {
-                    "vehicle_id": v.id if v else None,
-                    "reg_no": v.registration_number if v else None,
-                    "reg_valid_till": v.registration_valid_till if v else None,
-                    "model": v.vehicle_model if v else None,
-                    "capacity": v.seat_count if v else 0,
-                    "ac": v.has_ac if v else False,
-                    "status": v.verification_status if v else "Pending",
-                    # FIXED: Checking v.rc_file_path instead of d.rc_file_path
-                    "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
-                    "rear_photo_file_path": v.rear_photo_file_path
-                    if (v and v.rear_photo_file_path)
-                    else "NA",
-                    "vechical_verification_req_date": v.verification_requested_at
-                    if v
-                    else None,
-                    "vehical_reviewed_at": v.reviewed_at if v else None,
-                },
-                "account_info": {
-                    "account_number": p.bank_account_number if p else None,
-                    "IFSC_code": p.ifsc_code if p else None,
-                    "passbook_url": p.passbook_file_path if p else None,
-                },
-            }
-        )
-    return results
+		results.append(
+			{
+				"user_id": d.id,
+				"email": d.email,
+				"is_active": d.is_active,
+				"profile": {
+					"name": p.full_name if p else None,
+					"phone": p.phone if p else None,
+					"verification": p.verification_status if p else "N/A",
+					"profile_verification_req_date": p.verification_requested_at
+					if p
+					else None,
+					"documents": {
+						"aadhaar_number": p.aadhaar_number if p else None,
+						"pan_number": p.pan_number if p else None,
+						"driving_license_number": p.driving_license_number
+						if p
+						else None,
+						"aadhaar_url": p.aadhaar_file_path if p else None,
+						"pan_url": p.pan_file_path if p else None,
+						"dl_url": p.driving_license_file_path if p else None,
+					},
+				},
+				"bus_details": {
+					"vehicle_id": v.id if v else None,
+					"reg_no": v.registration_number if v else None,
+					"reg_valid_till": v.registration_valid_till if v else None,
+					"model": v.vehicle_model if v else None,
+					"capacity": v.seat_count if v else 0,
+					"ac": v.has_ac if v else False,
+					"status": v.verification_status if v else "Pending",
+					# FIXED: Checking v.rc_file_path instead of d.rc_file_path
+					"rc_file_path": v.rc_file_path
+					if (v and v.rc_file_path)
+					else "NA",
+					"rear_photo_file_path": v.rear_photo_file_path
+					if (v and v.rear_photo_file_path)
+					else "NA",
+					"vechical_verification_req_date": v.verification_requested_at
+					if v
+					else None,
+					"vehical_reviewed_at": v.reviewed_at if v else None,
+				},
+				"account_info": {
+					"account_number": p.bank_account_number if p else None,
+					"IFSC_code": p.ifsc_code if p else None,
+					"passbook_url": p.passbook_file_path if p else None,
+				},
+			}
+		)
+	return results
 
 
 # -----------------------------
 # Admin: All Passengers
 # -----------------------------
 @router.get("/view/all-passengers")
-async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    passengers = await service.fetch_detailed_passengers()
+async def get_all_passengers_info(
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+	passengers = await service.fetch_detailed_passengers()
 
-    return [
-        {
-            "user_id": p.id,
-            "email": p.email,
-            "is_active": p.is_active,
-            "joined_at": p.created_at,
-            "profile": {
-                "name": p.passenger_profile.full_name
-                if p.passenger_profile
-                else "Not Set",
-            },
-            "total_trips_booked": len(p.passenger_bookings),
-        }
-        for p in passengers
-    ]
+	return [
+		{
+			"user_id": p.id,
+			"email": p.email,
+			"is_active": p.is_active,
+			"joined_at": p.created_at,
+			"profile": {
+				"name": p.passenger_profile.full_name
+				if p.passenger_profile
+				else "Not Set"
+			},
+			"total_trips_booked": len(p.passenger_bookings),
+		}
+		for p in passengers
+	]
 
 
 # -----------------------------
@@ -177,81 +182,97 @@ async def get_all_passengers_info(db: AsyncSession = Depends(get_async_session))
 # -----------------------------
 @router.get("/driver/{user_id}")
 async def get_driver_details(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    d = await service.fetch_driver_by_id(user_id)
+	service = AdminService(db)
+	d = await service.fetch_driver_by_id(user_id)
 
-    if not d:
-        return {"error": "Driver not found"}
-    v = d.vehicle
-    return {
-        "user_id": d.id,
-        "email": d.email,
-        "is_active": d.is_active,
-        "profile": {
-            "full_name": d.driver_profile.full_name if d.driver_profile else "Not Set",
-            "phone": d.driver_profile.phone if d.driver_profile else None,
-            "verification_status": d.driver_profile.verification_status
-            if d.driver_profile
-            else "draft",
-            "profile_verification_req_date": d.driver_profile.verification_requested_at
-            if d.driver_profile
-            else None,
-            "documents": {
-                # Added Aadhaar and PAN numbers here
-                "aadhaar_number": d.driver_profile.aadhaar_number
-                if d.driver_profile
-                else None,
-                "pan_number": d.driver_profile.pan_number if d.driver_profile else None,
-                "driving_license_number": d.driver_profile.driving_license_number
-                if d.driver_profile
-                else None,
-                # File paths/URLs
-                "aadhaar_url": d.driver_profile.aadhaar_file_path
-                if d.driver_profile
-                else None,
-                "pan_url": d.driver_profile.pan_file_path if d.driver_profile else None,
-                "dl_url": d.driver_profile.driving_license_file_path
-                if d.driver_profile
-                else None,
-            },
-        },
-        "vehicle": {
-            "reg_no": d.vehicle.registration_number if d.vehicle else None,
-            "reg_valid_till": d.vehicle.registration_valid_till if d.vehicle else None,
-            "model": d.vehicle.vehicle_model if d.vehicle else None,
-            "vehical_name": d.vehicle.vehicle_name if d.vehicle else None,
-            "capacity": d.vehicle.seat_count if d.vehicle else 0,
-            "has_ac": d.vehicle.has_ac if d.vehicle else False,
-            "verification": d.vehicle.verification_status if d.vehicle else "N/A",
-            "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
-            "rear_photo_file_path": v.rear_photo_file_path
-            if (v and v.rear_photo_file_path)
-            else "NA",
-            "vechical_verification_req_date": v.verification_requested_at
-            if v
-            else None,
-            "vehical_reviewed_at": v.reviewed_at if v else None,
-        },
-        "vehical_physical_inspection": {
-            "inspection_status": d.vehicle.inspection_status if d.vehicle else None,
-            "inspection_reason": d.vehicle.inspection_reason if d.vehicle else None,
-            # "inspection_created_at":d.vehicle.inspection_created_at if d.vehicle else None,
-            "inspection_reviewed_at": d.vehicle.inspection_reviewed_at
-            if d.vehicle
-            else None,
-        },
-        "account_info": {
-            "account_number": d.driver_profile.bank_account_number
-            if d.driver_profile
-            else None,
-            "IFSC_code": d.driver_profile.ifsc_code if d.driver_profile else None,
-            "passbook_url": d.driver_profile.passbook_file_path
-            if d.driver_profile
-            else None,
-        },
-    }
+	if not d:
+		return {"error": "Driver not found"}
+	v = d.vehicle
+	return {
+		"user_id": d.id,
+		"email": d.email,
+		"is_active": d.is_active,
+		"profile": {
+			"full_name": d.driver_profile.full_name
+			if d.driver_profile
+			else "Not Set",
+			"phone": d.driver_profile.phone if d.driver_profile else None,
+			"verification_status": d.driver_profile.verification_status
+			if d.driver_profile
+			else "draft",
+			"profile_verification_req_date": d.driver_profile.verification_requested_at
+			if d.driver_profile
+			else None,
+			"documents": {
+				# Added Aadhaar and PAN numbers here
+				"aadhaar_number": d.driver_profile.aadhaar_number
+				if d.driver_profile
+				else None,
+				"pan_number": d.driver_profile.pan_number
+				if d.driver_profile
+				else None,
+				"driving_license_number": d.driver_profile.driving_license_number
+				if d.driver_profile
+				else None,
+				# File paths/URLs
+				"aadhaar_url": d.driver_profile.aadhaar_file_path
+				if d.driver_profile
+				else None,
+				"pan_url": d.driver_profile.pan_file_path
+				if d.driver_profile
+				else None,
+				"dl_url": d.driver_profile.driving_license_file_path
+				if d.driver_profile
+				else None,
+			},
+		},
+		"vehicle": {
+			"reg_no": d.vehicle.registration_number if d.vehicle else None,
+			"reg_valid_till": d.vehicle.registration_valid_till
+			if d.vehicle
+			else None,
+			"model": d.vehicle.vehicle_model if d.vehicle else None,
+			"vehical_name": d.vehicle.vehicle_name if d.vehicle else None,
+			"capacity": d.vehicle.seat_count if d.vehicle else 0,
+			"has_ac": d.vehicle.has_ac if d.vehicle else False,
+			"verification": d.vehicle.verification_status
+			if d.vehicle
+			else "N/A",
+			"rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
+			"rear_photo_file_path": v.rear_photo_file_path
+			if (v and v.rear_photo_file_path)
+			else "NA",
+			"vechical_verification_req_date": v.verification_requested_at
+			if v
+			else None,
+			"vehical_reviewed_at": v.reviewed_at if v else None,
+		},
+		"vehical_physical_inspection": {
+			"inspection_status": d.vehicle.inspection_status
+			if d.vehicle
+			else None,
+			"inspection_reason": d.vehicle.inspection_reason
+			if d.vehicle
+			else None,
+			# "inspection_created_at":d.vehicle.inspection_created_at if d.vehicle else None,
+			"inspection_reviewed_at": d.vehicle.inspection_reviewed_at
+			if d.vehicle
+			else None,
+		},
+		"account_info": {
+			"account_number": d.driver_profile.bank_account_number
+			if d.driver_profile
+			else None,
+			"IFSC_code": d.driver_profile.ifsc_code
+			if d.driver_profile
+			else None,
+			"passbook_url": d.driver_profile.passbook_file_path
+			if d.driver_profile
+			else None,
+		},
+	}
 
 
 # -----------------------------
@@ -259,35 +280,39 @@ async def get_driver_details(
 # -----------------------------
 @router.get("/driver/vehicle/{user_id}")
 async def get_driver_details_vechicals(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    d = await service.fetch_driver_by_id(user_id)
+	service = AdminService(db)
+	d = await service.fetch_driver_by_id(user_id)
 
-    if not d:
-        return {"error": "Driver not found"}
-    v = d.vehicle
-    return {
-        "user_id": d.id,
-        "email": d.email,
-        "is_active": d.is_active,
-        "vehicle": {
-            "reg_no": d.vehicle.registration_number if d.vehicle else None,
-            "reg_valid_till": d.vehicle.registration_valid_till if d.vehicle else None,
-            "model": d.vehicle.vehicle_model if d.vehicle else None,
-            "capacity": d.vehicle.seat_count if d.vehicle else 0,
-            "has_ac": d.vehicle.has_ac if d.vehicle else False,
-            "verification": d.vehicle.verification_status if d.vehicle else "N/A",
-            "rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
-            "rear_photo_file_path": v.rear_photo_file_path
-            if (v and v.rear_photo_file_path)
-            else "NA",
-            "vechical_verification_req_date": v.verification_requested_at
-            if v
-            else None,
-            "vehical_reviewed_at": v.reviewed_at if v else None,
-        },
-    }
+	if not d:
+		return {"error": "Driver not found"}
+	v = d.vehicle
+	return {
+		"user_id": d.id,
+		"email": d.email,
+		"is_active": d.is_active,
+		"vehicle": {
+			"reg_no": d.vehicle.registration_number if d.vehicle else None,
+			"reg_valid_till": d.vehicle.registration_valid_till
+			if d.vehicle
+			else None,
+			"model": d.vehicle.vehicle_model if d.vehicle else None,
+			"capacity": d.vehicle.seat_count if d.vehicle else 0,
+			"has_ac": d.vehicle.has_ac if d.vehicle else False,
+			"verification": d.vehicle.verification_status
+			if d.vehicle
+			else "N/A",
+			"rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
+			"rear_photo_file_path": v.rear_photo_file_path
+			if (v and v.rear_photo_file_path)
+			else "NA",
+			"vechical_verification_req_date": v.verification_requested_at
+			if v
+			else None,
+			"vehical_reviewed_at": v.reviewed_at if v else None,
+		},
+	}
 
 
 # -----------------------------
@@ -295,50 +320,50 @@ async def get_driver_details_vechicals(
 # -----------------------------
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    p = await service.fetch_passenger_by_id(user_id)
+	service = AdminService(db)
+	p = await service.fetch_passenger_by_id(user_id)
 
-    if not p:
-        return {"error": "Passenger not found"}
+	if not p:
+		return {"error": "Passenger not found"}
 
-    return {
-        "user_id": p.id,
-        "email": p.email,
-        "joined_at": p.created_at,
-        "is_active": p.is_active,
-        "profile": {
-            "full_name": p.passenger_profile.full_name
-            if p.passenger_profile
-            else "Not Set",
-            "avatar": p.passenger_profile.profile_picture_path
-            if p.passenger_profile
-            else None,
-        },
-        "booking_history": {
-            "total_count": len(p.passenger_bookings),
-            "bookings": [
-                {
-                    "booking_id": b.id,
-                    "status": b.booking_status,
-                    "fare": float(b.fare_amount),
-                    "created_at": b.created_at,
-                    "pickup_stop": {
-                        "id": b.pickup_stop.id,
-                        "name": b.pickup_stop.name,
-                        "sequence": b.pickup_sequence_no_snapshot,
-                    },
-                    "dropoff_stop": {
-                        "id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
-                        "name": b.dropoff_stop.name,  # Ensure this says dropoff_stop
-                        "sequence": b.dropoff_sequence_no_snapshot,
-                    },
-                }
-                for b in p.passenger_bookings
-            ],
-        },
-    }
+	return {
+		"user_id": p.id,
+		"email": p.email,
+		"joined_at": p.created_at,
+		"is_active": p.is_active,
+		"profile": {
+			"full_name": p.passenger_profile.full_name
+			if p.passenger_profile
+			else "Not Set",
+			"avatar": p.passenger_profile.profile_picture_path
+			if p.passenger_profile
+			else None,
+		},
+		"booking_history": {
+			"total_count": len(p.passenger_bookings),
+			"bookings": [
+				{
+					"booking_id": b.id,
+					"status": b.booking_status,
+					"fare": float(b.fare_amount),
+					"created_at": b.created_at,
+					"pickup_stop": {
+						"id": b.pickup_stop.id,
+						"name": b.pickup_stop.name,
+						"sequence": b.pickup_sequence_no_snapshot,
+					},
+					"dropoff_stop": {
+						"id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
+						"name": b.dropoff_stop.name,  # Ensure this says dropoff_stop
+						"sequence": b.dropoff_sequence_no_snapshot,
+					},
+				}
+				for b in p.passenger_bookings
+			],
+		},
+	}
 
 
 # -----------------------------
@@ -346,23 +371,23 @@ async def get_passenger_details(
 # -----------------------------
 @router.get("/vehicle/details/{vehicle_id}")
 async def get_vehicle_data(
-    vehicle_id: str, db: AsyncSession = Depends(get_async_session)
+	vehicle_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    vehicle = await service.fetch_vehicle_details_by_id(vehicle_id)
+	service = AdminService(db)
+	vehicle = await service.fetch_vehicle_details_by_id(vehicle_id)
 
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle not found")
+	if not vehicle:
+		raise HTTPException(status_code=404, detail="Vehicle not found")
 
-    return {
-        "vehicle_id": vehicle.id,
-        "physical_inspection": {
-            "status": vehicle.inspection_status,
-            "reviewed_at": vehicle.inspection_reviewed_at,
-            "reason": vehicle.inspection_reason,
-        },
-        "is_active": vehicle.is_active,
-    }
+	return {
+		"vehicle_id": vehicle.id,
+		"physical_inspection": {
+			"status": vehicle.inspection_status,
+			"reviewed_at": vehicle.inspection_reviewed_at,
+			"reason": vehicle.inspection_reason,
+		},
+		"is_active": vehicle.is_active,
+	}
 
 
 # -----------------------------
@@ -372,56 +397,58 @@ async def get_vehicle_data(
 
 @router.get("/reports/inactive-users")
 async def get_inactive_users(
-    months: int = 3, db: AsyncSession = Depends(get_async_session)
+	months: int = 3, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    users = await service.fetch_inactive_users(months)
+	service = AdminService(db)
+	users = await service.fetch_inactive_users(months)
 
-    return [
-        {
-            "user_id": u.id,
-            "email": u.email,
-            "phone_no": u.phone_number,  # Added phone number field
-            "role": u.role,
-            "name": (
-                u.passenger_profile.full_name
-                if u.passenger_profile
-                else u.driver_profile.full_name
-                if u.driver_profile
-                else "Unknown"
-            ),
-            "status": "Inactive",
-        }
-        for u in users
-    ]
+	return [
+		{
+			"user_id": u.id,
+			"email": u.email,
+			"phone_no": u.phone_number,  # Added phone number field
+			"role": u.role,
+			"name": (
+				u.passenger_profile.full_name
+				if u.passenger_profile
+				else u.driver_profile.full_name
+				if u.driver_profile
+				else "Unknown"
+			),
+			"status": "Inactive",
+		}
+		for u in users
+	]
 
 
 # -----------------------------
 # Admin: Active,inactive for the driver and passenger Using User_id
 # -----------------------------
 @router.post("/driver/activate/{user_id}")
-async def activate_driver(user_id: str, db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    driver = await service.fetch_driver_by_id(user_id)
-    if not driver:
-        return {"error": "Driver not found"}, 404
+async def activate_driver(
+	user_id: str, db: AsyncSession = Depends(get_async_session)
+):
+	service = AdminService(db)
+	driver = await service.fetch_driver_by_id(user_id)
+	if not driver:
+		return {"error": "Driver not found"}, 404
 
-    await service.toggle_driver_status(user_id, active=True)
-    return {"message": f"Driver {user_id} has been activated successfully"}
+	await service.toggle_driver_status(user_id, active=True)
+	return {"message": f"Driver {user_id} has been activated successfully"}
 
 
 @router.post("/driver/deactivate/{user_id}")
 async def deactivate_driver(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    # Optional: Check if driver exists first
-    driver = await service.fetch_driver_by_id(user_id)
-    if not driver:
-        return {"error": "Driver not found"}, 404
+	service = AdminService(db)
+	# Optional: Check if driver exists first
+	driver = await service.fetch_driver_by_id(user_id)
+	if not driver:
+		return {"error": "Driver not found"}, 404
 
-    await service.toggle_driver_status(user_id, active=False)
-    return {"message": f"Driver {user_id} has been deactivated successfully"}
+	await service.toggle_driver_status(user_id, active=False)
+	return {"message": f"Driver {user_id} has been deactivated successfully"}
 
 
 # -----------------------------
@@ -429,47 +456,51 @@ async def deactivate_driver(
 # -----------------------------
 @router.post("/driver/verify/{user_id}")
 async def verify_driver(
-    user_id: str,
-    data: VerificationUpdate,
-    request: Request,
-    db: AsyncSession = Depends(get_async_session),
+	user_id: str,
+	data: VerificationUpdate,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)
-    admin_service = AdminService(db)
-    notif_service = NotificationService(db, ws_hub=hub)
+	hub = get_ws_hub(request)
+	admin_service = AdminService(db)
+	notif_service = NotificationService(db, ws_hub=hub)
 
-    driver = await admin_service.fetch_driver_by_id(user_id)
-    if not driver or not driver.driver_profile:
-        raise HTTPException(status_code=404, detail="Driver profile not found")
+	driver = await admin_service.fetch_driver_by_id(user_id)
+	if not driver or not driver.driver_profile:
+		raise HTTPException(status_code=404, detail="Driver profile not found")
 
-    await admin_service.update_driver_verification(
-        user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
-    )
+	await admin_service.update_driver_verification(
+		user_id=user_id,
+		status=data.status,
+		rejection_reason=data.rejection_reason,
+	)
 
-    # Use the instance (notif_service) not the Class (NotificationService)
-    title = (
-        "Profile Verified!" if data.status == "verified" else "Profile Action Required"
-    )
-    message = (
-        "Your profile has been verified. You can now accept rides."
-        if data.status == "verified"
-        else f"Your profile was not approved. Reason: {data.rejection_reason}"
-    )
+	# Use the instance (notif_service) not the Class (NotificationService)
+	title = (
+		"Profile Verified!"
+		if data.status == "verified"
+		else "Profile Action Required"
+	)
+	message = (
+		"Your profile has been verified. You can now accept rides."
+		if data.status == "verified"
+		else f"Your profile was not approved. Reason: {data.rejection_reason}"
+	)
 
-    await notif_service.notify_user(
-        user_id=user_id,
-        title=title,
-        message=message,
-        data={"type": "verification_update", "status": data.status},
-        # commit=False # We handle the commit below
-    )
+	await notif_service.notify_user(
+		user_id=user_id,
+		title=title,
+		message=message,
+		data={"type": "verification_update", "status": data.status},
+		# commit=False # We handle the commit below
+	)
 
-    await db.commit()
+	await db.commit()
 
-    return {
-        "message": f"Driver verification status updated to {data.status}",
-        "user_id": user_id,
-    }
+	return {
+		"message": f"Driver verification status updated to {data.status}",
+		"user_id": user_id,
+	}
 
 
 # -----------------------------
@@ -477,52 +508,54 @@ async def verify_driver(
 # -----------------------------
 @router.post("/vehicle/verify/{user_id}")
 async def verify_vehicle(
-    user_id: str,
-    data: VehicleVerificationUpdate,
-    request: Request,
-    db: AsyncSession = Depends(get_async_session),
+	user_id: str,
+	data: VehicleVerificationUpdate,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
 
-    # 1. Instantiate the NotificationService correctly
-    notif_service = NotificationService(db, ws_hub=hub)
+	# 1. Instantiate the NotificationService correctly
+	notif_service = NotificationService(db, ws_hub=hub)
 
-    driver = await service.fetch_driver_by_id(user_id)
-    if not driver or not driver.vehicle:
-        raise HTTPException(
-            status_code=404, detail="Vehicle record not found for this user"
-        )
+	driver = await service.fetch_driver_by_id(user_id)
+	if not driver or not driver.vehicle:
+		raise HTTPException(
+			status_code=404, detail="Vehicle record not found for this user"
+		)
 
-    # 3. Update the vehicle status
-    await service.update_vehicle_verification(
-        user_id=user_id, status=data.status, rejection_reason=data.rejection_reason
-    )
+	# 3. Update the vehicle status
+	await service.update_vehicle_verification(
+		user_id=user_id,
+		status=data.status,
+		rejection_reason=data.rejection_reason,
+	)
 
-    # --- NOTIFICATION LOGIC ---
-    status_msg = "approved" if data.status == "verified" else "rejected"
+	# --- NOTIFICATION LOGIC ---
+	status_msg = "approved" if data.status == "verified" else "rejected"
 
-    try:
-        # Call the method on 'notif_service' (the instance), not the class
-        await notif_service.notify_user(
-            user_id=user_id,
-            title="Vehicle Verification Update",
-            message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
-            data={"type": "vehicle_update", "status": data.status},
-            commit=False,
-        )
-    except Exception as e:
-        # Log the error but don't stop the whole process
-        print(f"Notification failed: {e}")
+	try:
+		# Call the method on 'notif_service' (the instance), not the class
+		await notif_service.notify_user(
+			user_id=user_id,
+			title="Vehicle Verification Update",
+			message=f"Your vehicle {driver.vehicle.registration_number} has been {status_msg}.",
+			data={"type": "vehicle_update", "status": data.status},
+			commit=False,
+		)
+	except Exception as e:
+		# Log the error but don't stop the whole process
+		print(f"Notification failed: {e}")
 
-    # Final commit for both the DB update and the notification record
-    await db.commit()
+	# Final commit for both the DB update and the notification record
+	await db.commit()
 
-    return {
-        "message": f"Vehicle verification status updated to {data.status}",
-        "user_id": user_id,
-        "registration_number": driver.vehicle.registration_number,
-    }
+	return {
+		"message": f"Vehicle verification status updated to {data.status}",
+		"user_id": user_id,
+		"registration_number": driver.vehicle.registration_number,
+	}
 
 
 # -----------------------------
@@ -530,31 +563,31 @@ async def verify_vehicle(
 # -----------------------------
 @router.post("/vehicle/inspect/{vehicle_id}")
 async def resolve_vehicle_inspection(
-    vehicle_id: str,
-    data: VehicleInspectionUpdate,
-    db: AsyncSession = Depends(get_async_session),
+	vehicle_id: str,
+	data: VehicleInspectionUpdate,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
+	service = AdminService(db)
 
-    # 1. Check if vehicle exists
-    vehicle = await service.fetch_vehicle_by_id(vehicle_id)
-    if not vehicle:
-        raise HTTPException(status_code=404, detail="Vehicle record not found")
+	# 1. Check if vehicle exists
+	vehicle = await service.fetch_vehicle_by_id(vehicle_id)
+	if not vehicle:
+		raise HTTPException(status_code=404, detail="Vehicle record not found")
 
-    # 2. Perform the update via service
-    # This automatically sets the inspection_created_at to now
-    await service.update_physical_inspection(
-        vehicle_id=vehicle_id, status=data.status, reason=data.reason
-    )
+	# 2. Perform the update via service
+	# This automatically sets the inspection_created_at to now
+	await service.update_physical_inspection(
+		vehicle_id=vehicle_id, status=data.status, reason=data.reason
+	)
 
-    # 3. Commit the transaction
-    await db.commit()
+	# 3. Commit the transaction
+	await db.commit()
 
-    return {
-        "status": "success",
-        "message": f"Vehicle physical inspection has been {data.status}",
-        "vehicle_id": vehicle_id,
-    }
+	return {
+		"status": "success",
+		"message": f"Vehicle physical inspection has been {data.status}",
+		"vehicle_id": vehicle_id,
+	}
 
 
 # -----------------------------
@@ -563,39 +596,41 @@ async def resolve_vehicle_inspection(
 
 
 @router.get("/drivers/verified_data")
-async def get_fully_verified_fleet(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    drivers = await service.fetch_fully_verified_drivers()
+async def get_fully_verified_fleet(
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+	drivers = await service.fetch_fully_verified_drivers()
 
-    fleet_data = []
-    for d in drivers:
-        # Accessing nested data from DriverProfile and Vehicle objects
-        profile = d.driver_profile
-        vehicle = d.vehicle
+	fleet_data = []
+	for d in drivers:
+		# Accessing nested data from DriverProfile and Vehicle objects
+		profile = d.driver_profile
+		vehicle = d.vehicle
 
-        fleet_data.append(
-            {
-                "driver_id": d.id,
-                "personal_details": {
-                    "full_name": profile.full_name,  # From DriverProfile
-                    "phone": profile.phone,  # From DriverProfile
-                    "email": d.email,  # From User
-                },
-                "verification_info": {
-                    "profile_status": profile.verification_status,
-                    "profile_verified_at": profile.reviewed_at,
-                    "vehicle_status": vehicle.verification_status,
-                    "vehicle_verified_at": vehicle.reviewed_at,
-                },
-                "vehicle_details": {
-                    "registration": vehicle.registration_number,
-                    "model": f"{vehicle.vehicle_name} {vehicle.vehicle_model}",
-                    "has_ac": vehicle.has_ac,
-                },
-            }
-        )
+		fleet_data.append(
+			{
+				"driver_id": d.id,
+				"personal_details": {
+					"full_name": profile.full_name,  # From DriverProfile
+					"phone": profile.phone,  # From DriverProfile
+					"email": d.email,  # From User
+				},
+				"verification_info": {
+					"profile_status": profile.verification_status,
+					"profile_verified_at": profile.reviewed_at,
+					"vehicle_status": vehicle.verification_status,
+					"vehicle_verified_at": vehicle.reviewed_at,
+				},
+				"vehicle_details": {
+					"registration": vehicle.registration_number,
+					"model": f"{vehicle.vehicle_name} {vehicle.vehicle_model}",
+					"has_ac": vehicle.has_ac,
+				},
+			}
+		)
 
-    return {"status": "success", "count": len(fleet_data), "items": fleet_data}
+	return {"status": "success", "count": len(fleet_data), "items": fleet_data}
 
 
 # ------------------- add stops and routes -----------------------------
@@ -606,31 +641,33 @@ async def get_fully_verified_fleet(db: AsyncSession = Depends(get_async_session)
 
 @router.post("/stops/bulk-upload")
 async def bulk_upload_stops(
-    file: UploadFile = File(...), db: AsyncSession = Depends(get_async_session)
+	file: UploadFile = File(...), db: AsyncSession = Depends(get_async_session)
 ):
-    content = await file.read()
-    service = AdminService(db)
-    total = await service.upsert_stops_from_jsonl(content.decode("utf-8"))
-    return {"status": "success", "imported": total}
+	content = await file.read()
+	service = AdminService(db)
+	total = await service.upsert_stops_from_jsonl(content.decode("utf-8"))
+	return {"status": "success", "imported": total}
 
 
 @router.get("/stops/all")
 async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
-    # Fetch all active stops from the library
-    result = await db.execute(
-        select(schema.Stop).where(schema.Stop.is_active).order_by(schema.Stop.name)
-    )
-    stops = result.scalars().all()
+	# Fetch all active stops from the library
+	result = await db.execute(
+		select(schema.Stop)
+		.where(schema.Stop.is_active)
+		.order_by(schema.Stop.name)
+	)
+	stops = result.scalars().all()
 
-    return [
-        {
-            "stop_id": s.id,
-            "name": s.name,
-            "latitude": float(s.lat),
-            "longitude": float(s.lng),
-        }
-        for s in stops
-    ]
+	return [
+		{
+			"stop_id": s.id,
+			"name": s.name,
+			"latitude": float(s.lat),
+			"longitude": float(s.lng),
+		}
+		for s in stops
+	]
 
 
 # -----------------------------
@@ -638,72 +675,74 @@ async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
 # -----------------------------
 @router.post("/stops/add-single")
 async def add_single_stop(
-    data: StopCreate, db: AsyncSession = Depends(get_async_session)
+	data: StopCreate, db: AsyncSession = Depends(get_async_session)
 ):
-    # 1. Check if the stop already exists by name
-    stmt = select(schema.Stop).where(schema.Stop.name == data.name)
-    result = await db.execute(stmt)
-    existing_stop = result.scalar_one_or_none()
+	# 1. Check if the stop already exists by name
+	stmt = select(schema.Stop).where(schema.Stop.name == data.name)
+	result = await db.execute(stmt)
+	existing_stop = result.scalar_one_or_none()
 
-    if existing_stop:
-        # Update existing stop
-        existing_stop.lat = data.latitude
-        existing_stop.lng = data.longitude
-        existing_stop.radius_meters = data.radius_meters
-        message = f"Stop '{data.name}' updated successfully."
-    else:
-        # Create new stop
-        new_stop = schema.Stop(
-            name=data.name,
-            lat=data.latitude,
-            lng=data.longitude,
-            radius_meters=data.radius_meters,
-        )
-        db.add(new_stop)
-        message = f"Stop '{data.name}' created successfully."
+	if existing_stop:
+		# Update existing stop
+		existing_stop.lat = data.latitude
+		existing_stop.lng = data.longitude
+		existing_stop.radius_meters = data.radius_meters
+		message = f"Stop '{data.name}' updated successfully."
+	else:
+		# Create new stop
+		new_stop = schema.Stop(
+			name=data.name,
+			lat=data.latitude,
+			lng=data.longitude,
+			radius_meters=data.radius_meters,
+		)
+		db.add(new_stop)
+		message = f"Stop '{data.name}' created successfully."
 
-    await db.commit()
+	await db.commit()
 
-    return {
-        "status": "success",
-        "message": message,
-        "data": {"name": data.name, "coords": [data.latitude, data.longitude]},
-    }
+	return {
+		"status": "success",
+		"message": message,
+		"data": {"name": data.name, "coords": [data.latitude, data.longitude]},
+	}
 
 
 # -----------------------------
 # Admin: Delete the Stops Using Stop_ID
 # -----------------------------
 @router.delete("/stops/{stop_id}")
-async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session)):
-    # 1. Search for the stop
-    stmt = select(schema.Stop).where(schema.Stop.id == stop_id)
-    result = await db.execute(stmt)
-    stop = result.scalar_one_or_none()
+async def delete_stop(
+	stop_id: str, db: AsyncSession = Depends(get_async_session)
+):
+	# 1. Search for the stop
+	stmt = select(schema.Stop).where(schema.Stop.id == stop_id)
+	result = await db.execute(stmt)
+	stop = result.scalar_one_or_none()
 
-    if not stop:
-        raise HTTPException(status_code=404, detail="Stop not found")
+	if not stop:
+		raise HTTPException(status_code=404, detail="Stop not found")
 
-    # 2. Check if it's linked to any routes (Optional but Recommended)
-    # This prevents breaking an active bus route accidentally
-    route_check = await db.execute(
-        select(schema.RouteStop).where(schema.RouteStop.stop_id == stop_id)
-    )
-    if route_check.scalars().first():
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot delete: This stop is part of an active route. Remove it from the route first.",
-        )
+	# 2. Check if it's linked to any routes (Optional but Recommended)
+	# This prevents breaking an active bus route accidentally
+	route_check = await db.execute(
+		select(schema.RouteStop).where(schema.RouteStop.stop_id == stop_id)
+	)
+	if route_check.scalars().first():
+		raise HTTPException(
+			status_code=400,
+			detail="Cannot delete: This stop is part of an active route. Remove it from the route first.",
+		)
 
-    # 3. Delete the stop
-    await db.delete(stop)
-    await db.commit()
+	# 3. Delete the stop
+	await db.delete(stop)
+	await db.commit()
 
-    return {
-        "status": "success",
-        "message": f"Stop '{stop.name}' has been deleted.",
-        "deleted_id": stop_id,
-    }
+	return {
+		"status": "success",
+		"message": f"Stop '{stop.name}' has been deleted.",
+		"deleted_id": stop_id,
+	}
 
 
 # ----------------- specific routes create -------------------------
@@ -714,40 +753,43 @@ async def delete_stop(stop_id: str, db: AsyncSession = Depends(get_async_session
 
 @router.post("/routes/create")
 async def create_route_identity(
-    data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+	data: RouteCreate, db: AsyncSession = Depends(get_async_session)
 ):
-    try:
-        new_route = schema.Route(
-            name=data.name.strip(), code=data.code.strip().upper(), has_ac=data.has_ac
-        )
-        db.add(new_route)
-        await db.commit()
-        await db.refresh(new_route)
+	try:
+		new_route = schema.Route(
+			name=data.name.strip(),
+			code=data.code.strip().upper(),
+			has_ac=data.has_ac,
+		)
+		db.add(new_route)
+		await db.commit()
+		await db.refresh(new_route)
 
-        return {
-            "status": "success",
-            "message": "Route identity created. Now add stops.",
-            "data": {
-                "route_id": new_route.id,
-                "name": new_route.name,
-                "code": new_route.code,
-                "has_ac": new_route.has_ac,
-            },
-        }
+		return {
+			"status": "success",
+			"message": "Route identity created. Now add stops.",
+			"data": {
+				"route_id": new_route.id,
+				"name": new_route.name,
+				"code": new_route.code,
+				"has_ac": new_route.has_ac,
+			},
+		}
 
-    except IntegrityError as e:
-        await db.rollback()
-        # This catches the 500 and explains WHY (Duplicate Name/Code)
-        error_info = str(e.orig)
-        detail_msg = "Route Name or Code already exists."
-        if "code" in error_info.lower():
-            detail_msg = f"The route code '{data.code}' is already in use."
-        elif "name" in error_info.lower():
-            detail_msg = f"The route name '{data.name}' is already in use."
+	except IntegrityError as e:
+		await db.rollback()
+		# This catches the 500 and explains WHY (Duplicate Name/Code)
+		error_info = str(e.orig)
+		detail_msg = "Route Name or Code already exists."
+		if "code" in error_info.lower():
+			detail_msg = f"The route code '{data.code}' is already in use."
+		elif "name" in error_info.lower():
+			detail_msg = f"The route name '{data.name}' is already in use."
 
-        raise HTTPException(
-            status_code=400, detail={"error": "duplicate_entry", "message": detail_msg}
-        )
+		raise HTTPException(
+			status_code=400,
+			detail={"error": "duplicate_entry", "message": detail_msg},
+		)
 
 
 # -----------------------------
@@ -755,93 +797,95 @@ async def create_route_identity(
 # -----------------------------
 @router.post("/routes/{route_id}/stops")
 async def add_bulk_stops(
-    route_id: str,
-    data: BulkStopAddRequest,
-    db: AsyncSession = Depends(get_async_session),
+	route_id: str,
+	data: BulkStopAddRequest,
+	db: AsyncSession = Depends(get_async_session),
 ) -> dict:
-    # 1. Check if the route exists
-    route = await db.get(schema.Route, route_id)
-    if not route:
-        raise HTTPException(status_code=404, detail="Route ID not found.")
+	# 1. Check if the route exists
+	route = await db.get(schema.Route, route_id)
+	if not route:
+		raise HTTPException(status_code=404, detail="Route ID not found.")
 
-    # --- NEW CHECK: DUPLICATES IN REQUEST ---
-    input_stop_ids = [s.stop_id for s in data.stops]
-    if len(input_stop_ids) != len(set(input_stop_ids)):
-        raise HTTPException(
-            status_code=400, detail="Duplicate Stop IDs found in the request."
-        )
+	# --- NEW CHECK: DUPLICATES IN REQUEST ---
+	input_stop_ids = [s.stop_id for s in data.stops]
+	if len(input_stop_ids) != len(set(input_stop_ids)):
+		raise HTTPException(
+			status_code=400, detail="Duplicate Stop IDs found in the request."
+		)
 
-    # --- NEW CHECK: DUPLICATES IN DATABASE ---
-    existing_stops_stmt = select(schema.RouteStop.stop_id).where(
-        schema.RouteStop.route_id == route_id
-    )
-    existing_result = await db.execute(existing_stops_stmt)
-    existing_stop_ids = set(existing_result.scalars().all())
+	# --- NEW CHECK: DUPLICATES IN DATABASE ---
+	existing_stops_stmt = select(schema.RouteStop.stop_id).where(
+		schema.RouteStop.route_id == route_id
+	)
+	existing_result = await db.execute(existing_stops_stmt)
+	existing_stop_ids = set(existing_result.scalars().all())
 
-    for stop_id in input_stop_ids:
-        if stop_id in existing_stop_ids:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Stop ID {stop_id} is already added to this route.",
-            )
+	for stop_id in input_stop_ids:
+		if stop_id in existing_stop_ids:
+			raise HTTPException(
+				status_code=400,
+				detail=f"Stop ID {stop_id} is already added to this route.",
+			)
 
-    # 2. Find where the current sequence ends
-    seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
-        schema.RouteStop.route_id == route_id
-    )
-    result = await db.execute(seq_stmt)
-    last_seq = result.scalar() or 0
+	# 2. Find where the current sequence ends
+	seq_stmt = select(func.max(schema.RouteStop.sequence_no)).where(
+		schema.RouteStop.route_id == route_id
+	)
+	result = await db.execute(seq_stmt)
+	last_seq = result.scalar() or 0
 
-    # 3. Create stop entries in order
-    new_entries = []
-    for i, stop_info in enumerate(data.stops):
-        current_seq = last_seq + i + 1
+	# 3. Create stop entries in order
+	new_entries = []
+	for i, stop_info in enumerate(data.stops):
+		current_seq = last_seq + i + 1
 
-        # If this is the absolute beginning of a route, force time to 0
-        time_gap = 0 if current_seq == 1 else stop_info.assume_time_diff_minutes
+		# If this is the absolute beginning of a route, force time to 0
+		time_gap = (
+			0 if current_seq == 1 else stop_info.assume_time_diff_minutes
+		)
 
-        rs = schema.RouteStop(
-            route_id=route_id,
-            stop_id=stop_info.stop_id,
-            sequence_no=current_seq,
-            boarding_allowed=stop_info.boarding_allowed,
-            deboarding_allowed=stop_info.deboarding_allowed,
-            assume_time_diff_minutes=time_gap,
-        )
-        new_entries.append(rs)
+		rs = schema.RouteStop(
+			route_id=route_id,
+			stop_id=stop_info.stop_id,
+			sequence_no=current_seq,
+			boarding_allowed=stop_info.boarding_allowed,
+			deboarding_allowed=stop_info.deboarding_allowed,
+			assume_time_diff_minutes=time_gap,
+		)
+		new_entries.append(rs)
 
-    db.add_all(new_entries)
+	db.add_all(new_entries)
 
-    # --- NEW CHECK: MINIMUM 2 STOPS LOGIC ---
-    total_sequence = last_seq + len(new_entries)
+	# --- NEW CHECK: MINIMUM 2 STOPS LOGIC ---
+	total_sequence = last_seq + len(new_entries)
 
-    # Update isActive based on total stop count
-    if total_sequence < 2:
-        route.is_active = False
-    else:
-        # Optional: auto-enable if it meets the criteria
-        route.is_active = True
+	# Update isActive based on total stop count
+	if total_sequence < 2:
+		route.is_active = False
+	else:
+		# Optional: auto-enable if it meets the criteria
+		route.is_active = True
 
-    try:
-        await db.commit()
-    except Exception as e:
-        await db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "db_error",
-                "message": "Failed to save stops.",
-                "debug": str(e),
-            },
-        )
+	try:
+		await db.commit()
+	except Exception as e:
+		await db.rollback()
+		raise HTTPException(
+			status_code=500,
+			detail={
+				"error": "db_error",
+				"message": "Failed to save stops.",
+				"debug": str(e),
+			},
+		)
 
-    # Returning exact same names for frontend compatibility
-    return {
-        "status": "success",
-        "route_id": route_id,
-        "added_count": len(new_entries),
-        "total_sequence": total_sequence,
-    }
+	# Returning exact same names for frontend compatibility
+	return {
+		"status": "success",
+		"route_id": route_id,
+		"added_count": len(new_entries),
+		"total_sequence": total_sequence,
+	}
 
 
 # -----------------------------
@@ -849,27 +893,27 @@ async def add_bulk_stops(
 # -----------------------------
 @router.get("/routes/all")
 async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
-    # We use joinedload to count stops without extra queries
-    stmt = (
-        select(schema.Route)
-        .options(joinedload(schema.Route.route_stops))
-        .order_by(schema.Route.created_at.desc())
-    )
-    result = await db.execute(stmt)
-    routes = result.unique().scalars().all()
+	# We use joinedload to count stops without extra queries
+	stmt = (
+		select(schema.Route)
+		.options(joinedload(schema.Route.route_stops))
+		.order_by(schema.Route.created_at.desc())
+	)
+	result = await db.execute(stmt)
+	routes = result.unique().scalars().all()
 
-    return [
-        {
-            "route_id": r.id,
-            "name": r.name,
-            "code": r.code,
-            "has_ac": r.has_ac,
-            "is_active": r.is_active,
-            "total_stops": len(r.route_stops),
-            "created_at": r.created_at,
-        }
-        for r in routes
-    ]
+	return [
+		{
+			"route_id": r.id,
+			"name": r.name,
+			"code": r.code,
+			"has_ac": r.has_ac,
+			"is_active": r.is_active,
+			"total_stops": len(r.route_stops),
+			"created_at": r.created_at,
+		}
+		for r in routes
+	]
 
 
 # -----------------------------
@@ -877,44 +921,48 @@ async def get_all_routes(db: AsyncSession = Depends(get_async_session)):
 # -----------------------------
 @router.get("/routes/{route_id}")
 async def get_route_details(
-    route_id: str, db: AsyncSession = Depends(get_async_session)
+	route_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    # Fetch route and join stops in the correct sequence order
-    stmt = (
-        select(schema.Route)
-        .options(joinedload(schema.Route.route_stops).joinedload(schema.RouteStop.stop))
-        .where(schema.Route.id == route_id)
-    )
+	# Fetch route and join stops in the correct sequence order
+	stmt = (
+		select(schema.Route)
+		.options(
+			joinedload(schema.Route.route_stops).joinedload(
+				schema.RouteStop.stop
+			)
+		)
+		.where(schema.Route.id == route_id)
+	)
 
-    result = await db.execute(stmt)
-    route = result.unique().scalar_one_or_none()
+	result = await db.execute(stmt)
+	route = result.unique().scalar_one_or_none()
 
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+	if not route:
+		raise HTTPException(status_code=404, detail="Route not found")
 
-    # Format the stops into a clean list
-    ordered_stops = [
-        {
-            "sequence_no": rs.sequence_no,
-            "stop_id": rs.stop.id,
-            "stop_name": rs.stop.name,
-            "latitude": float(rs.stop.lat),
-            "longitude": float(rs.stop.lng),
-            "boarding": rs.boarding_allowed,
-            "deboarding": rs.deboarding_allowed,
-            "time_diff_min": rs.assume_time_diff_minutes,
-        }
-        for rs in route.route_stops
-    ]
+	# Format the stops into a clean list
+	ordered_stops = [
+		{
+			"sequence_no": rs.sequence_no,
+			"stop_id": rs.stop.id,
+			"stop_name": rs.stop.name,
+			"latitude": float(rs.stop.lat),
+			"longitude": float(rs.stop.lng),
+			"boarding": rs.boarding_allowed,
+			"deboarding": rs.deboarding_allowed,
+			"time_diff_min": rs.assume_time_diff_minutes,
+		}
+		for rs in route.route_stops
+	]
 
-    return {
-        "route_id": route.id,
-        "name": route.name,
-        "code": route.code,
-        "has_ac": route.has_ac,
-        "is_active": route.is_active,
-        "path": ordered_stops,
-    }
+	return {
+		"route_id": route.id,
+		"name": route.name,
+		"code": route.code,
+		"has_ac": route.has_ac,
+		"is_active": route.is_active,
+		"path": ordered_stops,
+	}
 
 
 # -----------------------------
@@ -922,23 +970,23 @@ async def get_route_details(
 # -----------------------------
 @router.patch("/routes/{route_id}/toggle")
 async def toggle_route(
-    route_id: str,
-    data: RouteStatusUpdate,
-    db: AsyncSession = Depends(get_async_session),
+	route_id: str,
+	data: RouteStatusUpdate,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    route = await service.toggle_route_status(route_id, data.is_active)
+	service = AdminService(db)
+	route = await service.toggle_route_status(route_id, data.is_active)
 
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+	if not route:
+		raise HTTPException(status_code=404, detail="Route not found")
 
-    status_text = "Activated" if route.is_active else "Deactivated"
-    return {
-        "status": "success",
-        "message": f"Route '{route.name}' has been {status_text}.",
-        "route_id": route.id,
-        "current_status": route.is_active,
-    }
+	status_text = "Activated" if route.is_active else "Deactivated"
+	return {
+		"status": "success",
+		"message": f"Route '{route.name}' has been {status_text}.",
+		"route_id": route.id,
+		"current_status": route.is_active,
+	}
 
 
 # -----------------------------
@@ -946,79 +994,81 @@ async def toggle_route(
 # -----------------------------
 @router.post("/routes/fares/bulk-set")
 async def set_route_fares(
-    data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
+	data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
 ):
-    # 1. Verify the route exists
-    route_stmt = select(schema.Route).where(schema.Route.id == data.route_id)
-    route_res = await db.execute(route_stmt)
-    if not route_res.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Route not found")
+	# 1. Verify the route exists
+	route_stmt = select(schema.Route).where(schema.Route.id == data.route_id)
+	route_res = await db.execute(route_stmt)
+	if not route_res.scalar_one_or_none():
+		raise HTTPException(status_code=404, detail="Route not found")
 
-    new_fares_count = 0
-    updated_fares_count = 0
+	new_fares_count = 0
+	updated_fares_count = 0
 
-    for entry in data.fares:
-        # 2. Check if a fare rule already exists for this specific path
-        stmt = select(schema.RouteFare).where(
-            schema.RouteFare.route_id == data.route_id,
-            schema.RouteFare.pickup_stop_id == entry.pickup_stop_id,
-            schema.RouteFare.dropoff_stop_id == entry.dropoff_stop_id,
-        )
-        result = await db.execute(stmt)
-        existing_fare = result.scalar_one_or_none()
+	for entry in data.fares:
+		# 2. Check if a fare rule already exists for this specific path
+		stmt = select(schema.RouteFare).where(
+			schema.RouteFare.route_id == data.route_id,
+			schema.RouteFare.pickup_stop_id == entry.pickup_stop_id,
+			schema.RouteFare.dropoff_stop_id == entry.dropoff_stop_id,
+		)
+		result = await db.execute(stmt)
+		existing_fare = result.scalar_one_or_none()
 
-        if existing_fare:
-            existing_fare.amount = entry.amount
-            updated_fares_count += 1
-        else:
-            new_fare = schema.RouteFare(
-                route_id=data.route_id,
-                pickup_stop_id=entry.pickup_stop_id,
-                dropoff_stop_id=entry.dropoff_stop_id,
-                amount=entry.amount,
-            )
-            db.add(new_fare)
-            new_fares_count += 1
+		if existing_fare:
+			existing_fare.amount = entry.amount
+			updated_fares_count += 1
+		else:
+			new_fare = schema.RouteFare(
+				route_id=data.route_id,
+				pickup_stop_id=entry.pickup_stop_id,
+				dropoff_stop_id=entry.dropoff_stop_id,
+				amount=entry.amount,
+			)
+			db.add(new_fare)
+			new_fares_count += 1
 
-    await db.commit()
+	await db.commit()
 
-    return {
-        "status": "success",
-        "route_id": data.route_id,
-        "new_rules": new_fares_count,
-        "updated_rules": updated_fares_count,
-    }
+	return {
+		"status": "success",
+		"route_id": data.route_id,
+		"new_rules": new_fares_count,
+		"updated_rules": updated_fares_count,
+	}
 
 
 # -----------------------------
 # Admin: Check Fares of a Specific routes using routes_id
 # -----------------------------
 @router.get("/routes/{route_id}/fares")
-async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_session)):
-    # Fetch fares with stop names for the Admin to read easily
-    stmt = (
-        select(schema.RouteFare)
-        .options(
-            joinedload(schema.RouteFare.pickup_stop),
-            joinedload(schema.RouteFare.dropoff_stop),
-        )
-        .where(schema.RouteFare.route_id == route_id)
-    )
-    result = await db.execute(stmt)
-    fares = result.scalars().all()
+async def get_route_fares(
+	route_id: str, db: AsyncSession = Depends(get_async_session)
+):
+	# Fetch fares with stop names for the Admin to read easily
+	stmt = (
+		select(schema.RouteFare)
+		.options(
+			joinedload(schema.RouteFare.pickup_stop),
+			joinedload(schema.RouteFare.dropoff_stop),
+		)
+		.where(schema.RouteFare.route_id == route_id)
+	)
+	result = await db.execute(stmt)
+	fares = result.scalars().all()
 
-    return [
-        {
-            "fare_id": f.id,
-            "pickup_stop_id": f.pickup_stop_id,
-            "dropoff_stop_id": f.dropoff_stop_id,
-            "from": f.pickup_stop.name,
-            "to": f.dropoff_stop.name,
-            "amount": float(f.amount),
-            "is_active": f.is_active,
-        }
-        for f in fares
-    ]
+	return [
+		{
+			"fare_id": f.id,
+			"pickup_stop_id": f.pickup_stop_id,
+			"dropoff_stop_id": f.dropoff_stop_id,
+			"from": f.pickup_stop.name,
+			"to": f.dropoff_stop.name,
+			"amount": float(f.amount),
+			"is_active": f.is_active,
+		}
+		for f in fares
+	]
 
 
 # -----------------------------
@@ -1026,70 +1076,76 @@ async def get_route_fares(route_id: str, db: AsyncSession = Depends(get_async_se
 # -----------------------------
 @router.get("/routes/{route_id}/full-report")
 async def get_route_and_trip_details(
-    route_id: str, db: AsyncSession = Depends(get_async_session)
+	route_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    # Notice the change from .stops to .route_stops
-    # and .trips to .scheduled_trips
-    stmt = (
-        select(schema.Route)
-        .options(
-            joinedload(schema.Route.route_stops).joinedload(schema.RouteStop.stop),
-            joinedload(schema.Route.scheduled_trips)
-            .joinedload(schema.ScheduledTrip.driver)  # Load the User
-            .joinedload(schema.User.driver_profile),  # Load the Profile from User
-            joinedload(schema.Route.scheduled_trips).joinedload(
-                schema.ScheduledTrip.vehicle
-            ),
-        )
-        .where(schema.Route.id == route_id)
-    )
+	# Notice the change from .stops to .route_stops
+	# and .trips to .scheduled_trips
+	stmt = (
+		select(schema.Route)
+		.options(
+			joinedload(schema.Route.route_stops).joinedload(
+				schema.RouteStop.stop
+			),
+			joinedload(schema.Route.scheduled_trips)
+			.joinedload(schema.ScheduledTrip.driver)  # Load the User
+			.joinedload(
+				schema.User.driver_profile
+			),  # Load the Profile from User
+			joinedload(schema.Route.scheduled_trips).joinedload(
+				schema.ScheduledTrip.vehicle
+			),
+		)
+		.where(schema.Route.id == route_id)
+	)
 
-    result = await db.execute(stmt)
-    route = result.unique().scalar_one_or_none()
+	result = await db.execute(stmt)
+	route = result.unique().scalar_one_or_none()
 
-    if not route:
-        raise HTTPException(status_code=404, detail="Route not found")
+	if not route:
+		raise HTTPException(status_code=404, detail="Route not found")
 
-    return {
-        "route_info": {
-            "name": route.name,
-            "code": route.code,
-            "stops": [
-                {
-                    "seq": rs.sequence_no,
-                    "name": rs.stop.name,
-                    "lat": float(rs.stop.lat),
-                    "lng": float(rs.stop.lng),
-                    "time_offset": rs.assume_time_diff_minutes,
-                }
-                for rs in route.route_stops  # route_stops is already sorted by sequence_no in your schema
-            ],
-        },
-        "trips": [
-            {
-                "trip_id": trip.id,
-                "status": trip.status,
-                "scheduled_start": trip.planned_start_at,  # Changed from scheduled_start_time to match your schema
-                "driver": {
-                    # Accessing via trip.driver.driver_profile
-                    "name": trip.driver.driver_profile.full_name
-                    if (trip.driver and trip.driver.driver_profile)
-                    else "Unassigned",
-                    "phone": trip.driver.driver_profile.phone
-                    if (trip.driver and trip.driver.driver_profile)
-                    else "N/A",
-                },
-                "vehicle": {
-                    "reg_no": trip.vehicle.registration_number
-                    if trip.vehicle
-                    else "Unassigned",
-                    "model": trip.vehicle.vehicle_model if trip.vehicle else "N/A",
-                    "capacity": trip.vehicle.seat_count if trip.vehicle else 0,
-                },
-            }
-            for trip in route.scheduled_trips
-        ],
-    }
+	return {
+		"route_info": {
+			"name": route.name,
+			"code": route.code,
+			"stops": [
+				{
+					"seq": rs.sequence_no,
+					"name": rs.stop.name,
+					"lat": float(rs.stop.lat),
+					"lng": float(rs.stop.lng),
+					"time_offset": rs.assume_time_diff_minutes,
+				}
+				for rs in route.route_stops  # route_stops is already sorted by sequence_no in your schema
+			],
+		},
+		"trips": [
+			{
+				"trip_id": trip.id,
+				"status": trip.status,
+				"scheduled_start": trip.planned_start_at,  # Changed from scheduled_start_time to match your schema
+				"driver": {
+					# Accessing via trip.driver.driver_profile
+					"name": trip.driver.driver_profile.full_name
+					if (trip.driver and trip.driver.driver_profile)
+					else "Unassigned",
+					"phone": trip.driver.driver_profile.phone
+					if (trip.driver and trip.driver.driver_profile)
+					else "N/A",
+				},
+				"vehicle": {
+					"reg_no": trip.vehicle.registration_number
+					if trip.vehicle
+					else "Unassigned",
+					"model": trip.vehicle.vehicle_model
+					if trip.vehicle
+					else "N/A",
+					"capacity": trip.vehicle.seat_count if trip.vehicle else 0,
+				},
+			}
+			for trip in route.scheduled_trips
+		],
+	}
 
 
 # -----------------------------
@@ -1099,40 +1155,40 @@ async def get_route_and_trip_details(
 
 @router.get("/trips/monitor")
 async def monitor_all_trips(
-    status: Optional[schema.ScheduledTripStatus] = Query(None),
-    db: AsyncSession = Depends(get_async_session),
+	status: schema.ScheduledTripStatus | None = Query(None),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    # Initialize the combined AdminService
-    service = AdminService(db)
-    trips = await service.get_all_trips(status=status)
+	# Initialize the combined AdminService
+	service = AdminService(db)
+	trips = await service.get_all_trips(status=status)
 
-    return [
-        {
-            "trip_id": t.id if t else "N/A",
-            "route_name": t.route.name if t else "N/A",
-            "route_code": t.route.code if t else "N/A",
-            # "driver": t.driver.driver_profile.full_name
-            # if t.driver and t.driver.driver_profile
-            # else "No Driver Assigned",
-            # Assuming 'full_name' exists in User model
-            # In your router list comprehension:
-            "driver": t.driver.driver_profile.full_name
-            if t.driver and t.driver.driver_profile
-            else "No Driver Assigned",
-            "vehicle": f"{t.vehicle.registration_number}" if t else "N/A",
-            "planned_start": t.planned_start_at if t else "N/A",
-            "status": t.status if t else "N/A",
-            "bookings_count": len(t.bookings) if t else "N/A",
-            "cancellation_reason": t.cancellation_reason
-            if t.cancellation_reason
-            else None,
-            "premature_end_reason": t.premature_end_reason
-            if t.premature_end_reason
-            else None,
-            "admin_note": t.admin_note if t.admin_note else None,
-        }
-        for t in trips
-    ]
+	return [
+		{
+			"trip_id": t.id if t else "N/A",
+			"route_name": t.route.name if t else "N/A",
+			"route_code": t.route.code if t else "N/A",
+			# "driver": t.driver.driver_profile.full_name
+			# if t.driver and t.driver.driver_profile
+			# else "No Driver Assigned",
+			# Assuming 'full_name' exists in User model
+			# In your router list comprehension:
+			"driver": t.driver.driver_profile.full_name
+			if t.driver and t.driver.driver_profile
+			else "No Driver Assigned",
+			"vehicle": f"{t.vehicle.registration_number}" if t else "N/A",
+			"planned_start": t.planned_start_at if t else "N/A",
+			"status": t.status if t else "N/A",
+			"bookings_count": len(t.bookings) if t else "N/A",
+			"cancellation_reason": t.cancellation_reason
+			if t.cancellation_reason
+			else None,
+			"premature_end_reason": t.premature_end_reason
+			if t.premature_end_reason
+			else None,
+			"admin_note": t.admin_note if t.admin_note else None,
+		}
+		for t in trips
+	]
 
 
 # -----------------------------
@@ -1140,59 +1196,64 @@ async def monitor_all_trips(
 # -----------------------------
 @router.patch("/trips/{trip_id}/cancel")
 async def cancel_trip_by_id(
-    trip_id: str,
-    request: Request,
-    reason: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_async_session),
+	trip_id: str,
+	request: Request,
+	reason: str = Body(..., embed=True),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
 
-    # 1. Create the instance of the NotificationService
-    notif_service = NotificationService(db, ws_hub=hub)
+	# 1. Create the instance of the NotificationService
+	notif_service = NotificationService(db, ws_hub=hub)
 
-    trip = await service.get_trip_by_id(trip_id)
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
+	trip = await service.get_trip_by_id(trip_id)
+	if not trip:
+		raise HTTPException(status_code=404, detail="Trip not found")
 
-    result = await service.cancel_trip(trip_id, reason)
+	result = await service.cancel_trip(trip_id, reason)
 
-    if not result["success"]:
-        status_code = 404 if "not found" in result["error"] else 400
-        raise HTTPException(status_code=status_code, detail=result["error"])
+	if not result["success"]:
+		status_code = 404 if "not found" in result["error"] else 400
+		raise HTTPException(status_code=status_code, detail=result["error"])
 
-    # 2. Notify the Driver
-    if trip.driver_user_id:
-        try:
-            # Call using the instance 'notif_service'
-            await notif_service.notify_user(
-                user_id=trip.driver_user_id,
-                title="Trip Cancelled by Admin",
-                message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-                data={"type": "Trip_cancel_UPDATE"},
-                commit=False,  # Don't commit yet
-            )
-        except Exception as e:
-            print(f"Driver Notification failed: {e}")
+	# 2. Notify the Driver
+	if trip.driver_user_id:
+		try:
+			# Call using the instance 'notif_service'
+			await notif_service.notify_user(
+				user_id=trip.driver_user_id,
+				title="Trip Cancelled by Admin",
+				message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
+				data={"type": "Trip_cancel_UPDATE"},
+				commit=False,  # Don't commit yet
+			)
+		except Exception as e:
+			print(f"Driver Notification failed: {e}")
 
-    # 3. Notify all Passengers
-    for booking in trip.bookings:
-        try:
-            # Call using the instance 'notif_service'
-            await notif_service.notify_user(
-                user_id=booking.passenger_id,
-                title="Urgent: Trip Cancelled",
-                message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-                data={"type": "Trip_cancel_UPDATE"},
-                commit=False,  # Don't commit yet
-            )
-        except Exception as e:
-            print(f"Passenger Notification failed for {booking.passenger_id}: {e}")
+	# 3. Notify all Passengers
+	for booking in trip.bookings:
+		try:
+			# Call using the instance 'notif_service'
+			await notif_service.notify_user(
+				user_id=booking.passenger_id,
+				title="Urgent: Trip Cancelled",
+				message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
+				data={"type": "Trip_cancel_UPDATE"},
+				commit=False,  # Don't commit yet
+			)
+		except Exception as e:
+			print(
+				f"Passenger Notification failed for {booking.passenger_id}: {e}"
+			)
 
-    # 4. Final single commit for the cancellation AND all notification records
-    await db.commit()
+	# 4. Final single commit for the cancellation AND all notification records
+	await db.commit()
 
-    return {"status": "success", "message": "Trip cancelled and users notified."}
+	return {
+		"status": "success",
+		"message": "Trip cancelled and users notified.",
+	}
 
 
 # -----------------------------
@@ -1200,13 +1261,13 @@ async def cancel_trip_by_id(
 # -----------------------------
 @router.post("/trips/{trip_id}/premature-end")
 async def premature_end_trip(
-    trip_id: str,
-    request: Request,
-    db: AsyncSession = Depends(get_async_session),
+	trip_id: str,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
-    return await service.handle_premature_trip_end(trip_id)
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
+	return await service.handle_premature_trip_end(trip_id)
 
 
 # -----------------------------
@@ -1216,51 +1277,53 @@ async def premature_end_trip(
 
 @router.get("/trips/{trip_id}")
 async def get_specific_trip_status(
-    trip_id: str, db: AsyncSession = Depends(get_async_session)
+	trip_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    trip = await service.get_trip_by_id(trip_id)
+	service = AdminService(db)
+	trip = await service.get_trip_by_id(trip_id)
 
-    if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
+	if not trip:
+		raise HTTPException(status_code=404, detail="Trip not found")
 
-    return {
-        "trip_id": trip.id,
-        "status": trip.status,
-        "route": {"name": trip.route.name, "code": trip.route.code},
-        "assignment": {
-            # FIX: Access .driver_profile.full_name
-            "driver": trip.driver.driver_profile.full_name
-            if trip.driver and trip.driver.driver_profile
-            else "No Driver Assigned",
-            "vehicle": trip.vehicle.registration_number,
-        },
-        "timing": {
-            "planned_start": trip.planned_start_at,
-            "actual_start": trip.actual_start_at,
-            "planned_end": trip.planned_end_at,
-            "actual_end": trip.actual_end_at,
-        },
-        "cancelation": {
-            "cancellation_reason": trip.cancellation_reason if trip else "N/A",
-            "premature_end_reason": trip.premature_end_reason if trip else "N/A",
-        },
-        "occupancy": {
-            "total_bookings": len(trip.bookings),
-            "passengers": [
-                {
-                    # FIX: Access .passenger_profile.full_name
-                    "passenger_id": b.passenger.passenger_profile.user_id,
-                    "name": b.passenger.passenger_profile.full_name
-                    if b.passenger and b.passenger.passenger_profile
-                    else "Unknown Passenger",
-                    "status": b.booking_status,
-                }
-                for b in trip.bookings
-            ],
-        },
-        "admin_note": trip.admin_note,
-    }
+	return {
+		"trip_id": trip.id,
+		"status": trip.status,
+		"route": {"name": trip.route.name, "code": trip.route.code},
+		"assignment": {
+			# FIX: Access .driver_profile.full_name
+			"driver": trip.driver.driver_profile.full_name
+			if trip.driver and trip.driver.driver_profile
+			else "No Driver Assigned",
+			"vehicle": trip.vehicle.registration_number,
+		},
+		"timing": {
+			"planned_start": trip.planned_start_at,
+			"actual_start": trip.actual_start_at,
+			"planned_end": trip.planned_end_at,
+			"actual_end": trip.actual_end_at,
+		},
+		"cancelation": {
+			"cancellation_reason": trip.cancellation_reason if trip else "N/A",
+			"premature_end_reason": trip.premature_end_reason
+			if trip
+			else "N/A",
+		},
+		"occupancy": {
+			"total_bookings": len(trip.bookings),
+			"passengers": [
+				{
+					# FIX: Access .passenger_profile.full_name
+					"passenger_id": b.passenger.passenger_profile.user_id,
+					"name": b.passenger.passenger_profile.full_name
+					if b.passenger and b.passenger.passenger_profile
+					else "Unknown Passenger",
+					"status": b.booking_status,
+				}
+				for b in trip.bookings
+			],
+		},
+		"admin_note": trip.admin_note,
+	}
 
 
 # -----------------------------
@@ -1268,28 +1331,33 @@ async def get_specific_trip_status(
 # -----------------------------
 @router.get("/trips/{trip_id}/bookings")
 async def get_all_bookings_for_trip(
-    trip_id: str, db: AsyncSession = Depends(get_async_session)
+	trip_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    bookings = await service.get_trip_bookings(trip_id)
+	service = AdminService(db)
+	bookings = await service.get_trip_bookings(trip_id)
 
-    if not bookings:
-        return []  # Return empty list if no one has booked yet
+	if not bookings:
+		return []  # Return empty list if no one has booked yet
 
-    return bookings
+	return bookings
 
 
 @router.patch("/bookings/{booking_id}/noshow")
 async def record_passenger_no_show(
-    booking_id: str, db: AsyncSession = Depends(get_async_session)
+	booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    success = await service.mark_no_show(booking_id)
+	service = AdminService(db)
+	success = await service.mark_no_show(booking_id)
 
-    if not success:
-        raise HTTPException(status_code=404, detail="Booking record not found.")
+	if not success:
+		raise HTTPException(
+			status_code=404, detail="Booking record not found."
+		)
 
-    return {"status": "success", "message": f"Booking {booking_id} marked as No-Show."}
+	return {
+		"status": "success",
+		"message": f"Booking {booking_id} marked as No-Show.",
+	}
 
 
 # app/admin/router.py
@@ -1297,26 +1365,26 @@ async def record_passenger_no_show(
 
 @router.post("/drivers/{driver_id}/setup-payout-account")
 async def setup_payout_account(
-    driver_id: str, db: AsyncSession = Depends(get_async_session)
+	driver_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    account_id = await service.create_driver_linked_account(driver_id)
-    return {"status": "success", "razorpay_account_id": account_id}
+	service = AdminService(db)
+	account_id = await service.create_driver_linked_account(driver_id)
+	return {"status": "success", "razorpay_account_id": account_id}
 
 
 @router.post("/payouts/batch-process")
 async def batch_process_driver_payouts(
-    driver_id: str,
-    month: int = Query(..., ge=1, le=12),
-    year: int = Query(..., ge=2024),
-    db: AsyncSession = Depends(get_async_session),
+	driver_id: str,
+	month: int = Query(..., ge=1, le=12),
+	year: int = Query(..., ge=2024),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    payout_service = RoutePayoutService(db)
-    summary = await payout_service.process_monthly_payouts_for_driver(
-        driver_id, month, year
-    )
-    await db.commit()
-    return {"status": "batch_completed", "details": summary}
+	payout_service = RoutePayoutService(db)
+	summary = await payout_service.process_monthly_payouts_for_driver(
+		driver_id, month, year
+	)
+	await db.commit()
+	return {"status": "batch_completed", "details": summary}
 
 
 # ---------------- drivers ratings -------------------------
@@ -1325,65 +1393,68 @@ async def batch_process_driver_payouts(
 # -----------------------------
 @router.get("/driver-ratings")
 async def view_driver_ratings(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    report = await service.get_driver_ratings_report()
-    return [
-        {
-            "driver_id": r.id,
-            "driver_name": r.full_name if r else "N/A",
-            "email": r.email if r else "N/A",
-            "avg_rating": round(float(r.avg_driver_rating), 2),
-            "trip_quality": round(float(r.avg_trip_rating), 2),
-            "review_count": r.total_reviews if r else "N/A",
-        }
-        for r in report
-    ]
+	service = AdminService(db)
+	report = await service.get_driver_ratings_report()
+	return [
+		{
+			"driver_id": r.id,
+			"driver_name": r.full_name if r else "N/A",
+			"email": r.email if r else "N/A",
+			"avg_rating": round(float(r.avg_driver_rating), 2),
+			"trip_quality": round(float(r.avg_trip_rating), 2),
+			"review_count": r.total_reviews if r else "N/A",
+		}
+		for r in report
+	]
 
 
 @router.get("/incidents")
 async def view_all_incidents(db: AsyncSession = Depends(get_async_session)):
-    service = AdminService(db)
-    data = await service.get_flagged_incidents()
+	service = AdminService(db)
+	data = await service.get_flagged_incidents()
 
-    return {
-        "failed_trips": [
-            {
-                "id": t.id,
-                "status": t.status,
-                "reason": t.premature_end_reason or t.cancellation_reason,
-                "driver": t.driver.driver_profile.full_name
-                if t.driver.driver_profile
-                else t.driver.email,
-                "admin_note": t.admin_note,
-            }
-            for t in data["trips"]
-        ],
-        "passenger_complaints": [
-            {
-                "booking_id": r.booking_id,
-                "rating": r.driver_rating,
-                "comment": r.review_text,
-                "passenger": r.passenger.email,
-                "driver": r.driver.driver_profile.full_name
-                if r.driver.driver_profile
-                else r.driver.email,
-            }
-            for r in data["bad_reviews"]
-        ],
-    }
+	return {
+		"failed_trips": [
+			{
+				"id": t.id,
+				"status": t.status,
+				"reason": t.premature_end_reason or t.cancellation_reason,
+				"driver": t.driver.driver_profile.full_name
+				if t.driver.driver_profile
+				else t.driver.email,
+				"admin_note": t.admin_note,
+			}
+			for t in data["trips"]
+		],
+		"passenger_complaints": [
+			{
+				"booking_id": r.booking_id,
+				"rating": r.driver_rating,
+				"comment": r.review_text,
+				"passenger": r.passenger.email,
+				"driver": r.driver.driver_profile.full_name
+				if r.driver.driver_profile
+				else r.driver.email,
+			}
+			for r in data["bad_reviews"]
+		],
+	}
 
 
 @router.post("/resolve-trip/{trip_id}")
 async def resolve_trip_issue(
-    trip_id: str,
-    note: str = Body(..., embed=True),
-    db: AsyncSession = Depends(get_async_session),
+	trip_id: str,
+	note: str = Body(..., embed=True),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    updated_trip = await service.update_admin_resolution(trip_id, note)
-    if not updated_trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
-    return {"message": "Incident resolved", "admin_note": updated_trip.admin_note}
+	service = AdminService(db)
+	updated_trip = await service.update_admin_resolution(trip_id, note)
+	if not updated_trip:
+		raise HTTPException(status_code=404, detail="Trip not found")
+	return {
+		"message": "Incident resolved",
+		"admin_note": updated_trip.admin_note,
+	}
 
 
 # -------------------- support sections ---------------------------
@@ -1392,645 +1463,700 @@ async def resolve_trip_issue(
 # -----------------------------
 @router.get("/tickets")
 async def list_tickets(
-    status: Optional[schema.SupportStatus] = None,
-    db: AsyncSession = Depends(get_async_session),
+	status: schema.SupportStatus | None = None,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    tickets = await service.get_all_support_tickets(status)
-    return [
-        {
-            "id": t.id,
-            "user": t.user.email,
-            "subject": t.subject,
-            "description": t.description,
-            "status": t.status,
-            "path": t.attachment_path,
-            "created_at": t.created_at,
-            "resolved_at_by_admin": t.resolved_at if t else "N/A",
-            "rejection_reason_by_admin": t.rejection_reason if t else "N/A",
-        }
-        for t in tickets
-    ]
+	service = AdminService(db)
+	tickets = await service.get_all_support_tickets(status)
+	return [
+		{
+			"id": t.id,
+			"user": t.user.email,
+			"subject": t.subject,
+			"description": t.description,
+			"status": t.status,
+			"path": t.attachment_path,
+			"created_at": t.created_at,
+			"resolved_at_by_admin": t.resolved_at if t else "N/A",
+			"rejection_reason_by_admin": t.rejection_reason if t else "N/A",
+		}
+		for t in tickets
+	]
+
 
 # -----------------------------
 # Admin: Get All Support Queries
 # -----------------------------
 @router.post("/tickets/{ticket_id}/action")
 async def handle_ticket(
-    ticket_id: str,
-    action: str,  # 'resolve' or 'reject'
-    request: Request,
-    note: str = Body(..., embed=True),
-    current_admin: schema.User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_async_session),
+	ticket_id: str,
+	action: str,  # 'resolve' or 'reject'
+	request: Request,
+	note: str = Body(..., embed=True),
+	current_admin: schema.User = Depends(get_current_admin),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    hub = get_ws_hub(request)
-    service = AdminService(db, ws_hub=hub)
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
 
-    # 1. Create the instance of the NotificationService
-    notif_service = NotificationService(db, ws_hub=hub)
+	# 1. Create the instance of the NotificationService
+	notif_service = NotificationService(db, ws_hub=hub)
 
-    ticket = await service.resolve_ticket(ticket_id, current_admin.id, note, action)
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+	ticket = await service.resolve_ticket(
+		ticket_id, current_admin.id, note, action
+	)
+	if not ticket:
+		raise HTTPException(status_code=404, detail="Ticket not found")
 
-    status_msg = "resolved" if action == "resolve" else "rejected"
+	status_msg = "resolved" if action == "resolve" else "rejected"
 
-    # 2. Use the instance 'notif_service' instead of the class 'NotificationService'
-    try:
-        await notif_service.notify_user(
-            user_id=ticket.user_id,
-            title=f"Support Ticket {status_msg.capitalize()}",
-            message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
-            data={"type": "TICKET_UPDATE"},
-            commit=True,  # Keep it False so we commit everything once at the end
-        )
-    except Exception as e:
-        # Log the error so the admin knows the DB updated but the alert failed
-        print(f"Notification failed for ticket {ticket_id}: {e}")
+	# 2. Use the instance 'notif_service' instead of the class 'NotificationService'
+	try:
+		await notif_service.notify_user(
+			user_id=ticket.user_id,
+			title=f"Support Ticket {status_msg.capitalize()}",
+			message=f"Your ticket '{ticket.subject}' has been {status_msg}. Admin Note: {note}",
+			data={"type": "TICKET_UPDATE"},
+			commit=True,  # Keep it False so we commit everything once at the end
+		)
+	except Exception as e:
+		# Log the error so the admin knows the DB updated but the alert failed
+		print(f"Notification failed for ticket {ticket_id}: {e}")
 
-    # 3. Final commit for both the ticket update and the notification record
-    await db.commit()
+	# 3. Final commit for both the ticket update and the notification record
+	await db.commit()
 
-    return {"message": f"Ticket {action}ed successfully"}
+	return {"message": f"Ticket {action}ed successfully"}
 
 
 # app/users/endpoints/router.py
 @router.post("/support/create")
 async def create_ticket(
-    subject: str = Body(...),
-    description: str = Body(...),
-    current_user: schema.User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_async_session),
+	subject: str = Body(...),
+	description: str = Body(...),
+	current_user: schema.User = Depends(get_current_user),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db, ws_hub=hub)
-    new_ticket = schema.SupportTicket(
-        user_id=current_user.id,
-        subject=subject,
-        description=description,
-        status=schema.SupportStatus.PENDING,
-    )
-    db.add(new_ticket)
+	service = AdminService(db, ws_hub=hub)
+	new_ticket = schema.SupportTicket(
+		user_id=current_user.id,
+		subject=subject,
+		description=description,
+		status=schema.SupportStatus.PENDING,
+	)
+	db.add(new_ticket)
 
-    await service.send_user_notification(
-        db,
-        current_user.id,
-        "Ticket Received",
-        f"Your ticket '{subject}' has been created and is pending review.",
-        "TICKET_CREATED",
-    )
+	await service.send_user_notification(
+		db,
+		current_user.id,
+		"Ticket Received",
+		f"Your ticket '{subject}' has been created and is pending review.",
+		"TICKET_CREATED",
+	)
 
-    await db.commit()
-    return {"message": "Ticket created. Support will contact you soon."}
+	await db.commit()
+	return {"message": "Ticket created. Support will contact you soon."}
 
 
 @router.get("/reviews")
 async def view_all_reviews(
-    low_only: bool = False, db: AsyncSession = Depends(get_async_session)
+	low_only: bool = False, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    # If low_only is true, only show 1 and 2 star reviews
-    reviews = await service.get_all_reviews(min_rating=2 if low_only else None)
+	service = AdminService(db)
+	# If low_only is true, only show 1 and 2 star reviews
+	reviews = await service.get_all_reviews(min_rating=2 if low_only else None)
 
-    return [
-        {
-            "id": r.id,
-            "ratings": {"trip": r.trip_rating, "driver": r.driver_rating},
-            "feedback": r.review_text,
-            "passenger": r.passenger.passenger_profile.full_name
-            if r.passenger.passenger_profile
-            else r.passenger.email,
-            "driver": r.driver.driver_profile.full_name
-            if r.driver.driver_profile
-            else r.driver.email,
-            "trip_details": {
-                "route": r.scheduled_trip.route.name,
-                "date": r.scheduled_trip.planned_start_at,
-            },
-        }
-        for r in reviews
-    ]
+	return [
+		{
+			"id": r.id,
+			"ratings": {"trip": r.trip_rating, "driver": r.driver_rating},
+			"feedback": r.review_text,
+			"passenger": r.passenger.passenger_profile.full_name
+			if r.passenger.passenger_profile
+			else r.passenger.email,
+			"driver": r.driver.driver_profile.full_name
+			if r.driver.driver_profile
+			else r.driver.email,
+			"trip_details": {
+				"route": r.scheduled_trip.route.name,
+				"date": r.scheduled_trip.planned_start_at,
+			},
+		}
+		for r in reviews
+	]
 
 
 @router.get("/{user_id}/full_details")
 async def get_complete_user_audit(
-    user_id: str = Path(..., description="The UUID of the user"),
-    db: AsyncSession = Depends(get_async_session),
+	user_id: str = Path(..., description="The UUID of the user"),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    # 1. Fetch User with every possible related record
-    stmt = (
-        select(schema.User)
-        .options(
-            # Profiles
-            joinedload(schema.User.passenger_profile),
-            joinedload(schema.User.driver_profile),
-            # Driver Assets & Money
-            joinedload(schema.User.vehicle),
-            joinedload(schema.User.payout_details),
-            # Recent Activity (Passenger side)
-            joinedload(schema.User.passenger_bookings).options(
-                joinedload(schema.TripBooking.payments),
-                joinedload(schema.TripBooking.rating),
-            ),
-            # FIX: Removed .limit(10) from here
-            joinedload(schema.User.driven_trips),
-            # Ratings received as driver
-            joinedload(schema.User.ratings_received_as_driver),
-        )
-        .where(schema.User.id == user_id)
-    )
+	# 1. Fetch User with every possible related record
+	stmt = (
+		select(schema.User)
+		.options(
+			# Profiles
+			joinedload(schema.User.passenger_profile),
+			joinedload(schema.User.driver_profile),
+			# Driver Assets & Money
+			joinedload(schema.User.vehicle),
+			joinedload(schema.User.payout_details),
+			# Recent Activity (Passenger side)
+			joinedload(schema.User.passenger_bookings).options(
+				joinedload(schema.TripBooking.payments),
+				joinedload(schema.TripBooking.rating),
+			),
+			# FIX: Removed .limit(10) from here
+			joinedload(schema.User.driven_trips),
+			# Ratings received as driver
+			joinedload(schema.User.ratings_received_as_driver),
+		)
+		.where(schema.User.id == user_id)
+	)
 
-    result = await db.execute(stmt)
-    user = result.unique().scalar_one_or_none()
+	result = await db.execute(stmt)
+	user = result.unique().scalar_one_or_none()
 
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+	if not user:
+		raise HTTPException(status_code=404, detail="User not found")
 
-    # 2. Calculate Driver Rating Average
-    avg_rating = 0.0
-    if user.ratings_received_as_driver:
-        avg_rating = sum(
-            r.driver_rating for r in user.ratings_received_as_driver
-        ) / len(user.ratings_received_as_driver)
+	# 2. Calculate Driver Rating Average
+	avg_rating = 0.0
+	if user.ratings_received_as_driver:
+		avg_rating = sum(
+			r.driver_rating for r in user.ratings_received_as_driver
+		) / len(user.ratings_received_as_driver)
 
-    # 3. Construct the response (Handle slicing in Python)
-    return {
-        "identity": {
-            "id": user.id,
-            "email": user.email,
-            "role": user.role,
-            "status": "ACTIVE" if user.is_active else "BANNED",
-            "joined_on": user.created_at,
-        },
-        "financial_summary": {
-            "payout_status": user.payout_details.linked_account_status
-            if user.payout_details
-            else "N/A",
-            "razorpay_account": user.payout_details.razorpay_linked_account_id
-            if user.payout_details
-            else None,
-            "is_eligible_for_funds": user.payout_details.is_payout_eligible
-            if user.payout_details
-            else False,
-        },
-        "performance_metrics": {
-            "driver_avg_rating": round(avg_rating, 2),
-            "total_trips_driven": len(user.driven_trips),
-            "total_bookings_made": len(user.passenger_bookings),
-        },
-        "recent_bookings": [
-            {
-                "booking_id": b.id,
-                "status": b.booking_status,
-                "amount": b.fare_amount,
-                "payment_status": b.payments[0].status
-                if b.payments
-                else "NO_PAYMENT_INITIATED",
-                "booked_at": b.created_at,
-            }
-            for b in user.passenger_bookings[:5]
-        ],
-        # Added this to show the driven trips you were trying to limit
-        "recent_driven_trips": [
-            {"trip_id": t.id, "status": t.status, "started_at": t.actual_start_at}
-            for t in user.driven_trips[:10]  # Sliced in Python
-        ],
-        "compliance_check": {
-            "aadhaar": user.driver_profile.aadhaar_number
-            if user.driver_profile
-            else None,
-            "license": user.driver_profile.driving_license_number
-            if user.driver_profile
-            else None,
-            "vehicle_reg": user.vehicle.registration_number if user.vehicle else None,
-            "verification": user.driver_profile.verification_status
-            if user.driver_profile
-            else "N/A",
-        },
-    }
+	# 3. Construct the response (Handle slicing in Python)
+	return {
+		"identity": {
+			"id": user.id,
+			"email": user.email,
+			"role": user.role,
+			"status": "ACTIVE" if user.is_active else "BANNED",
+			"joined_on": user.created_at,
+		},
+		"financial_summary": {
+			"payout_status": user.payout_details.linked_account_status
+			if user.payout_details
+			else "N/A",
+			"razorpay_account": user.payout_details.razorpay_linked_account_id
+			if user.payout_details
+			else None,
+			"is_eligible_for_funds": user.payout_details.is_payout_eligible
+			if user.payout_details
+			else False,
+		},
+		"performance_metrics": {
+			"driver_avg_rating": round(avg_rating, 2),
+			"total_trips_driven": len(user.driven_trips),
+			"total_bookings_made": len(user.passenger_bookings),
+		},
+		"recent_bookings": [
+			{
+				"booking_id": b.id,
+				"status": b.booking_status,
+				"amount": b.fare_amount,
+				"payment_status": b.payments[0].status
+				if b.payments
+				else "NO_PAYMENT_INITIATED",
+				"booked_at": b.created_at,
+			}
+			for b in user.passenger_bookings[:5]
+		],
+		# Added this to show the driven trips you were trying to limit
+		"recent_driven_trips": [
+			{
+				"trip_id": t.id,
+				"status": t.status,
+				"started_at": t.actual_start_at,
+			}
+			for t in user.driven_trips[:10]  # Sliced in Python
+		],
+		"compliance_check": {
+			"aadhaar": user.driver_profile.aadhaar_number
+			if user.driver_profile
+			else None,
+			"license": user.driver_profile.driving_license_number
+			if user.driver_profile
+			else None,
+			"vehicle_reg": user.vehicle.registration_number
+			if user.vehicle
+			else None,
+			"verification": user.driver_profile.verification_status
+			if user.driver_profile
+			else "N/A",
+		},
+	}
 
 
 # -------------------------  TRANSACTIONS DETAILS BY SPECIFIC USERS --------------------
+# -----------------------------
+# Admin: get Transaction history using user_id
+# -----------------------------
+
+
 @router.get("/{user_id}/transaction_history")
 async def get_user_transaction_history(
-    user_id: str,
-    skip: int = 0,
-    limit: int = 50,
-    status: schema.BookingStatus = None,
-    db: AsyncSession = Depends(get_async_session),
+	user_id: str,
+	skip: int = 0,
+	limit: int = 50,
+	status: schema.BookingStatus = None,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    bookings = await service.fetch_user_transaction_history(
-        user_id, skip, limit, status
-    )
+	service = AdminService(db)
+	bookings = await service.fetch_user_transaction_history(
+		user_id, skip, limit, status
+	)
 
-    report = []
-    for b in bookings:
-        # Payout consistency check
-        audit_payout = b.fare_amount - b.commission_amount
-        is_payout_correct = audit_payout == b.driver_payout_amount
+	report = []
+	for b in bookings:
+		# Payout consistency check
+		audit_payout = b.fare_amount - b.commission_amount
+		is_payout_correct = audit_payout == b.driver_payout_amount
 
-        report.append(
-            {
-                "booking_id": b.id,
-                "timestamp": b.created_at,
-                "status": b.booking_status,
-                "passenger": {
-                    "name": b.passenger.passenger_profile.full_name
-                    if (b.passenger and b.passenger.passenger_profile)
-                    else "N/A",
-                    "email": b.passenger.email if b.passenger else "N/A",
-                },
-                "trip_details": {
-                    "route_name": b.route.name if b.route else "N/A",
-                    "pickup": {
-                        "id": b.pickup_stop_id,
-                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-                    },
-                    "dropoff": {
-                        "id": b.dropoff_stop_id,
-                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-                    },
-                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
-                    if (
-                        b.scheduled_trip
-                        and b.scheduled_trip.driver
-                        and b.scheduled_trip.driver.driver_profile
-                    )
-                    else "Unknown",
-                },
-                "financials": {
-                    "total_fare": float(b.fare_amount),
-                    "commission_percent": float(b.commission_percent_snapshot),
-                    "admin_earned": float(b.commission_amount),
-                    "driver_payout": float(b.driver_payout_amount),
-                    "audit_passed": is_payout_correct,
-                },
-                "refund_info": {
-                    "is_refunded": b.booking_status in ["cancelled", "refunded"],
-                    "reason": getattr(b, "cancellation_reason", "No reason provided"),
-                    "cancelled_at": getattr(b, "cancelled_at", None),
-                }
-                if b.booking_status in ["cancelled", "refunded"]
-                else None,
-                "payment_gateway": [
-                    {
-                        "razorpay_order_id": p.razorpay_order_id,
-                        "razorpay_payment_id": p.razorpay_payment_id,
-                        "payment_status": p.status,
-                    }
-                    for p in b.payments
-                ],
-                "security_scans": [
-                    {
-                        "type": s.scan_type,
-                        "time": s.created_at,
-                        "at_correct_stop": s.within_radius,
-                    }
-                    for s in b.scan_events
-                ],
-            }
-        )
+		report.append(
+			{
+				"booking_id": b.id,
+				"timestamp": b.created_at,
+				"status": b.booking_status,
+				"passenger": {
+					"name": b.passenger.passenger_profile.full_name
+					if (b.passenger and b.passenger.passenger_profile)
+					else "N/A",
+					"email": b.passenger.email if b.passenger else "N/A",
+				},
+				"trip_details": {
+					"route_name": b.route.name if b.route else "N/A",
+					"pickup": {
+						"id": b.pickup_stop_id,
+						"name": b.pickup_stop.name if b.pickup_stop else "N/A",
+					},
+					"dropoff": {
+						"id": b.dropoff_stop_id,
+						"name": b.dropoff_stop.name
+						if b.dropoff_stop
+						else "N/A",
+					},
+					"driver_name": b.scheduled_trip.driver.driver_profile.full_name
+					if (
+						b.scheduled_trip
+						and b.scheduled_trip.driver
+						and b.scheduled_trip.driver.driver_profile
+					)
+					else "Unknown",
+				},
+				"financials": {
+					"total_fare": float(b.fare_amount),
+					"commission_percent": float(b.commission_percent_snapshot),
+					"admin_earned": float(b.commission_amount),
+					"driver_payout": float(b.driver_payout_amount),
+					"audit_passed": is_payout_correct,
+				},
+				"refund_info": {
+					"is_refunded": b.booking_status
+					in ["cancelled", "refunded"],
+					"reason": getattr(
+						b, "cancellation_reason", "No reason provided"
+					),
+					"cancelled_at": getattr(b, "cancelled_at", None),
+				}
+				if b.booking_status in ["cancelled", "refunded"]
+				else None,
+				"payment_gateway": [
+					{
+						"razorpay_order_id": p.razorpay_order_id,
+						"razorpay_payment_id": p.razorpay_payment_id,
+						"payment_status": p.status,
+					}
+					for p in b.payments
+				],
+				"security_scans": [
+					{
+						"type": s.scan_type,
+						"time": s.created_at,
+						"at_correct_stop": s.within_radius,
+					}
+					for s in b.scan_events
+				],
+			}
+		)
 
-    return {"user_id": user_id, "total_count": len(report), "data": report}
+	return {"user_id": user_id, "total_count": len(report), "data": report}
 
 
 @router.get("/bookings/{booking_id}/rating")
 async def get_booking_rating(
-    booking_id: str, db: AsyncSession = Depends(get_async_session)
+	booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    stmt = (
-        select(schema.BookingRating)
-        .options(
-            joinedload(schema.BookingRating.passenger),
-            joinedload(schema.BookingRating.driver),
-        )
-        .where(schema.BookingRating.booking_id == booking_id)
-    )
-    result = await db.execute(stmt)
-    rating = result.scalar_one_or_none()
+	stmt = (
+		select(schema.BookingRating)
+		.options(
+			joinedload(schema.BookingRating.passenger),
+			joinedload(schema.BookingRating.driver),
+		)
+		.where(schema.BookingRating.booking_id == booking_id)
+	)
+	result = await db.execute(stmt)
+	rating = result.scalar_one_or_none()
 
-    if not rating:
-        raise HTTPException(status_code=404, detail="No rating found for this booking")
+	if not rating:
+		raise HTTPException(
+			status_code=404, detail="No rating found for this booking"
+		)
 
-    return {
-        "trip_rating": rating.trip_rating,
-        "driver_rating": rating.driver_rating,
-        "review": rating.review_text,
-        "passenger_name": rating.passenger.email,  # Or profile name
-        "created_at": rating.created_at,
-    }
+	return {
+		"trip_rating": rating.trip_rating,
+		"driver_rating": rating.driver_rating,
+		"review": rating.review_text,
+		"passenger_name": rating.passenger.email,  # Or profile name
+		"created_at": rating.created_at,
+	}
 
 
 # ------------------  GET BOOKINGS DETAILS BY USER ID ----------------------
+# -----------------------------
+# Admin: GET BOOKINGS DETAILS BY USER ID
+# -----------------------------
 @router.get("/user/{user_id}/bookings/detailed")
 async def get_user_bookings_detailed(
-    user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    bookings = await service.fetch_user_bookings_with_details(user_id)
+	service = AdminService(db)
+	bookings = await service.fetch_user_bookings_with_details(user_id)
 
-    if not bookings:
-        return {"user_id": user_id, "total_bookings": 0, "history": []}
+	if not bookings:
+		return {"user_id": user_id, "total_bookings": 0, "history": []}
 
-    history = []
-    for b in bookings:
-        history.append(
-            {
-                "booking_id": b.id,
-                "date": b.created_at,
-                "status": b.booking_status,
-                "route": b.route.name if b.route else "Unknown Route",
-                "stops": {
-                    "pickup": {
-                        "id": b.pickup_stop_id,
-                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-                        "seq": b.pickup_sequence_no_snapshot,
-                    },
-                    "dropoff": {
-                        "id": b.dropoff_stop_id,
-                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-                        "seq": b.dropoff_sequence_no_snapshot,
-                    },
-                },
-                "financials": {
-                    "fare": float(b.fare_amount),
-                    "payment_id": b.payments[0].razorpay_payment_id
-                    if b.payments
-                    else None,
-                    "payment_status": b.payments[0].status if b.payments else "unpaid",
-                },
-                # Refund & Cancellation Logic
-                "audit_note": {
-                    "cancelled_by": b.cancelled_by
-                    if hasattr(b, "cancelled_by")
-                    else "N/A",
-                    "reason": b.cancellation_reason
-                    if hasattr(b, "cancellation_reason")
-                    else "N/A",
-                    "refund_status": b.transfer_status
-                    if b.booking_status == "cancelled"
-                    else "N/A",
-                }
-                if b.booking_status in ["cancelled", "refunded"]
-                else None,
-            }
-        )
+	history = []
+	for b in bookings:
+		history.append(
+			{
+				"booking_id": b.id,
+				"date": b.created_at,
+				"status": b.booking_status,
+				"route": b.route.name if b.route else "Unknown Route",
+				"stops": {
+					"pickup": {
+						"id": b.pickup_stop_id,
+						"name": b.pickup_stop.name if b.pickup_stop else "N/A",
+						"seq": b.pickup_sequence_no_snapshot,
+					},
+					"dropoff": {
+						"id": b.dropoff_stop_id,
+						"name": b.dropoff_stop.name
+						if b.dropoff_stop
+						else "N/A",
+						"seq": b.dropoff_sequence_no_snapshot,
+					},
+				},
+				"financials": {
+					"fare": float(b.fare_amount),
+					"payment_id": b.payments[0].razorpay_payment_id
+					if b.payments
+					else None,
+					"payment_status": b.payments[0].status
+					if b.payments
+					else "unpaid",
+				},
+				# Refund & Cancellation Logic
+				"audit_note": {
+					"cancelled_by": b.cancelled_by
+					if hasattr(b, "cancelled_by")
+					else "N/A",
+					"reason": b.cancellation_reason
+					if hasattr(b, "cancellation_reason")
+					else "N/A",
+					"refund_status": b.transfer_status
+					if b.booking_status == "cancelled"
+					else "N/A",
+				}
+				if b.booking_status in ["cancelled", "refunded"]
+				else None,
+			}
+		)
 
-    return {"user_id": user_id, "total_bookings": len(history), "history": history}
+	return {
+		"user_id": user_id,
+		"total_bookings": len(history),
+		"history": history,
+	}
 
 
 # ------------------------ ALL PASSENGERS DETAILS -------------------
+# -----------------------------
+# Admin: Get ALL Passengers Details
+# -----------------------------
 @router.get("/passengers")
 async def get_all_passengers_full_detail(
-    skip: int = 0,
-    limit: int = 50,
-    current_user: schema.User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_async_session),
+	skip: int = 0,
+	limit: int = 50,
+	current_user: schema.User = Depends(get_current_active_user),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    # 1. Authorization Check
-    if current_user.role != schema.UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Unauthorized access")
+	# 1. Authorization Check
+	if current_user.role != schema.UserRole.ADMIN:
+		raise HTTPException(status_code=403, detail="Unauthorized access")
 
-    # 2. Fetch Data from Service
-    service = AdminService(db)
-    users = await service.fetch_complete_passenger_data(skip, limit)
+	# 2. Fetch Data from Service
+	service = AdminService(db)
+	users = await service.fetch_complete_passenger_data(skip, limit)
 
-    full_report = []
+	full_report = []
 
-    for u in users:
-        prof = u.passenger_profile
-        # FIX: Using the correct relationship name from your schema.py
-        bookings = u.passenger_bookings
+	for u in users:
+		prof = u.passenger_profile
+		# FIX: Using the correct relationship name from your schema.py
+		bookings = u.passenger_bookings
 
-        # Calculate metrics
-        # Note: We filter for 'paid' status in the nested payments of each booking
-        total_spent = sum(
-            p.amount
-            for b in bookings
-            for p in b.payments
-            if p.status == schema.BookingPaymentStatus.PAID
-        )
-        ride_count = len(bookings)
+		# Calculate metrics
+		# Note: We filter for 'paid' status in the nested payments of each booking
+		total_spent = sum(
+			p.amount
+			for b in bookings
+			for p in b.payments
+			if p.status == schema.BookingPaymentStatus.PAID
+		)
+		ride_count = len(bookings)
 
-        # 3. Constructing the JSON Response
-        # We handle 'None' for profile safely to prevent AttributeErrors
-        full_report.append(
-            {
-                "account_info": {
-                    "user_id": u.id,
-                    "email": u.email,
-                    "is_active": u.is_active,
-                    "created_at": u.created_at,
-                },
-                "profile": {
-                    "name": prof.full_name if prof else "N/A",
-                    "profile_picture": prof.profile_picture_path if prof else None,
-                    # Note: These fields are not in your current DB schema for PassengerProfile
-                    "status": "Active" if u.is_active else "Inactive",
-                },
-                "usage_metrics": {
-                    "total_rides": ride_count,
-                    "total_spending": float(total_spent),
-                    "last_ride_date": bookings[0].created_at
-                    if ride_count > 0
-                    else None,
-                },
-                "recent_bookings": [
-                    {
-                        "booking_id": b.id,
-                        "status": b.booking_status,
-                        "route": b.route.name if b.route else "N/A",
-                        "pickup": b.pickup_stop.name if b.pickup_stop else "N/A",
-                        "dropoff": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-                        "fare": float(b.fare_amount),
-                        "date": b.created_at,
-                    }
-                    for b in bookings[:5]  # Limit to 5 most recent
-                ],
-            }
-        )
+		# 3. Constructing the JSON Response
+		# We handle 'None' for profile safely to prevent AttributeErrors
+		full_report.append(
+			{
+				"account_info": {
+					"user_id": u.id,
+					"email": u.email,
+					"is_active": u.is_active,
+					"created_at": u.created_at,
+				},
+				"profile": {
+					"name": prof.full_name if prof else "N/A",
+					"profile_picture": prof.profile_picture_path
+					if prof
+					else None,
+					# Note: These fields are not in your current DB schema for PassengerProfile
+					"status": "Active" if u.is_active else "Inactive",
+				},
+				"usage_metrics": {
+					"total_rides": ride_count,
+					"total_spending": float(total_spent),
+					"last_ride_date": bookings[0].created_at
+					if ride_count > 0
+					else None,
+				},
+				"recent_bookings": [
+					{
+						"booking_id": b.id,
+						"status": b.booking_status,
+						"route": b.route.name if b.route else "N/A",
+						"pickup": b.pickup_stop.name
+						if b.pickup_stop
+						else "N/A",
+						"dropoff": b.dropoff_stop.name
+						if b.dropoff_stop
+						else "N/A",
+						"fare": float(b.fare_amount),
+						"date": b.created_at,
+					}
+					for b in bookings[:5]  # Limit to 5 most recent
+				],
+			}
+		)
 
-    return {"status": "success", "count": len(full_report), "passengers": full_report}
+	return {
+		"status": "success",
+		"count": len(full_report),
+		"passengers": full_report,
+	}
 
 
 # -----------------------------------   AVAILABLE VEHICALS ---------------------
 @router.get("/available_vehicles")
 async def get_available_vehicles(
-    current_user: schema.User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_active_user),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Returns vehicles NOT currently in an active/scheduled trip,
-    including the assigned driver's name.
-    """
-    if current_user.role != schema.UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Unauthorized access")
+	"""
+	Returns vehicles NOT currently in an active/scheduled trip,
+	including the assigned driver's name.
+	"""
+	if current_user.role != schema.UserRole.ADMIN:
+		raise HTTPException(status_code=403, detail="Unauthorized access")
 
-    try:
-        # 1. Subquery for vehicles currently busy
-        # Using ScheduledTripStatus.IN_PROGRESS as defined in your schema
-        busy_vehicle_ids = select(schema.ScheduledTrip.vehicle_id).where(
-            schema.ScheduledTrip.status.in_(
-                [
-                    schema.ScheduledTripStatus.SCHEDULED,
-                    schema.ScheduledTripStatus.IN_PROGRESS,
-                ]
-            )
-        )
+	try:
+		# 1. Subquery for vehicles currently busy
+		# Using ScheduledTripStatus.IN_PROGRESS as defined in your schema
+		busy_vehicle_ids = select(schema.ScheduledTrip.vehicle_id).where(
+			schema.ScheduledTrip.status.in_(
+				[
+					schema.ScheduledTripStatus.SCHEDULED,
+					schema.ScheduledTripStatus.IN_PROGRESS,
+				]
+			)
+		)
 
-        # 2. Query available vehicles with Driver and Profile loaded
-        # We use joinedload to fetch the driver user and their profile in one go
-        query = (
-            select(schema.Vehicle)
-            .options(
-                joinedload(schema.Vehicle.driver).joinedload(schema.User.driver_profile)
-            )
-            .where(not_(schema.Vehicle.id.in_(busy_vehicle_ids)))
-        )
+		# 2. Query available vehicles with Driver and Profile loaded
+		# We use joinedload to fetch the driver user and their profile in one go
+		query = (
+			select(schema.Vehicle)
+			.options(
+				joinedload(schema.Vehicle.driver).joinedload(
+					schema.User.driver_profile
+				)
+			)
+			.where(not_(schema.Vehicle.id.in_(busy_vehicle_ids)))
+		)
 
-        result = await db.execute(query)
-        available_vehicles = result.scalars().all()
+		result = await db.execute(query)
+		available_vehicles = result.scalars().all()
 
-        # 3. Format Response
-        return {
-            "status": "success",
-            "count": len(available_vehicles),
-            "vehicles": [
-                {
-                    "id": v.id,
-                    "registration_number": v.registration_number,
-                    "vehicle_name": v.vehicle_name,
-                    "vehicle_model": v.vehicle_model,
-                    "seat_count": v.seat_count,
-                    "has_ac": v.has_ac,
-                    "driver_info": {
-                        "user_id": v.driver_user_id,
-                        # Accessing nested relationship: Vehicle -> User -> DriverProfile
-                        "driver_name": v.driver.driver_profile.full_name
-                        if v.driver and v.driver.driver_profile
-                        else "No Profile Found",
-                        "driver_email": v.driver.email if v.driver else "N/A",
-                    },
-                    "is_active": v.is_active,
-                }
-                for v in available_vehicles
-            ],
-        }
+		# 3. Format Response
+		return {
+			"status": "success",
+			"count": len(available_vehicles),
+			"vehicles": [
+				{
+					"id": v.id,
+					"registration_number": v.registration_number,
+					"vehicle_name": v.vehicle_name,
+					"vehicle_model": v.vehicle_model,
+					"seat_count": v.seat_count,
+					"has_ac": v.has_ac,
+					"driver_info": {
+						"user_id": v.driver_user_id,
+						# Accessing nested relationship: Vehicle -> User -> DriverProfile
+						"driver_name": v.driver.driver_profile.full_name
+						if v.driver and v.driver.driver_profile
+						else "No Profile Found",
+						"driver_email": v.driver.email if v.driver else "N/A",
+					},
+					"is_active": v.is_active,
+				}
+				for v in available_vehicles
+			],
+		}
 
-    except Exception as e:
-        # It's better to log the full error 'e' internally
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+	except Exception as e:
+		# It's better to log the full error 'e' internally
+		raise HTTPException(
+			status_code=500, detail=f"Database error: {str(e)}"
+		)
 
 
 # ---------------- RATING AND REVIEWS FOR DRIVERS ---------------------
 @router.get("/reviews/drivers")
 async def get_driver_reviews(
-    driver_id: str | None = Query(
-        None, description="Filter by specific Driver User ID"
-    ),
-    min_rating: int = Query(1, ge=1, le=5),
-    skip: int = 0,
-    limit: int = 50,
-    current_user: schema.User = Depends(get_current_active_user),
-    db: AsyncSession = Depends(get_async_session),
+	driver_id: str | None = Query(
+		None, description="Filter by specific Driver User ID"
+	),
+	min_rating: int = Query(1, ge=1, le=5),
+	skip: int = 0,
+	limit: int = 50,
+	current_user: schema.User = Depends(get_current_active_user),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    """
-    Fetches all ratings and reviews given by passengers to drivers.
-    """
-    # 1. Authorization
-    if current_user.role != schema.UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Admin access required")
+	"""
+	Fetches all ratings and reviews given by passengers to drivers.
+	"""
+	# 1. Authorization
+	if current_user.role != schema.UserRole.ADMIN:
+		raise HTTPException(status_code=403, detail="Admin access required")
 
-    try:
-        # 2. Build the Query
-        # We load: Passenger (User -> Profile), Driver (User -> Profile), and the Trip/Route
-        stmt = (
-            select(schema.BookingRating)
-            .options(
-                joinedload(schema.BookingRating.passenger).joinedload(
-                    schema.User.passenger_profile
-                ),
-                joinedload(schema.BookingRating.driver).joinedload(
-                    schema.User.driver_profile
-                ),
-                joinedload(schema.BookingRating.scheduled_trip).joinedload(
-                    schema.ScheduledTrip.route
-                ),
-            )
-            .order_by(schema.BookingRating.created_at.desc())
-        )
+	try:
+		# 2. Build the Query
+		# We load: Passenger (User -> Profile), Driver (User -> Profile), and the Trip/Route
+		stmt = (
+			select(schema.BookingRating)
+			.options(
+				joinedload(schema.BookingRating.passenger).joinedload(
+					schema.User.passenger_profile
+				),
+				joinedload(schema.BookingRating.driver).joinedload(
+					schema.User.driver_profile
+				),
+				joinedload(schema.BookingRating.scheduled_trip).joinedload(
+					schema.ScheduledTrip.route
+				),
+			)
+			.order_by(schema.BookingRating.created_at.desc())
+		)
 
-        # 3. Apply Filters
-        if driver_id:
-            stmt = stmt.where(schema.BookingRating.driver_user_id == driver_id)
+		# 3. Apply Filters
+		if driver_id:
+			stmt = stmt.where(schema.BookingRating.driver_user_id == driver_id)
 
-        # Filtering by driver_rating (assuming field name from your schema logic)
-        stmt = stmt.where(schema.BookingRating.driver_rating >= min_rating)
+		# Filtering by driver_rating (assuming field name from your schema logic)
+		stmt = stmt.where(schema.BookingRating.driver_rating >= min_rating)
 
-        # 4. Execute
-        result = await db.execute(stmt.offset(skip).limit(limit))
-        ratings = result.scalars().all()
+		# 4. Execute
+		result = await db.execute(stmt.offset(skip).limit(limit))
+		ratings = result.scalars().all()
 
-        # 5. Format JSON Response
-        review_list = []
-        for r in ratings:
-            review_list.append(
-                {
-                    "rating_id": r.id,
-                    "trip_details": {
-                        "trip_id": r.scheduled_trip_id,
-                        "route_name": r.scheduled_trip.route.name
-                        if r.scheduled_trip and r.scheduled_trip.route
-                        else "N/A",
-                        "date": r.scheduled_trip.planned_start_at
-                        if r.scheduled_trip
-                        else None,
-                    },
-                    "passenger": {
-                        "name": r.passenger.passenger_profile.full_name
-                        if r.passenger and r.passenger.passenger_profile
-                        else "Anonymous",
-                        "email": r.passenger.email if r.passenger else "N/A",
-                    },
-                    "driver": {
-                        "user_id": r.driver_user_id,
-                        "name": r.driver.driver_profile.full_name
-                        if r.driver and r.driver.driver_profile
-                        else "Unknown Driver",
-                    },
-                    "feedback": {
-                        "rating": r.driver_rating,
-                        "comment": r.review_text,
-                        "created_at": r.created_at,
-                        "trip_ratings":r.trip_rating,
-                    },
-                }
-            )
+		# 5. Format JSON Response
+		review_list = []
+		for r in ratings:
+			review_list.append(
+				{
+					"rating_id": r.id,
+					"trip_details": {
+						"trip_id": r.scheduled_trip_id,
+						"route_name": r.scheduled_trip.route.name
+						if r.scheduled_trip and r.scheduled_trip.route
+						else "N/A",
+						"date": r.scheduled_trip.planned_start_at
+						if r.scheduled_trip
+						else None,
+					},
+					"passenger": {
+						"name": r.passenger.passenger_profile.full_name
+						if r.passenger and r.passenger.passenger_profile
+						else "Anonymous",
+						"email": r.passenger.email if r.passenger else "N/A",
+					},
+					"driver": {
+						"user_id": r.driver_user_id,
+						"name": r.driver.driver_profile.full_name
+						if r.driver and r.driver.driver_profile
+						else "Unknown Driver",
+					},
+					"feedback": {
+						"rating": r.driver_rating,
+						"comment": r.review_text,
+						"created_at": r.created_at,
+						"trip_ratings": r.trip_rating,
+					},
+				}
+			)
 
-        return {"status": "success", "count": len(review_list), "reviews": review_list}
+		return {
+			"status": "success",
+			"count": len(review_list),
+			"reviews": review_list,
+		}
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
+	except Exception as e:
+		raise HTTPException(
+			status_code=500, detail=f"Database error: {str(e)}"
+		)
 
 
 @router.get("/reviews/stats")
 async def get_rating_summary(
-    db: AsyncSession = Depends(get_async_session),
-    current_user: schema.User = Depends(get_current_active_user),
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_active_user),
 ):
-    """
-    Returns quick stats like average rating across the platform.
-    """
-    if current_user.role != schema.UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="Unauthorized")
+	"""
+	Returns quick stats like average rating across the platform.
+	"""
+	if current_user.role != schema.UserRole.ADMIN:
+		raise HTTPException(status_code=403, detail="Unauthorized")
 
-    # Calculate average rating
-    stmt = select(func.avg(schema.BookingRating.driver_rating))
-    result = await db.execute(stmt)
-    avg_rating = result.scalar() or 0.0
+	# Calculate average rating
+	stmt = select(func.avg(schema.BookingRating.driver_rating))
+	result = await db.execute(stmt)
+	avg_rating = result.scalar() or 0.0
 
-    return {"average_platform_rating": round(float(avg_rating), 2)}
+	return {"average_platform_rating": round(float(avg_rating), 2)}
 
 
 # -----------------------------
@@ -2122,162 +2248,166 @@ async def get_rating_summary(
 
 
 async def get_all_transactions(
-    skip: int = 0,
-    limit: int = 50,
-    status: schema.BookingStatus = None,
-    db: AsyncSession = Depends(get_async_session),
+	skip: int = 0,
+	limit: int = 50,
+	status: schema.BookingStatus = None,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    bookings = await service.fetch_detailed_transactions(skip, limit, status)
+	service = AdminService(db)
+	bookings = await service.fetch_detailed_transactions(skip, limit, status)
 
-    report = []
-    for b in bookings:
-        # Payout consistency check
-        audit_payout = b.fare_amount - b.commission_amount
-        is_payout_correct = audit_payout == b.driver_payout_amount
+	report = []
+	for b in bookings:
+		# Payout consistency check
+		audit_payout = b.fare_amount - b.commission_amount
+		is_payout_correct = audit_payout == b.driver_payout_amount
 
-        report.append(
-            {
-                "booking_id": b.id,
-                "timestamp": b.created_at,
-                "status": b.booking_status,
-                "passenger": {
-                    "name": b.passenger.passenger_profile.full_name
-                    if (b.passenger and b.passenger.passenger_profile)
-                    else "N/A",
-                    "email": b.passenger.email if b.passenger else "N/A",
-                },
-                "trip_details": {
-                    "route_name": b.route.name if b.route else "N/A",
-                    "pickup": {
-                        "id": b.pickup_stop_id,
-                        "name": b.pickup_stop.name if b.pickup_stop else "N/A",
-                    },
-                    "dropoff": {
-                        "id": b.dropoff_stop_id,
-                        "name": b.dropoff_stop.name if b.dropoff_stop else "N/A",
-                    },
-                    "driver_name": b.scheduled_trip.driver.driver_profile.full_name
-                    if (
-                        b.scheduled_trip
-                        and b.scheduled_trip.driver
-                        and b.scheduled_trip.driver.driver_profile
-                    )
-                    else "Unknown",
-                },
-                "financials": {
-                    "total_fare": float(b.fare_amount),
-                    "commission_percent": float(b.commission_percent_snapshot),
-                    "admin_earned": float(b.commission_amount),
-                    "driver_payout": float(b.driver_payout_amount),
-                    "audit_passed": is_payout_correct,
-                },
-                "refund_info": {
-                    "is_refunded": b.booking_status in ["cancelled", "refunded"],
-                    "reason": getattr(b, "cancellation_reason", "No reason provided"),
-                    "cancelled_by": getattr(b, "cancelled_by", "N/A"),
-                    "cancelled_at": getattr(b, "cancelled_at", None),
-                }
-                if b.booking_status in ["cancelled", "refunded"]
-                else None,
-                "payment_gateway": [
-                    {
-                        "razorpay_order_id": p.razorpay_order_id,
-                        "razorpay_payment_id": p.razorpay_payment_id,
-                        "payment_status": p.status,
-                    }
-                    for p in b.payments
-                ],
-                "security_scans": [
-                    {
-                        "type": s.scan_type,
-                        "time": s.created_at,
-                        "at_correct_stop": s.within_radius,
-                    }
-                    for s in b.scan_events
-                ],
-            }
-        )
+		report.append(
+			{
+				"booking_id": b.id,
+				"timestamp": b.created_at,
+				"status": b.booking_status,
+				"passenger": {
+					"name": b.passenger.passenger_profile.full_name
+					if (b.passenger and b.passenger.passenger_profile)
+					else "N/A",
+					"email": b.passenger.email if b.passenger else "N/A",
+				},
+				"trip_details": {
+					"route_name": b.route.name if b.route else "N/A",
+					"pickup": {
+						"id": b.pickup_stop_id,
+						"name": b.pickup_stop.name if b.pickup_stop else "N/A",
+					},
+					"dropoff": {
+						"id": b.dropoff_stop_id,
+						"name": b.dropoff_stop.name
+						if b.dropoff_stop
+						else "N/A",
+					},
+					"driver_name": b.scheduled_trip.driver.driver_profile.full_name
+					if (
+						b.scheduled_trip
+						and b.scheduled_trip.driver
+						and b.scheduled_trip.driver.driver_profile
+					)
+					else "Unknown",
+				},
+				"financials": {
+					"total_fare": float(b.fare_amount),
+					"commission_percent": float(b.commission_percent_snapshot),
+					"admin_earned": float(b.commission_amount),
+					"driver_payout": float(b.driver_payout_amount),
+					"audit_passed": is_payout_correct,
+				},
+				"refund_info": {
+					"is_refunded": b.booking_status
+					in ["cancelled", "refunded"],
+					"reason": getattr(
+						b, "cancellation_reason", "No reason provided"
+					),
+					"cancelled_by": getattr(b, "cancelled_by", "N/A"),
+					"cancelled_at": getattr(b, "cancelled_at", None),
+				}
+				if b.booking_status in ["cancelled", "refunded"]
+				else None,
+				"payment_gateway": [
+					{
+						"razorpay_order_id": p.razorpay_order_id,
+						"razorpay_payment_id": p.razorpay_payment_id,
+						"payment_status": p.status,
+					}
+					for p in b.payments
+				],
+				"security_scans": [
+					{
+						"type": s.scan_type,
+						"time": s.created_at,
+						"at_correct_stop": s.within_radius,
+					}
+					for s in b.scan_events
+				],
+			}
+		)
 
-    return {"total_count": len(report), "data": report}
+	return {"total_count": len(report), "data": report}
 
 
 # -----------------------------
 # Admin: Get all Most Booked Routes
 # -----------------------------
 @router.get(
-    "/analytics/most-booked-routes",
-    response_model=List[dict],
-    status_code=200,
+	"/analytics/most-booked-routes", response_model=list[dict], status_code=200
 )
 async def get_most_booked_routes(
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    try:
-        # Call the service method
-        stats = await service.get_top_booking_routes()
+	service = AdminService(db)
+	try:
+		# Call the service method
+		stats = await service.get_top_booking_routes()
 
-        return [
-            {
-                "route_id": row.route_id,
-                "route_name": row.route_name,
-                "total_bookings": row.total_bookings,
-            }
-            for row in stats
-        ]
-    except Exception as e:
-        print(f"Error fetching route analytics: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to retrieve most booked routes"
-        )
+		return [
+			{
+				"route_id": row.route_id,
+				"route_name": row.route_name,
+				"total_bookings": row.total_bookings,
+			}
+			for row in stats
+		]
+	except Exception as e:
+		print(f"Error fetching route analytics: {e}")
+		raise HTTPException(
+			status_code=500, detail="Failed to retrieve most booked routes"
+		)
 
 
 # -----------------------------
 # Admin: Get all top Pick-up_Stops
 # -----------------------------
 @router.get(
-    "/analytics/top-pickup-stops",
-    response_model=List[dict],
-    status_code=200,
+	"/analytics/top-pickup-stops", response_model=list[dict], status_code=200
 )
 async def get_top_pickup_stops(
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    try:
-        stats = await service.get_most_popular_pickup_stops()
+	service = AdminService(db)
+	try:
+		stats = await service.get_most_popular_pickup_stops()
 
-        return [
-            {
-                # "route_id": row.route_id,
-                # "route_name": row.route_name,
-                "stop_id": row.stop_id,
-                "stop_name": row.stop_name,
-                "booking_count": row.booking_count,
-            }
-            for row in stats
-        ]
-    except Exception as e:
-        # Useful for catching those pesky attribute errors!
-        print(f"Error fetching pickup analytics: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to retrieve top pickup stops analytics"
-        )
+		return [
+			{
+				# "route_id": row.route_id,
+				# "route_name": row.route_name,
+				"stop_id": row.stop_id,
+				"stop_name": row.stop_name,
+				"booking_count": row.booking_count,
+			}
+			for row in stats
+		]
+	except Exception as e:
+		# Useful for catching those pesky attribute errors!
+		print(f"Error fetching pickup analytics: {e}")
+		raise HTTPException(
+			status_code=500,
+			detail="Failed to retrieve top pickup stops analytics",
+		)
 
 
 @router.post("/trips/{trip_id}/complete-manually")
 async def admin_complete_trip(
-    trip_id: str,
-    note: str = None,
-    db: AsyncSession = Depends(get_async_session),
-    # Ensure only admins can access this
-    current_admin: schema.User = Depends(get_current_admin),
+	trip_id: str,
+	note: str = None,
+	db: AsyncSession = Depends(get_async_session),
+	# Ensure only admins can access this
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.manually_complete_trip(trip_id, current_admin.id, note)
+	service = AdminService(db)
+	return await service.manually_complete_trip(
+		trip_id, current_admin.id, note
+	)
 
 
 # ============================================================
@@ -2286,279 +2416,264 @@ async def admin_complete_trip(
 
 
 @router.get("/payouts/settings")
-async def get_payout_settings(
-    db: AsyncSession = Depends(get_async_session),
-):
-    service = AdminService(db)
-    return await service.get_payout_settings()
+async def get_payout_settings(db: AsyncSession = Depends(get_async_session)):
+	service = AdminService(db)
+	return await service.get_payout_settings()
 
 
 @router.patch("/payouts/settings")
 async def patch_payout_settings(
-    payload: PayoutSettingsUpdate,
-    db: AsyncSession = Depends(get_async_session),
+	payload: PayoutSettingsUpdate,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.update_payout_settings(payload.commission_percent)
+	service = AdminService(db)
+	return await service.update_payout_settings(payload.commission_percent)
 
 
 @router.get("/payouts/drivers")
 async def list_driver_payout_profiles(
-    linked_account_status: Optional[schema.LinkedAccountStatus] = Query(default=None),
-    is_payout_eligible: Optional[bool] = Query(default=None),
-    db: AsyncSession = Depends(get_async_session),
+	linked_account_status: schema.LinkedAccountStatus | None = Query(
+		default=None
+	),
+	is_payout_eligible: bool | None = Query(default=None),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.list_driver_payout_profiles(
-        linked_account_status=linked_account_status,
-        is_payout_eligible=is_payout_eligible,
-    )
+	service = AdminService(db)
+	return await service.list_driver_payout_profiles(
+		linked_account_status=linked_account_status,
+		is_payout_eligible=is_payout_eligible,
+	)
 
 
 @router.get("/payouts/drivers/{driver_user_id}")
 async def get_driver_payout_profile(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_driver_payout_profile(driver_user_id)
+	service = AdminService(db)
+	return await service.get_driver_payout_profile(driver_user_id)
 
 
 @router.put("/payouts/drivers/{driver_user_id}/details")
 async def upsert_driver_payout_details(
-    driver_user_id: str,
-    payload: DriverPayoutDetailsUpsert,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str,
+	payload: DriverPayoutDetailsUpsert,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.upsert_driver_payout_details(driver_user_id, payload)
+	service = AdminService(db)
+	return await service.upsert_driver_payout_details(driver_user_id, payload)
 
 
 @router.patch("/payouts/drivers/{driver_user_id}/linked-account")
 async def patch_driver_linked_account(
-    driver_user_id: str,
-    payload: DriverLinkedAccountUpdate,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str,
+	payload: DriverLinkedAccountUpdate,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.update_driver_linked_account(driver_user_id, payload)
+	service = AdminService(db)
+	return await service.update_driver_linked_account(driver_user_id, payload)
 
 
 @router.patch("/payouts/drivers/{driver_user_id}/eligibility")
 async def patch_driver_payout_eligibility(
-    driver_user_id: str,
-    payload: DriverPayoutEligibilityUpdate,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str,
+	payload: DriverPayoutEligibilityUpdate,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.update_driver_payout_eligibility(driver_user_id, payload)
- 
+	service = AdminService(db)
+	return await service.update_driver_payout_eligibility(
+		driver_user_id, payload
+	)
+
 
 @router.get("/payouts/bookings")
 async def list_payout_bookings(
-    driver_user_id: Optional[str] = Query(default=None),
-    passenger_user_id: Optional[str] = Query(default=None),
-    booking_status: Optional[schema.BookingStatus] = Query(default=None),
-    transfer_status: Optional[schema.TransferStatus] = Query(default=None),
-    month: Optional[int] = Query(default=None, ge=1, le=12),
-    year: Optional[int] = Query(default=None, ge=2000, le=2100),
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str | None = Query(default=None),
+	passenger_user_id: str | None = Query(default=None),
+	booking_status: schema.BookingStatus | None = Query(default=None),
+	transfer_status: schema.TransferStatus | None = Query(default=None),
+	month: int | None = Query(default=None, ge=1, le=12),
+	year: int | None = Query(default=None, ge=2000, le=2100),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.list_payout_bookings(
-        driver_user_id=driver_user_id,
-        passenger_user_id=passenger_user_id,
-        booking_status=booking_status,
-        transfer_status=transfer_status,
-        month=month,
-        year=year,
-    )
+	service = AdminService(db)
+	return await service.list_payout_bookings(
+		driver_user_id=driver_user_id,
+		passenger_user_id=passenger_user_id,
+		booking_status=booking_status,
+		transfer_status=transfer_status,
+		month=month,
+		year=year,
+	)
 
 
 @router.get("/payouts/bookings/{booking_id}")
 async def get_payout_booking_detail(
-    booking_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_payout_booking_detail(booking_id)
+	service = AdminService(db)
+	return await service.get_payout_booking_detail(booking_id)
 
 
 @router.post("/payouts/bookings/{booking_id}/adjustments")
 async def create_payout_adjustment(
-    booking_id: str,
-    payload: PayoutAdjustmentCreateRequest,
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	booking_id: str,
+	payload: PayoutAdjustmentCreateRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.create_payout_adjustment(
-        booking_id=booking_id,
-        admin_user_id=current_admin.id,
-        payload=payload,
-    )
+	service = AdminService(db)
+	return await service.create_payout_adjustment(
+		booking_id=booking_id, admin_user_id=current_admin.id, payload=payload
+	)
 
 
 @router.get("/payouts/bookings/{booking_id}/adjustments")
 async def list_booking_payout_adjustments(
-    booking_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.list_booking_payout_adjustments(booking_id)
+	service = AdminService(db)
+	return await service.list_booking_payout_adjustments(booking_id)
 
 
 @router.get("/payouts/drivers/{driver_user_id}/open-adjustments")
 async def list_driver_open_payout_adjustments(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.list_driver_open_payout_adjustments(driver_user_id)
+	service = AdminService(db)
+	return await service.list_driver_open_payout_adjustments(driver_user_id)
 
 
 @router.patch("/payouts/adjustments/{adjustment_id}/decision")
 async def update_payout_adjustment_decision(
-    adjustment_id: str,
-    payload: PayoutAdjustmentDecisionRequest,
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	adjustment_id: str,
+	payload: PayoutAdjustmentDecisionRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.update_payout_adjustment_decision(
-        adjustment_id=adjustment_id,
-        admin_user_id=current_admin.id,
-        payload=payload,
-    )
+	service = AdminService(db)
+	return await service.update_payout_adjustment_decision(
+		adjustment_id=adjustment_id,
+		admin_user_id=current_admin.id,
+		payload=payload,
+	)
 
 
 @router.post("/payouts/bookings/{booking_id}/trigger")
 async def trigger_booking_payout(
-    booking_id: str,
-    payload: TriggerBookingPayoutRequest,
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	booking_id: str,
+	payload: TriggerBookingPayoutRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.trigger_booking_payout(
-        booking_id=booking_id,
-        linked_account_id=payload.linked_account_id,
-        require_completed=payload.require_completed,
-        adjustments_to_apply=[
-            {
-                "adjustment_id": item.adjustment_id,
-                "applied_amount": item.applied_amount,
-            }
-            for item in payload.adjustments_to_apply
-        ],
-        applied_by_admin_id=current_admin.id,
-    )
+	service = AdminService(db)
+	return await service.trigger_booking_payout(
+		booking_id=booking_id,
+		linked_account_id=payload.linked_account_id,
+		require_completed=payload.require_completed,
+		adjustments_to_apply=[
+			{
+				"adjustment_id": item.adjustment_id,
+				"applied_amount": item.applied_amount,
+			}
+			for item in payload.adjustments_to_apply
+		],
+		applied_by_admin_id=current_admin.id,
+	)
 
 
 @router.post("/payouts/drivers/{driver_user_id}/trigger-monthly")
 async def trigger_driver_monthly_payouts(
-    driver_user_id: str,
-    payload: TriggerDriverMonthlyPayoutRequest,
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	driver_user_id: str,
+	payload: TriggerDriverMonthlyPayoutRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.trigger_driver_monthly_payouts(
-        driver_user_id=driver_user_id,
-        month=payload.month,
-        year=payload.year,
-        linked_account_id=payload.linked_account_id,
-        booking_items=payload.booking_items,
-        applied_by_admin_id=current_admin.id,
-    )
+	service = AdminService(db)
+	return await service.trigger_driver_monthly_payouts(
+		driver_user_id=driver_user_id,
+		month=payload.month,
+		year=payload.year,
+		linked_account_id=payload.linked_account_id,
+		booking_items=payload.booking_items,
+		applied_by_admin_id=current_admin.id,
+	)
 
 
 @router.post("/payouts/bulk-trigger")
 async def trigger_bulk_payouts(
-    payload: BulkPayoutTriggerRequest,
-    db: AsyncSession = Depends(get_async_session),
-    current_admin: schema.User = Depends(get_current_admin),
+	payload: BulkPayoutTriggerRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
-    service = AdminService(db)
-    return await service.trigger_bulk_payouts(
-        payload,
-        applied_by_admin_id=current_admin.id,
-    )
+	service = AdminService(db)
+	return await service.trigger_bulk_payouts(
+		payload, applied_by_admin_id=current_admin.id
+	)
 
 
 @router.get("/payouts/transfers")
 async def list_booking_transfers(
-    driver_user_id: Optional[str] = Query(default=None),
-    status: Optional[schema.BookingTransferStatus] = Query(default=None),
-    month: Optional[int] = Query(default=None, ge=1, le=12),
-    year: Optional[int] = Query(default=None, ge=2000, le=2100),
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str | None = Query(default=None),
+	status: schema.BookingTransferStatus | None = Query(default=None),
+	month: int | None = Query(default=None, ge=1, le=12),
+	year: int | None = Query(default=None, ge=2000, le=2100),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.list_booking_transfers(
-        driver_user_id=driver_user_id,
-        status=status,
-        month=month,
-        year=year,
-    )
+	service = AdminService(db)
+	return await service.list_booking_transfers(
+		driver_user_id=driver_user_id, status=status, month=month, year=year
+	)
 
 
 @router.get("/payouts/transfers/{transfer_id}")
 async def get_booking_transfer_detail(
-    transfer_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	transfer_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_booking_transfer_detail(transfer_id)
+	service = AdminService(db)
+	return await service.get_booking_transfer_detail(transfer_id)
 
 
 @router.get("/payouts/refunds")
-async def list_refund_queue(
-    db: AsyncSession = Depends(get_async_session),
-):
-    service = AdminService(db)
-    return await service.list_refund_queue()
+async def list_refund_queue(db: AsyncSession = Depends(get_async_session)):
+	service = AdminService(db)
+	return await service.list_refund_queue()
 
 
 @router.post("/payouts/refunds/{booking_id}/reconcile")
 async def reconcile_cancelled_booking_refund(
-    booking_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	booking_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.reconcile_cancelled_booking_refund(booking_id)
+	service = AdminService(db)
+	return await service.reconcile_cancelled_booking_refund(booking_id)
 
 
 @router.get("/payouts/dashboard", response_model=PayoutDashboardResponse)
-async def get_payout_dashboard(
-    db: AsyncSession = Depends(get_async_session),
-):
-    service = AdminService(db)
-    return await service.get_payout_dashboard()
+async def get_payout_dashboard(db: AsyncSession = Depends(get_async_session)):
+	service = AdminService(db)
+	return await service.get_payout_dashboard()
 
 
 @router.post("/payouts/drivers/{driver_user_id}/create-linked-account")
 async def create_and_save_driver_linked_account(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.create_and_save_driver_linked_account(driver_user_id)
+	service = AdminService(db)
+	return await service.create_and_save_driver_linked_account(driver_user_id)
 
 
 @router.post("/payouts/drivers/{driver_user_id}/sync-linked-account")
 async def sync_driver_linked_account(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.sync_driver_linked_account(driver_user_id)
+	service = AdminService(db)
+	return await service.sync_driver_linked_account(driver_user_id)
 
 
 @router.get("/payouts/drivers/{driver_user_id}/linked-account/provider")
 async def get_driver_linked_account_provider_detail(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_driver_linked_account_provider_detail(driver_user_id)
+	service = AdminService(db)
+	return await service.get_driver_linked_account_provider_detail(
+		driver_user_id
+	)

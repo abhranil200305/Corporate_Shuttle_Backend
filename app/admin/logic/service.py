@@ -843,41 +843,36 @@ class AdminService:
 
 		result = await self.db.execute(query)
 		return result.all()
-
+	
 	async def get_most_popular_pickup_stops(self):
 		query = (
 			select(
-				schema.Route.id.label("route_id"),
-				schema.Route.name.label("route_name"),
 				schema.Stop.id.label("stop_id"),
-				schema.Stop.name.label("stop_name"),
-				func.count(schema.TripBooking.id).label("booking_count"),
+                schema.Stop.name.label("stop_name"),
+                func.count(schema.TripBooking.id).label("booking_count"),
 			)
-			.join(
-				schema.ScheduledTrip,
-				schema.Route.id == schema.ScheduledTrip.route_id,
-			)
+			.select_from(schema.Stop)
 			.join(
 				schema.TripBooking,
-				schema.ScheduledTrip.id
-				== schema.TripBooking.scheduled_trip_id,
+                schema.Stop.id == schema.TripBooking.pickup_stop_id,
+                isouter=True # This makes it a LEFT OUTER JOIN
 			)
-			# We join Stop specifically on the pickup_stop_id
-			.join(
-				schema.Stop,
-				schema.TripBooking.pickup_stop_id == schema.Stop.id,
+			.where(
+				schema.TripBooking.booking_status.in_(
+					[
+						schema.BookingStatus.BOOKED,
+						schema.BookingStatus.BOARDED,
+						schema.BookingStatus.COMPLETED,
+					]
+				)
 			)
-			.group_by(
-				schema.Route.id,
-				schema.Route.name,
-				schema.Stop.id,
-				schema.Stop.name,
-			)
-			.order_by(desc("booking_count"))
+			.group_by(schema.Stop.id,schema.Stop.name,)
+			.order_by(desc("booking_count"), schema.Stop.name.asc())
 		)
 
 		result = await self.db.execute(query)
 		return result.all()
+
 
 	async def fetch_vehicle_by_id(self, vehicle_id: str):
 		stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id)
