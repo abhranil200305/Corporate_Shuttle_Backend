@@ -1,11 +1,11 @@
+from __future__ import annotations
+
 from decimal import Decimal
 from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
 from app.db import schema
-
-from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
