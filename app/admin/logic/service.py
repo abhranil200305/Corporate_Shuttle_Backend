@@ -1,4 +1,5 @@
 import json
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
@@ -2731,3 +2732,208 @@ class AdminService:
 		)
 		result = await self.db.execute(stmt)
 		return result.scalar_one_or_none()
+	
+	def _get_rules_column_value(self, settings) -> str | None:
+		return settings.commercial_policy_json
+
+	def _set_rules_column_value(self, settings, value: str | None) -> None:
+		settings.commercial_policy_json = value
+
+	def _empty_rule_register(self) -> dict:
+		return {"version": 1, "rules": []}
+
+	def _load_rule_register(self, settings) -> dict:
+		raw = (self._get_rules_column_value(settings) or "").strip()
+		if not raw:
+			return self._empty_rule_register()
+
+		try:
+			parsed = json.loads(raw)
+		except json.JSONDecodeError as exc:
+			raise HTTPException(
+				status_code=500,
+				detail={
+					"error": "invalid_rule_register_json",
+					"message": "Stored commercial rule register is invalid JSON.",
+				},
+			) from exc
+
+		if not isinstance(parsed, dict):
+			raise HTTPException(
+				status_code=500,
+				detail={
+					"error": "invalid_rule_register_shape",
+					"message": "Stored commercial rule register must be an object.",
+				},
+			)
+
+		rules = parsed.get("rules")
+		if not isinstance(rules, list):
+			raise HTTPException(
+				status_code=500,
+				detail={
+					"error": "invalid_rule_register_shape",
+					"message": "Stored commercial rule register must contain a rules list.",
+				},
+			)
+
+		return parsed
+
+	def _save_rule_register(self, settings, register: dict) -> None:
+		self._set_rules_column_value(
+			settings,
+			json.dumps(register, separators=(",", ":"), ensure_ascii=False),
+		)
+
+	async def _get_or_create_default_platform_settings(self):
+		settings = await self._get_default_platform_settings()
+		if settings is not None:
+			return settings
+
+		settings = schema.PlatformSettings(
+			settings_key="default",
+			commission_percent=Decimal("0.00"),
+		)
+		self.db.add(settings)
+		await self.db.flush()
+		return settings
+	
+	async def list_commercial_rules(
+		self,
+		*,
+		rule_type: str | None = None,
+		is_active: bool | None = None,
+	):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+		items = list(register["rules"])
+
+		if rule_type is not None:
+			items = [item for item in items if item.get("rule_type") == rule_type]
+
+		if is_active is not None:
+			items = [item for item in items if bool(item.get("is_active")) is is_active]
+
+		items.sort(key=lambda item: (int(item.get("priority", 100)), item.get("created_at", "")))
+		return {"items": items, "count": len(items)}
+	
+	async def get_commercial_rule(self, rule_id: str):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+
+		for item in register["rules"]:
+			if item.get("id") == rule_id:
+				return item
+
+		raise HTTPException(
+			status_code=404,
+			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+		)
+	
+	async def create_commercial_rule(self, payload):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+
+		for item in register["rules"]:
+			if item.get("code") == payload.code:
+				raise HTTPException(
+					status_code=409,
+					detail={"error": "duplicate_commercial_rule_code", "message": "Rule code already exists."},
+				)
+
+		now = utcnow().isoformat()
+		rule = {
+			"id": str(uuid.uuid4()),
+			"rule_type": payload.rule_type,
+			"code": payload.code,
+			"title": payload.title.strip(),
+			"description": payload.description.strip() if payload.description else None,
+			"priority": payload.priority,
+			"is_active": payload.is_active,
+			"config": payload.config.model_dump(mode="json"),
+			"created_at": now,
+			"updated_at": now,
+		}
+
+		register["rules"].append(rule)
+		self._save_rule_register(settings, register)
+		self.db.add(settings)
+		await self.db.commit()
+		await self.db.refresh(settings)
+
+		return {"message": "Commercial rule created successfully.", "rule": rule}
+	
+	async def update_commercial_rule(self, rule_id: str, payload):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+
+		for item in register["rules"]:
+			if item.get("id") != rule_id:
+				continue
+
+			if payload.title is not None:
+				item["title"] = payload.title.strip()
+			if payload.description is not None:
+				item["description"] = payload.description.strip() or None
+			if payload.priority is not None:
+				item["priority"] = payload.priority
+			if payload.config is not None:
+				item["config"] = payload.config.model_dump(mode="json")
+
+			item["updated_at"] = utcnow().isoformat()
+
+			self._save_rule_register(settings, register)
+			self.db.add(settings)
+			await self.db.commit()
+			await self.db.refresh(settings)
+
+			return {"message": "Commercial rule updated successfully.", "rule": item}
+
+		raise HTTPException(
+			status_code=404,
+			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+		)
+	
+	async def delete_commercial_rule(self, rule_id: str):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+
+		original_count = len(register["rules"])
+		register["rules"] = [item for item in register["rules"] if item.get("id") != rule_id]
+
+		if len(register["rules"]) == original_count:
+			raise HTTPException(
+				status_code=404,
+				detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+			)
+
+		self._save_rule_register(settings, register)
+		self.db.add(settings)
+		await self.db.commit()
+		return {"message": "Commercial rule deleted successfully.", "rule_id": rule_id}
+	
+	async def set_commercial_rule_active(self, rule_id: str, is_active: bool):
+		settings = await self._get_or_create_default_platform_settings()
+		register = self._load_rule_register(settings)
+
+		for item in register["rules"]:
+			if item.get("id") != rule_id:
+				continue
+
+			item["is_active"] = is_active
+			item["updated_at"] = utcnow().isoformat()
+
+			self._save_rule_register(settings, register)
+			self.db.add(settings)
+			await self.db.commit()
+			await self.db.refresh(settings)
+
+			return {
+				"message": "Commercial rule status updated successfully.",
+				"rule": item,
+			}
+
+		raise HTTPException(
+			status_code=404,
+			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+		)

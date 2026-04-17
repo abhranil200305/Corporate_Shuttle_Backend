@@ -34,6 +34,9 @@ from app.admin.structs.dto import (
 	VehicleInspectionUpdate,
 	VehicleVerificationUpdate,
 	VerificationUpdate,
+    CommercialRuleCreateRequest,
+    CommercialRuleStatusUpdateRequest,
+    CommercialRuleUpdateRequest
 )
 from app.auth.dependencies import (
 	get_current_active_user,
@@ -2683,9 +2686,65 @@ async def sync_driver_linked_account(
 
 @router.get("/payouts/drivers/{driver_user_id}/linked-account/provider")
 async def get_driver_linked_account_provider_detail(
-	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
+    driver_user_id: str,
+    db: AsyncSession = Depends(get_async_session),
 ):
-	service = AdminService(db)
-	return await service.get_driver_linked_account_provider_detail(
-		driver_user_id
-	)
+    service = AdminService(db)
+    return await service.get_driver_linked_account_provider_detail(driver_user_id)
+
+@router.get("/commercial-rules")
+async def list_commercial_rules(
+    rule_type: str | None = Query(default=None),
+    is_active: bool | None = Query(default=None),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.list_commercial_rules(
+        rule_type=rule_type,
+        is_active=is_active,
+    )
+
+@router.get("/commercial-rules/{rule_id}")
+async def get_commercial_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.get_commercial_rule(rule_id)
+
+@router.post("/commercial-rules")
+async def create_commercial_rule(
+    payload: CommercialRuleCreateRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.create_commercial_rule(payload)
+
+@router.patch("/commercial-rules/{rule_id}")
+async def update_commercial_rule(
+    rule_id: str,
+    payload: CommercialRuleUpdateRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.update_commercial_rule(rule_id, payload)
+
+@router.delete("/commercial-rules/{rule_id}")
+async def delete_commercial_rule(
+    rule_id: str,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.delete_commercial_rule(rule_id)
+
+@router.patch("/commercial-rules/{rule_id}/status")
+async def set_commercial_rule_status(
+    rule_id: str,
+    payload: CommercialRuleStatusUpdateRequest,
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+    return await service.set_commercial_rule_active(
+        rule_id,
+        payload.is_active,
+    )
