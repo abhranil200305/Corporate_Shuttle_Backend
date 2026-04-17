@@ -837,30 +837,26 @@ class AdminService:
 			boarded_stmt = (
 				select(
 					schema.TripBooking.id.label("booking_id"),
-					schema.User.passenger_profile.full_name.label("user_name"),
+					schema.PassengerProfile.full_name.label("user_name")
 				)
-				.join(
-					schema.User,
-					schema.TripBooking.passenger_user_id == schema.User.id,
-				)
+				.join(schema.User, schema.TripBooking.passenger_user_id == schema.User.id)
+				.join(schema.PassengerProfile, schema.User.id == schema.PassengerProfile.user_id)
 				.where(schema.TripBooking.scheduled_trip_id == trip_id)
-				.where(
-					schema.TripBooking.booking_status
-					== schema.BookingStatus.BOARDED
-				)
+				.where(schema.TripBooking.booking_status == schema.BookingStatus.BOARDED)
 			)
 
 			boarded_result = await self.db.execute(boarded_stmt)
 			passengers_on_board = boarded_result.all()
 
 			if passengers_on_board:
+				# Error state: block completion
 				return {
 					"status": "error",
-					"message": "Passengers still on board",
+					"message": "Cannot complete trip. Some passengers are still boarded.",
 					"boarded_passengers": [
 						{"booking_id": p.booking_id, "user_name": p.user_name}
 						for p in passengers_on_board
-					],
+					]
 				}
 
 			# 3. Update Trip
