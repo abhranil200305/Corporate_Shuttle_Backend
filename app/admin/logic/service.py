@@ -1515,6 +1515,106 @@ class AdminService:
 			"applied_adjustments": applied_adjustments,
 		}
 
+	def _build_booking_adjustment_map(
+		self,
+		booking_items: list | None,
+	) -> dict[str, list[dict]]:
+		booking_adjustment_map: dict[str, list[dict]] = {}
+		seen_booking_ids: set[str] = set()
+
+		for raw_item in booking_items or []:
+			booking_id = str(raw_item.booking_id).strip()
+			if not booking_id:
+				raise HTTPException(
+					status_code=400,
+					detail={
+						"error": "invalid_booking_item",
+						"message": "Each booking item must include a booking_id.",
+					},
+				)
+
+			if booking_id in seen_booking_ids:
+				raise HTTPException(
+					status_code=400,
+					detail={
+						"error": "duplicate_booking_item",
+						"message": "The same booking_id cannot appear more than once in booking_items.",
+						"booking_id": booking_id,
+					},
+				)
+			seen_booking_ids.add(booking_id)
+
+			normalized_allocations: list[dict] = []
+			seen_adjustment_ids: set[str] = set()
+
+			for raw_alloc in raw_item.adjustments_to_apply or []:
+				adjustment_id = str(raw_alloc.adjustment_id).strip()
+				if not adjustment_id:
+					raise HTTPException(
+						status_code=400,
+						detail={
+							"error": "missing_adjustment_id",
+							"message": "Each adjustment allocation must include adjustment_id.",
+							"booking_id": booking_id,
+						},
+					)
+
+				if adjustment_id in seen_adjustment_ids:
+					raise HTTPException(
+						status_code=400,
+						detail={
+							"error": "duplicate_adjustment_allocation",
+							"message": "The same adjustment cannot be allocated twice for one booking.",
+							"booking_id": booking_id,
+							"adjustment_id": adjustment_id,
+						},
+					)
+				seen_adjustment_ids.add(adjustment_id)
+
+				applied_amount = self._quantize_money(Decimal(raw_alloc.applied_amount))
+				if applied_amount <= Decimal("0.00"):
+					raise HTTPException(
+						status_code=400,
+						detail={
+							"error": "non_positive_applied_amount",
+							"message": "Applied amount must be greater than 0.",
+							"booking_id": booking_id,
+							"adjustment_id": adjustment_id,
+						},
+					)
+
+				normalized_allocations.append(
+					{
+						"adjustment_id": adjustment_id,
+						"applied_amount": applied_amount,
+					}
+				)
+
+			booking_adjustment_map[booking_id] = normalized_allocations
+
+		return booking_adjustment_map
+
+
+	def _validate_booking_items_match_selected_bookings(
+		self,
+		*,
+		selected_bookings: list,
+		booking_adjustment_map: dict[str, list[dict]],
+	) -> None:
+		selected_booking_ids = {booking.id for booking in selected_bookings}
+		payload_booking_ids = set(booking_adjustment_map.keys())
+
+		unknown_booking_ids = sorted(payload_booking_ids - selected_booking_ids)
+		if unknown_booking_ids:
+			raise HTTPException(
+				status_code=400,
+				detail={
+					"error": "booking_items_do_not_match_selection",
+					"message": "Some booking_items refer to bookings outside the selected payout set.",
+					"unknown_booking_ids": unknown_booking_ids,
+				},
+			)
+
 	async def get_payout_settings(self):
 		settings = await self._get_default_platform_settings()
 		if settings is None:
