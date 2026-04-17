@@ -951,6 +951,15 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
     enum_type(EmergencyStopRequestStatus, "emergency_stop_request_status"),
     nullable=True,
     )
+    last_lat: Mapped[Decimal | None] = mapped_column(
+    Numeric(9, 6),
+    nullable=True,
+    )
+
+    last_lng: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
 
     planned_start_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False
