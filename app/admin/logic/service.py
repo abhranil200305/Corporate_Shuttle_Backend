@@ -843,45 +843,19 @@ class AdminService:
 
 		result = await self.db.execute(query)
 		return result.all()
-
-		# async def get_most_popular_pickup_stops(self):
-		#     query = (
-		#         select(
-		#           schema.Stop.id.label("stop_id"),
-		#           schema.Stop.name.label("stop_name"),
-		#           func.count(schema.TripBooking.id).label("booking_count"),
-		#     )
-		#     .join(
-		#         schema.TripBooking,
-		#         schema.Stop.id == schema.TripBooking.pickup_stop_id,
-		#     )
-		#     # Optional: Filter for only 'completed' or 'booked' to ignore failed payments
-		#     .where(schema.TripBooking.booking_status.in_([
-		#         schema.BookingStatus.BOOKED,
-		#         schema.BookingStatus.BOARDED,
-		#         schema.BookingStatus.COMPLETED
-		#     ]))
-		#     .group_by(
-		#         schema.Stop.id,
-		#         schema.Stop.name,
-		#     )
-		#     .order_by(desc("booking_count"))
-		#     .limit(10)  # Optional: only get top 10
-		# )
-
-		# result = await self.db.execute(query)
-		# return result.all()
-
+	
 	async def get_most_popular_pickup_stops(self):
 		query = (
 			select(
 				schema.Stop.id.label("stop_id"),
-				schema.Stop.name.label("stop_name"),
-				func.count(schema.TripBooking.id).label("booking_count"),
+                schema.Stop.name.label("stop_name"),
+                func.count(schema.TripBooking.id).label("booking_count"),
 			)
+			.select_from(schema.Stop)
 			.join(
 				schema.TripBooking,
-				schema.Stop.id == schema.TripBooking.pickup_stop_id,
+                schema.Stop.id == schema.TripBooking.pickup_stop_id,
+                isouter=True # This makes it a LEFT OUTER JOIN
 			)
 			.where(
 				schema.TripBooking.booking_status.in_(
@@ -892,12 +866,13 @@ class AdminService:
 					]
 				)
 			)
-			.group_by(schema.Stop.id, schema.Stop.name)
-			.order_by(desc("booking_count"))
+			.group_by(schema.Stop.id,schema.Stop.name,)
+			.order_by(desc("booking_count"), schema.Stop.name.asc())
 		)
 
 		result = await self.db.execute(query)
 		return result.all()
+
 
 	async def fetch_vehicle_by_id(self, vehicle_id: str):
 		stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id)
