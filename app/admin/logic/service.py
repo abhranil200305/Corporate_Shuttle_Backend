@@ -837,7 +837,7 @@ class AdminService:
 			boarded_stmt = (
 				select(
 					schema.TripBooking.id.label("booking_id"),
-					schema.User.full_name.label("user_name"),
+					schema.User.PassengerProfile.full_name.label("user_name"),
 				)
 				.join(
 					schema.User,
