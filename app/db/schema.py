@@ -568,6 +568,48 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     DateTime(timezone=True),
     nullable=True,
     )
+        # vehicle images
+    front_photo_file_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    interior_photo_file_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    left_side_file_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    right_side_file_path: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # documents
+    insurance_document: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    pollution_document: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    owner_aadhaar_card: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # owner info
+    owner_name: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
     vehicle_name: Mapped[str] = mapped_column(String(80), nullable=False)
     vehicle_model: Mapped[str] = mapped_column(String(80), nullable=False)
     color: Mapped[str] = mapped_column(String(40), nullable=False)
