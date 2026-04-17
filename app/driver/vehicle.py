@@ -68,87 +68,112 @@ async def register_vehicle(
     seat_count: int = Form(...),
     has_ac: bool = Form(False),
 
-    ownership_type: str = Form(...),  # ✅ NEW FIELD
+    ownership_type: str = Form(...),
+
+    owner_name: str | None = Form(None),
 
     rc_file: UploadFile = File(...),
     rear_photo: UploadFile = File(...),
-    authentication_file: UploadFile | None = File(None),  # ✅ NEW FILE
+    authentication_file: UploadFile | None = File(None),
+
+    front_photo: UploadFile | None = File(None),
+    interior_photo: UploadFile | None = File(None),
+    left_side_photo: UploadFile | None = File(None),
+    right_side_photo: UploadFile | None = File(None),
+
+    insurance_document: UploadFile | None = File(None),
+    pollution_document: UploadFile | None = File(None),
+    owner_aadhaar_card: UploadFile | None = File(None),
 
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
+    # ---------------------------
+    # ROLE CHECK
+    # ---------------------------
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers allowed")
 
-    # ✅ Parse ownership_type
+    # ---------------------------
+    # OWNERSHIP VALIDATION
+    # ---------------------------
     try:
         ownership_enum = VehicleOwnershipType(ownership_type)
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid ownership_type")
 
-    # ❗ BUSINESS RULE
-    if ownership_enum == VehicleOwnershipType.RENTED and not authentication_file:
-        raise HTTPException(
-            status_code=400,
-            detail="Authentication file is required for rented vehicles"
-        )
+    # 🔥 RENTED RULE
+    if ownership_enum == VehicleOwnershipType.RENTED:
+        if not authentication_file:
+            raise HTTPException(400, "Authentication file required for rented vehicle")
+        if not owner_name:
+            raise HTTPException(400, "Owner name required for rented vehicle")
+        if not owner_aadhaar_card:
+            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
 
-    if ownership_enum == VehicleOwnershipType.SELF and authentication_file:
-        raise HTTPException(
-            status_code=400,
-            detail="Authentication file should not be uploaded for self-owned vehicles"
-        )
+    # 🔥 SELF RULE
+    if ownership_enum == VehicleOwnershipType.SELF:
+        if authentication_file:
+            raise HTTPException(400, "Authentication file not allowed for self vehicle")
 
-    # Parse Date
+    # ---------------------------
+    # DATE PARSE
+    # ---------------------------
     registration_valid_till_dt = parse_registration_date(registration_valid_till)
 
+    # ---------------------------
     # KYC CHECK
+    # ---------------------------
     result = await session.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_driver.id)
     )
     driver_profile = result.scalar_one_or_none()
 
     if not driver_profile:
-        raise HTTPException(status_code=400, detail="Complete KYC first")
+        raise HTTPException(400, "Complete KYC first")
 
     if driver_profile.verification_status != DriverVerificationStatus.VERIFIED:
-        raise HTTPException(status_code=403, detail="KYC not verified")
+        raise HTTPException(403, "KYC not verified")
 
-    # Check duplicate
+    # ---------------------------
+    # DUPLICATE CHECK
+    # ---------------------------
     result = await session.execute(
         select(Vehicle).where(Vehicle.registration_number == registration_number)
     )
     if result.scalar_one_or_none():
-        raise HTTPException(status_code=400, detail="Vehicle already exists")
+        raise HTTPException(400, "Vehicle already exists")
 
     # ---------------------------
-    # Save files
+    # FILE SAVE HELPER
     # ---------------------------
-    rc_filename = f"{registration_number}_rc_{rc_file.filename}"
-    rear_filename = f"{registration_number}_rear_{rear_photo.filename}"
-
-    rc_path = UPLOAD_DIR / rc_filename
-    rear_path = UPLOAD_DIR / rear_filename
-
-    with open(rc_path, "wb") as f:
-        shutil.copyfileobj(rc_file.file, f)
-
-    with open(rear_path, "wb") as f:
-        shutil.copyfileobj(rear_photo.file, f)
-
-    # ✅ Authentication file (only if rented)
-    auth_path_str = None
-    if authentication_file:
-        auth_filename = f"{registration_number}_auth_{authentication_file.filename}"
-        auth_path = UPLOAD_DIR / auth_filename
-
-        with open(auth_path, "wb") as f:
-            shutil.copyfileobj(authentication_file.file, f)
-
-        auth_path_str = str(auth_path)
+    def save_file(file: UploadFile | None, prefix: str):
+        if not file:
+            return None
+        filename = f"{registration_number}_{prefix}_{file.filename}"
+        path = UPLOAD_DIR / filename
+        with open(path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        return str(path)
 
     # ---------------------------
-    # Create Vehicle
+    # SAVE FILES
+    # ---------------------------
+    rc_path = save_file(rc_file, "rc")
+    rear_path = save_file(rear_photo, "rear")
+
+    auth_path = save_file(authentication_file, "auth")
+    front_path = save_file(front_photo, "front")
+    interior_path = save_file(interior_photo, "interior")
+    left_path = save_file(left_side_photo, "left")
+    right_path = save_file(right_side_photo, "right")
+
+    insurance_path = save_file(insurance_document, "insurance")
+    pollution_path = save_file(pollution_document, "pollution")
+    aadhaar_path = save_file(owner_aadhaar_card, "aadhaar")
+
+    # ---------------------------
+    # CREATE VEHICLE
     # ---------------------------
     vehicle = Vehicle(
         driver_user_id=current_driver.id,
@@ -159,10 +184,25 @@ async def register_vehicle(
         color=color,
         seat_count=seat_count,
         has_ac=has_ac,
-        rc_file_path=str(rc_path),
-        rear_photo_file_path=str(rear_path),
-        ownership_type=ownership_enum,  # ✅ IMPORTANT
-        authentication_file_path=auth_path_str,  # ✅ IMPORTANT
+
+        # existing
+        rc_file_path=rc_path,
+        rear_photo_file_path=rear_path,
+
+        ownership_type=ownership_enum,
+        authentication_file_path=auth_path,
+
+        front_photo_file_path=front_path,
+        interior_photo_file_path=interior_path,
+        left_side_file_path=left_path,
+        right_side_file_path=right_path,
+
+        insurance_document=insurance_path,
+        pollution_document=pollution_path,
+        owner_aadhaar_card=aadhaar_path,
+
+        owner_name=owner_name,
+
         verification_status=VehicleVerificationStatus.DRAFT,
     )
 
@@ -179,6 +219,11 @@ async def get_my_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
+    # Only drivers allowed
+    if current_driver.role != UserRole.DRIVER:
+        raise HTTPException(status_code=403, detail="Only drivers allowed")
+
+    # Fetch vehicle
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
@@ -187,83 +232,179 @@ async def get_my_vehicle(
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle found")
 
-    return vehicle   # ✅ registration_valid_till automatically returned
-
-
+    return vehicle
 # ---------------------------
 # Update Vehicle
 # ---------------------------
 @router.patch("/update", response_model=VehicleOut)
 async def update_vehicle(
+    # ---------------------------
+    # BASIC FIELDS
+    # ---------------------------
     vehicle_name: str | None = Form(None),
     vehicle_model: str | None = Form(None),
     color: str | None = Form(None),
     seat_count: int | None = Form(None),
     has_ac: bool | None = Form(None),
-    registration_valid_till: str | None = Form(None),  # ✅ ADDED
+    registration_valid_till: str | None = Form(None),
+
+    # ---------------------------
+    # OWNERSHIP
+    # ---------------------------
+    ownership_type: str | None = Form(None),
+    owner_name: str | None = Form(None),
+
+    # ---------------------------
+    # FILES (existing)
+    # ---------------------------
     rc_file: UploadFile | None = File(None),
     rear_photo: UploadFile | None = File(None),
+    authentication_file: UploadFile | None = File(None),
+
+    # ---------------------------
+    # NEW VEHICLE IMAGES
+    # ---------------------------
+    front_photo: UploadFile | None = File(None),
+    interior_photo: UploadFile | None = File(None),
+    left_side_photo: UploadFile | None = File(None),
+    right_side_photo: UploadFile | None = File(None),
+
+    # ---------------------------
+    # DOCUMENTS
+    # ---------------------------
+    insurance_document: UploadFile | None = File(None),
+    pollution_document: UploadFile | None = File(None),
+    owner_aadhaar_card: UploadFile | None = File(None),
+
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
+    # ---------------------------
+    # FETCH VEHICLE
+    # ---------------------------
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle found")
+        raise HTTPException(404, "No vehicle found")
 
-    # ❌ BLOCK UPDATE if submitted
+    # ---------------------------
+    # STATUS CHECK
+    # ---------------------------
     if vehicle.verification_status in [
         VehicleVerificationStatus.PENDING,
         VehicleVerificationStatus.VERIFIED
     ]:
         raise HTTPException(
-            status_code=403,
-            detail="Cannot update after submission. Wait for admin or rejection."
+            403,
+            "Cannot update after submission. Wait for admin or rejection."
         )
 
-    # If REJECTED → allow edit
     if vehicle.verification_status == VehicleVerificationStatus.REJECTED:
         vehicle.verification_status = VehicleVerificationStatus.DRAFT
 
-    # Update fields
+    # ---------------------------
+    # FILE SAVE HELPER
+    # ---------------------------
+    def save_file(file: UploadFile | None, prefix: str):
+        if not file:
+            return None
+        filename = f"{vehicle.registration_number}_{prefix}_{file.filename}"
+        path = UPLOAD_DIR / filename
+        with open(path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        return str(path)
+
+    # ---------------------------
+    # UPDATE BASIC FIELDS
+    # ---------------------------
     if vehicle_name is not None:
         vehicle.vehicle_name = vehicle_name
+
     if vehicle_model is not None:
         vehicle.vehicle_model = vehicle_model
+
     if color is not None:
         vehicle.color = color
+
     if seat_count is not None:
         vehicle.seat_count = seat_count
+
     if has_ac is not None:
         vehicle.has_ac = has_ac
 
-    # Update registration validity
     if registration_valid_till is not None:
         vehicle.registration_valid_till = parse_registration_date(registration_valid_till)
 
-    # Files
+    # ---------------------------
+    # OWNERSHIP UPDATE
+    # ---------------------------
+    if ownership_type is not None:
+        try:
+            vehicle.ownership_type = VehicleOwnershipType(ownership_type)
+        except ValueError:
+            raise HTTPException(400, "Invalid ownership_type")
+
+    if owner_name is not None:
+        vehicle.owner_name = owner_name
+
+    # ---------------------------
+    # FILE UPDATES
+    # ---------------------------
     if rc_file:
-        rc_path = UPLOAD_DIR / f"{vehicle.registration_number}_rc_{rc_file.filename}"
-        with open(rc_path, "wb") as f:
-            shutil.copyfileobj(rc_file.file, f)
-        vehicle.rc_file_path = str(rc_path)
+        vehicle.rc_file_path = save_file(rc_file, "rc")
 
     if rear_photo:
-        rear_path = UPLOAD_DIR / f"{vehicle.registration_number}_rear_{rear_photo.filename}"
-        with open(rear_path, "wb") as f:
-            shutil.copyfileobj(rear_photo.file, f)
-        vehicle.rear_photo_file_path = str(rear_path)
+        vehicle.rear_photo_file_path = save_file(rear_photo, "rear")
 
+    if authentication_file:
+        vehicle.authentication_file_path = save_file(authentication_file, "auth")
+
+    # ✅ vehicle images
+    if front_photo:
+        vehicle.front_photo_file_path = save_file(front_photo, "front")
+
+    if interior_photo:
+        vehicle.interior_photo_file_path = save_file(interior_photo, "interior")
+
+    if left_side_photo:
+        vehicle.left_side_file_path = save_file(left_side_photo, "left")
+
+    if right_side_photo:
+        vehicle.right_side_file_path = save_file(right_side_photo, "right")
+
+    # ✅ documents
+    if insurance_document:
+        vehicle.insurance_document = save_file(insurance_document, "insurance")
+
+    if pollution_document:
+        vehicle.pollution_document = save_file(pollution_document, "pollution")
+
+    if owner_aadhaar_card:
+        vehicle.owner_aadhaar_card = save_file(owner_aadhaar_card, "aadhaar")
+
+    # ---------------------------
+    # 🔥 FINAL BUSINESS VALIDATION
+    # ---------------------------
+    if vehicle.ownership_type == VehicleOwnershipType.RENTED:
+        if not vehicle.owner_name:
+            raise HTTPException(400, "Owner name required for rented vehicle")
+        if not vehicle.owner_aadhaar_card:
+            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
+        if not vehicle.authentication_file_path:
+            raise HTTPException(400, "Authentication file required for rented vehicle")
+
+    # ---------------------------
+    # CLEANUP
+    # ---------------------------
     vehicle.rejection_reason = None
 
     await session.commit()
     await session.refresh(vehicle)
 
     return vehicle
-
 
 # ---------------------------
 # SUBMIT VEHICLE
