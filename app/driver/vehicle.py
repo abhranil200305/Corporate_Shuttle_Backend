@@ -8,6 +8,8 @@ from app.notifications.service import NotificationService
 from app.notifications.hub import WSHub
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Request
 import asyncio
+import re
+
 
 
 from app.db.database import get_async_session
@@ -20,6 +22,7 @@ from app.db.schema import (
     VehicleOwnershipType,
     DriverVerificationStatus
 )
+from app.driver.utils.india_validator import IndiaDocumentFormatValidator
 from app.driver.schemas import VehicleOut
 from app.auth.dependencies import get_current_active_user
 
@@ -79,6 +82,16 @@ async def register_vehicle(
 ):
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers allowed")
+    
+    registration_number = re.sub(r"[\s-]", "", registration_number.upper())
+
+    
+    if not IndiaDocumentFormatValidator.is_valid_rc_number(registration_number):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid vehicle registration number format"
+    )
+
 
     # ✅ Parse ownership_type
     try:
