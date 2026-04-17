@@ -757,67 +757,139 @@ class AdminService:
 		result = await self.db.execute(stmt)
 		return result.unique().scalars().all()
 
+	# async def manually_complete_trip(
+	# 	self, trip_id: str, admin_id: str, note: str = None
+	# ):
+	# 	# 1. Fetch the trip
+	# 	stmt = select(schema.ScheduledTrip).where(
+	# 		schema.ScheduledTrip.id == trip_id
+	# 	)
+	# 	result = await self.db.execute(stmt)
+	# 	trip = result.scalar_one_or_none()
+
+	# 	if not trip:
+	# 		raise HTTPException(status_code=404, detail="Trip not found")
+
+	# 	# 2. Validation: Cannot complete if it never started
+	# 	# We check if actual_start_at is null OR if status is not 'started'
+	# 	if (
+	# 		not trip.actual_start_at
+	# 		or trip.status == schema.ScheduledTripStatus.SCHEDULED
+	# 	):
+	# 		raise HTTPException(
+	# 			status_code=400,
+	# 			detail="Cannot complete a trip that has not started yet. The driver must start the trip first.",
+	# 		)
+
+	# 	if trip.status in [
+	# 		schema.ScheduledTripStatus.COMPLETED,
+	# 		schema.ScheduledTripStatus.CANCELLED,
+	# 	]:
+	# 		raise HTTPException(
+	# 			status_code=400,
+	# 			detail=f"Trip is already in {trip.status} state.",
+	# 		)
+
+	# 	# 3. Proceed with manual completion
+	# 	trip.status = schema.ScheduledTripStatus.COMPLETED
+	# 	trip.actual_end_at = utcnow()
+
+	# 	# Store why this was done manually in your audit/note field
+	# 	trip.admin_notes = (
+	# 		f"Manually completed by admin {admin_id}. Note: {note}"
+	# 		if note
+	# 		else f"Manually completed by admin {admin_id}"
+	# 	)
+
+	# 	# 4. Force complete all 'booked' bookings associated with this trip
+	# 	update_bookings_stmt = (
+	# 		update(schema.TripBooking)
+	# 		.where(schema.TripBooking.scheduled_trip_id == trip_id)
+	# 		.where(
+	# 			schema.TripBooking.booking_status
+	# 			== schema.BookingStatus.BOOKED
+	# 		)
+	# 		.values(booking_status=schema.BookingStatus.COMPLETED)
+	# 	)
+	# 	await self.db.execute(update_bookings_stmt)
+
+	# 	await self.db.commit()
+	# 	return {
+	# 		"status": "success",
+	# 		"message": f"Trip {trip_id} has been manually closed.",
+	# 	}
+
 	async def manually_complete_trip(
 		self, trip_id: str, admin_id: str, note: str = None
 	):
-		# 1. Fetch the trip
-		stmt = select(schema.ScheduledTrip).where(
-			schema.ScheduledTrip.id == trip_id
-		)
-		result = await self.db.execute(stmt)
-		trip = result.scalar_one_or_none()
+		try:
+			# 1. Fetch the trip
+			stmt = select(schema.ScheduledTrip).where(
+				schema.ScheduledTrip.id == trip_id
+			)
+			result = await self.db.execute(stmt)
+			trip = result.scalar_one_or_none()
 
-		if not trip:
-			raise HTTPException(status_code=404, detail="Trip not found")
+			if not trip:
+				raise HTTPException(status_code=404, detail="Trip not found")
 
-		# 2. Validation: Cannot complete if it never started
-		# We check if actual_start_at is null OR if status is not 'started'
-		if (
-			not trip.actual_start_at
-			or trip.status == schema.ScheduledTripStatus.SCHEDULED
-		):
-			raise HTTPException(
-				status_code=400,
-				detail="Cannot complete a trip that has not started yet. The driver must start the trip first.",
+			# 2. Validation: Check if passengers are still boarded
+			boarded_stmt = (
+				select(
+					schema.TripBooking.id.label("booking_id"),
+					schema.User.full_name.label("user_name"),
+				)
+				.join(
+					schema.User,
+					schema.TripBooking.passenger_user_id == schema.User.id,
+				)
+				.where(schema.TripBooking.scheduled_trip_id == trip_id)
+				.where(
+					schema.TripBooking.booking_status
+					== schema.BookingStatus.BOARDED
+				)
 			)
 
-		if trip.status in [
-			schema.ScheduledTripStatus.COMPLETED,
-			schema.ScheduledTripStatus.CANCELLED,
-		]:
-			raise HTTPException(
-				status_code=400,
-				detail=f"Trip is already in {trip.status} state.",
+			boarded_result = await self.db.execute(boarded_stmt)
+			passengers_on_board = boarded_result.all()
+
+			if passengers_on_board:
+				return {
+					"status": "error",
+					"message": "Passengers still on board",
+					"boarded_passengers": [
+						{"booking_id": p.booking_id, "user_name": p.user_name}
+						for p in passengers_on_board
+					],
+				}
+
+			# 3. Update Trip
+			now = datetime.utcnow()
+			trip.status = schema.ScheduledTripStatus.COMPLETED
+			trip.actual_end_at = now
+			trip.admin_note = f"Manually closed by {admin_id}. {note or ''}"
+
+			# 4. Update 'booked' passengers to 'completed'
+			update_stmt = (
+				update(schema.TripBooking)
+				.where(schema.TripBooking.scheduled_trip_id == trip_id)
+				.where(
+					schema.TripBooking.booking_status
+					== schema.BookingStatus.BOOKED
+				)
+				.values(
+					booking_status=schema.BookingStatus.COMPLETED,
+					completed_at=now,
+				)
 			)
+			await self.db.execute(update_stmt)
 
-		# 3. Proceed with manual completion
-		trip.status = schema.ScheduledTripStatus.COMPLETED
-		trip.actual_end_at = utcnow()
+			await self.db.commit()
+			return {"status": "success", "message": "Trip closed successfully"}
 
-		# Store why this was done manually in your audit/note field
-		trip.admin_notes = (
-			f"Manually completed by admin {admin_id}. Note: {note}"
-			if note
-			else f"Manually completed by admin {admin_id}"
-		)
-
-		# 4. Force complete all 'booked' bookings associated with this trip
-		update_bookings_stmt = (
-			update(schema.TripBooking)
-			.where(schema.TripBooking.scheduled_trip_id == trip_id)
-			.where(
-				schema.TripBooking.booking_status
-				== schema.BookingStatus.BOOKED
-			)
-			.values(booking_status=schema.BookingStatus.COMPLETED)
-		)
-		await self.db.execute(update_bookings_stmt)
-
-		await self.db.commit()
-		return {
-			"status": "success",
-			"message": f"Trip {trip_id} has been manually closed.",
-		}
+		except Exception as e:
+			await self.db.rollback()
+			raise e
 
 	async def get_top_booking_routes(self):
 		query = (
@@ -844,19 +916,19 @@ class AdminService:
 
 		result = await self.db.execute(query)
 		return result.all()
-	
+
 	async def get_most_popular_pickup_stops(self):
 		query = (
 			select(
 				schema.Stop.id.label("stop_id"),
-                schema.Stop.name.label("stop_name"),
-                func.count(schema.TripBooking.id).label("booking_count"),
+				schema.Stop.name.label("stop_name"),
+				func.count(schema.TripBooking.id).label("booking_count"),
 			)
 			.select_from(schema.Stop)
 			.join(
 				schema.TripBooking,
-                schema.Stop.id == schema.TripBooking.pickup_stop_id,
-                isouter=True # This makes it a LEFT OUTER JOIN
+				schema.Stop.id == schema.TripBooking.pickup_stop_id,
+				isouter=True,  # This makes it a LEFT OUTER JOIN
 			)
 			.where(
 				schema.TripBooking.booking_status.in_(
@@ -867,13 +939,12 @@ class AdminService:
 					]
 				)
 			)
-			.group_by(schema.Stop.id,schema.Stop.name,)
+			.group_by(schema.Stop.id, schema.Stop.name)
 			.order_by(desc("booking_count"), schema.Stop.name.asc())
 		)
 
 		result = await self.db.execute(query)
 		return result.all()
-
 
 	async def fetch_vehicle_by_id(self, vehicle_id: str):
 		stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id)
@@ -2832,7 +2903,7 @@ class AdminService:
 		)
 		result = await self.db.execute(stmt)
 		return result.scalar_one_or_none()
-	
+
 	def _get_rules_column_value(self, settings) -> str | None:
 		return settings.commercial_policy_json
 
@@ -2891,32 +2962,39 @@ class AdminService:
 			return settings
 
 		settings = schema.PlatformSettings(
-			settings_key="default",
-			commission_percent=Decimal("0.00"),
+			settings_key="default", commission_percent=Decimal("0.00")
 		)
 		self.db.add(settings)
 		await self.db.flush()
 		return settings
-	
+
 	async def list_commercial_rules(
-		self,
-		*,
-		rule_type: str | None = None,
-		is_active: bool | None = None,
+		self, *, rule_type: str | None = None, is_active: bool | None = None
 	):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
 		items = list(register["rules"])
 
 		if rule_type is not None:
-			items = [item for item in items if item.get("rule_type") == rule_type]
+			items = [
+				item for item in items if item.get("rule_type") == rule_type
+			]
 
 		if is_active is not None:
-			items = [item for item in items if bool(item.get("is_active")) is is_active]
+			items = [
+				item
+				for item in items
+				if bool(item.get("is_active")) is is_active
+			]
 
-		items.sort(key=lambda item: (int(item.get("priority", 100)), item.get("created_at", "")))
+		items.sort(
+			key=lambda item: (
+				int(item.get("priority", 100)),
+				item.get("created_at", ""),
+			)
+		)
 		return {"items": items, "count": len(items)}
-	
+
 	async def get_commercial_rule(self, rule_id: str):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
@@ -2927,9 +3005,12 @@ class AdminService:
 
 		raise HTTPException(
 			status_code=404,
-			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+			detail={
+				"error": "commercial_rule_not_found",
+				"message": "Commercial rule not found.",
+			},
 		)
-	
+
 	async def create_commercial_rule(self, payload):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
@@ -2938,7 +3019,10 @@ class AdminService:
 			if item.get("code") == payload.code:
 				raise HTTPException(
 					status_code=409,
-					detail={"error": "duplicate_commercial_rule_code", "message": "Rule code already exists."},
+					detail={
+						"error": "duplicate_commercial_rule_code",
+						"message": "Rule code already exists.",
+					},
 				)
 
 		now = utcnow().isoformat()
@@ -2947,7 +3031,9 @@ class AdminService:
 			"rule_type": payload.rule_type,
 			"code": payload.code,
 			"title": payload.title.strip(),
-			"description": payload.description.strip() if payload.description else None,
+			"description": payload.description.strip()
+			if payload.description
+			else None,
 			"priority": payload.priority,
 			"is_active": payload.is_active,
 			"config": payload.config.model_dump(mode="json"),
@@ -2961,8 +3047,11 @@ class AdminService:
 		await self.db.commit()
 		await self.db.refresh(settings)
 
-		return {"message": "Commercial rule created successfully.", "rule": rule}
-	
+		return {
+			"message": "Commercial rule created successfully.",
+			"rule": rule,
+		}
+
 	async def update_commercial_rule(self, rule_id: str, payload):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
@@ -2987,31 +3076,45 @@ class AdminService:
 			await self.db.commit()
 			await self.db.refresh(settings)
 
-			return {"message": "Commercial rule updated successfully.", "rule": item}
+			return {
+				"message": "Commercial rule updated successfully.",
+				"rule": item,
+			}
 
 		raise HTTPException(
 			status_code=404,
-			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+			detail={
+				"error": "commercial_rule_not_found",
+				"message": "Commercial rule not found.",
+			},
 		)
-	
+
 	async def delete_commercial_rule(self, rule_id: str):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
 
 		original_count = len(register["rules"])
-		register["rules"] = [item for item in register["rules"] if item.get("id") != rule_id]
+		register["rules"] = [
+			item for item in register["rules"] if item.get("id") != rule_id
+		]
 
 		if len(register["rules"]) == original_count:
 			raise HTTPException(
 				status_code=404,
-				detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+				detail={
+					"error": "commercial_rule_not_found",
+					"message": "Commercial rule not found.",
+				},
 			)
 
 		self._save_rule_register(settings, register)
 		self.db.add(settings)
 		await self.db.commit()
-		return {"message": "Commercial rule deleted successfully.", "rule_id": rule_id}
-	
+		return {
+			"message": "Commercial rule deleted successfully.",
+			"rule_id": rule_id,
+		}
+
 	async def set_commercial_rule_active(self, rule_id: str, is_active: bool):
 		settings = await self._get_or_create_default_platform_settings()
 		register = self._load_rule_register(settings)
@@ -3035,5 +3138,8 @@ class AdminService:
 
 		raise HTTPException(
 			status_code=404,
-			detail={"error": "commercial_rule_not_found", "message": "Commercial rule not found."},
+			detail={
+				"error": "commercial_rule_not_found",
+				"message": "Commercial rule not found.",
+			},
 		)
