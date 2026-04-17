@@ -415,9 +415,7 @@ async def submit_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    # ---------------------------
-    # FETCH VEHICLE
-    # ---------------------------
+    # Get vehicle
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
@@ -426,9 +424,7 @@ async def submit_vehicle(
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle found")
 
-    # ---------------------------
-    # STATUS CHECK
-    # ---------------------------
+    # Only DRAFT or REJECTED allowed
     if vehicle.verification_status not in [
         VehicleVerificationStatus.DRAFT,
         VehicleVerificationStatus.REJECTED
@@ -438,54 +434,18 @@ async def submit_vehicle(
             detail="Vehicle already submitted or verified"
         )
 
-    # ---------------------------
-    # 🔥 VALIDATION BEFORE SUBMIT
-    # ---------------------------
-
-    # Required base files
-    if not vehicle.rc_file_path:
-        raise HTTPException(400, "RC file is required before submission")
-
-    if not vehicle.rear_photo_file_path:
-        raise HTTPException(400, "Rear photo is required before submission")
-
-    # Recommended vehicle images
-    if not vehicle.front_photo_file_path:
-        raise HTTPException(400, "Front photo is required")
-
-    if not vehicle.left_side_file_path:
-        raise HTTPException(400, "Left side photo is required")
-
-    # Ownership-based validation
-    if vehicle.ownership_type == VehicleOwnershipType.RENTED:
-        if not vehicle.owner_name:
-            raise HTTPException(400, "Owner name required for rented vehicle")
-
-        if not vehicle.owner_aadhaar_card:
-            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
-
-        if not vehicle.authentication_file_path:
-            raise HTTPException(400, "Authentication file required for rented vehicle")
-
-    # Documents validation
-    if not vehicle.insurance_document:
-        raise HTTPException(400, "Insurance document required")
-
-    if not vehicle.pollution_document:
-        raise HTTPException(400, "Pollution document required")
-
-    # ---------------------------
-    # UPDATE STATUS
-    # ---------------------------
+    # Update status
     vehicle.verification_status = VehicleVerificationStatus.PENDING
     vehicle.verification_requested_at = datetime.now(timezone.utc)
 
     await session.commit()
     await session.refresh(vehicle)
 
-    # ---------------------------
-    # 🔔 SEND NOTIFICATIONS
-    # ---------------------------
+    # ============================================================
+    # 🔥 SEND NOTIFICATION TO ADMINS
+    # ============================================================
+
+    # Get WS Hub (safe)
     ws_hub = getattr(request.app.state, "ws_hub", None)
     if ws_hub is None:
         print("⚠️ WS Hub not initialized - real-time notifications disabled")
@@ -495,13 +455,13 @@ async def submit_vehicle(
         ws_hub=ws_hub
     )
 
-    # Get admins
+    # Get all admins
     result = await session.execute(
         select(User).where(User.role == UserRole.ADMIN)
     )
     admins = result.scalars().all()
 
-    # Send notifications in parallel
+    # 🚀 Send notifications in parallel
     tasks = [
         notification_service.notify_user(
             user_id=admin.id,
