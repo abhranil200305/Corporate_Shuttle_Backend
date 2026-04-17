@@ -849,15 +849,13 @@ class AdminService:
 			passengers_on_board = boarded_result.all()
 
 			if passengers_on_board:
-				# Error state: block completion
-				return {
-					"status": "error",
-					"message": "Cannot complete trip. Some passengers are still boarded.",
-					"boarded_passengers": [
-						{"booking_id": p.booking_id, "user_name": p.user_name}
-						for p in passengers_on_board
-					]
-				}
+				raise HTTPException(
+					status_code=409,
+					detail={
+						"error": "passengers_still_on_board",
+						"message": "Cannot complete the trip while passengers are still on board.",
+					},
+				)
 
 			# 3. Update Trip
 			now = datetime.utcnow()
