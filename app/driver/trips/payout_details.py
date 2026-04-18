@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,6 +16,7 @@ from app.db.schema import (
     BookingStatus,
     BookingTransferStatus,
     DriverPayoutDetails,
+    PayoutAdjustmentApplication,
     ScheduledTrip,
     TransferStatus,
     TripBooking,
@@ -156,6 +157,50 @@ def _resolve_passenger_name(booking: TripBooking) -> str:
     return passenger.email
 
 
+def _get_applied_adjustment_amount(booking: TripBooking) -> Decimal:
+    total = Decimal("0.00")
+
+    for application in (
+        getattr(booking, "applied_payout_adjustment_applications", []) or []
+    ):
+        total += _money(application.applied_amount)
+
+    return _money(total)
+
+
+def _serialize_applied_adjustment(
+    application: PayoutAdjustmentApplication,
+) -> dict:
+    adjustment = application.adjustment
+
+    return {
+        "application_id": application.id,
+        "payout_adjustment_id": application.payout_adjustment_id,
+        "applied_on_booking_id": application.applied_on_booking_id,
+        "booking_transfer_id": application.booking_transfer_id,
+        "applied_by_admin_id": application.applied_by_admin_id,
+        "applied_amount": _money(application.applied_amount),
+        "applied_at": application.applied_at,
+        "created_at": application.created_at,
+        "updated_at": application.updated_at,
+        "adjustment": None if adjustment is None else {
+            "adjustment_id": adjustment.id,
+            "origin_booking_id": adjustment.origin_booking_id,
+            "adjustment_type": adjustment.adjustment_type.value,
+            "amount": _money(adjustment.amount),
+            "reason_code": adjustment.reason_code,
+            "reason_text": adjustment.reason_text,
+            "admin_note": adjustment.admin_note,
+            "decision_status": adjustment.decision_status.value,
+            "created_by_admin_id": adjustment.created_by_admin_id,
+            "decided_by_admin_id": adjustment.decided_by_admin_id,
+            "decided_at": adjustment.decided_at,
+            "created_at": adjustment.created_at,
+            "updated_at": adjustment.updated_at,
+        },
+    }
+
+
 @router.get("/payout-details")
 async def get_driver_payout_details(
     payout_status: str | None = Query(
@@ -205,6 +250,8 @@ async def get_driver_payout_details(
             selectinload(TripBooking.dropoff_stop),
             selectinload(TripBooking.transfer),
             selectinload(TripBooking.passenger).selectinload(User.passenger_profile),
+            selectinload(TripBooking.applied_payout_adjustment_applications)
+            .selectinload(PayoutAdjustmentApplication.adjustment),
         )
         .order_by(
             ScheduledTrip.planned_start_at.desc(),
@@ -235,6 +282,8 @@ async def get_driver_payout_details(
     total_fare_amount = Decimal("0.00")
     total_commission_amount = Decimal("0.00")
     total_driver_payout_amount = Decimal("0.00")
+    total_applied_adjustment_amount = Decimal("0.00")
+    total_net_payout_amount = Decimal("0.00")
     total_paid_out_amount = Decimal("0.00")
     total_pending_payout_amount = Decimal("0.00")
 
@@ -246,15 +295,20 @@ async def get_driver_payout_details(
         fare_amount = _money(booking.fare_amount)
         commission_amount = _money(booking.commission_amount)
         driver_payout_amount = _money(booking.driver_payout_amount)
+        applied_adjustment_amount = _get_applied_adjustment_amount(booking)
+
+        net_payout_amount = _money(driver_payout_amount - applied_adjustment_amount)
+        if net_payout_amount < Decimal("0.00"):
+            net_payout_amount = Decimal("0.00")
 
         if derived_status == "paid":
             paid_out_amount = _money(
-                transfer.amount if transfer is not None else booking.driver_payout_amount
+                transfer.amount if transfer is not None else net_payout_amount
             )
             pending_amount = Decimal("0.00")
         elif derived_status == "pending":
             paid_out_amount = Decimal("0.00")
-            pending_amount = driver_payout_amount
+            pending_amount = net_payout_amount
         else:
             paid_out_amount = Decimal("0.00")
             pending_amount = Decimal("0.00")
@@ -262,6 +316,8 @@ async def get_driver_payout_details(
         total_fare_amount += fare_amount
         total_commission_amount += commission_amount
         total_driver_payout_amount += driver_payout_amount
+        total_applied_adjustment_amount += applied_adjustment_amount
+        total_net_payout_amount += net_payout_amount
         total_paid_out_amount += paid_out_amount
         total_pending_payout_amount += pending_amount
 
@@ -290,6 +346,8 @@ async def get_driver_payout_details(
                     "fare_amount": Decimal("0.00"),
                     "commission_amount": Decimal("0.00"),
                     "driver_payout_amount": Decimal("0.00"),
+                    "applied_adjustment_amount": Decimal("0.00"),
+                    "net_payout_amount": Decimal("0.00"),
                     "paid_out_amount": Decimal("0.00"),
                     "pending_payout_amount": Decimal("0.00"),
                 },
@@ -302,6 +360,8 @@ async def get_driver_payout_details(
         trip_entry["trip_totals"]["fare_amount"] += fare_amount
         trip_entry["trip_totals"]["commission_amount"] += commission_amount
         trip_entry["trip_totals"]["driver_payout_amount"] += driver_payout_amount
+        trip_entry["trip_totals"]["applied_adjustment_amount"] += applied_adjustment_amount
+        trip_entry["trip_totals"]["net_payout_amount"] += net_payout_amount
         trip_entry["trip_totals"]["paid_out_amount"] += paid_out_amount
         trip_entry["trip_totals"]["pending_payout_amount"] += pending_amount
 
@@ -321,6 +381,14 @@ async def get_driver_payout_details(
                 "fare_amount": fare_amount,
                 "commission_amount": commission_amount,
                 "driver_payout_amount": driver_payout_amount,
+                "applied_adjustment_amount": applied_adjustment_amount,
+                "net_payout_amount": net_payout_amount,
+                "applied_adjustments": [
+                    _serialize_applied_adjustment(application)
+                    for application in (
+                        getattr(booking, "applied_payout_adjustment_applications", []) or []
+                    )
+                ],
                 "payout_status": derived_status,
                 "transfer_status": booking.transfer_status.value,
                 "transfer_ready_at": booking.transfer_ready_at,
@@ -351,6 +419,12 @@ async def get_driver_payout_details(
         trip_entry["trip_totals"]["driver_payout_amount"] = _money(
             trip_entry["trip_totals"]["driver_payout_amount"]
         )
+        trip_entry["trip_totals"]["applied_adjustment_amount"] = _money(
+            trip_entry["trip_totals"]["applied_adjustment_amount"]
+        )
+        trip_entry["trip_totals"]["net_payout_amount"] = _money(
+            trip_entry["trip_totals"]["net_payout_amount"]
+        )
         trip_entry["trip_totals"]["paid_out_amount"] = _money(
             trip_entry["trip_totals"]["paid_out_amount"]
         )
@@ -375,6 +449,8 @@ async def get_driver_payout_details(
             "total_fare_amount": _money(total_fare_amount),
             "total_commission_amount": _money(total_commission_amount),
             "total_driver_payout_amount": _money(total_driver_payout_amount),
+            "total_applied_adjustment_amount": _money(total_applied_adjustment_amount),
+            "total_net_payout_amount": _money(total_net_payout_amount),
             "total_paid_out_amount": _money(total_paid_out_amount),
             "total_pending_payout_amount": _money(total_pending_payout_amount),
         },
