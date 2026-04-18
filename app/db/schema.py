@@ -116,6 +116,7 @@ class VehicleVerificationStatus(str, enum.Enum):
 
 class LinkedAccountStatus(str, enum.Enum):
     NOT_CREATED = "not_created"
+    CREATED = "created"
     ACTIVE = "active"
     BLOCKED = "blocked"
     DELETED = "deleted"
