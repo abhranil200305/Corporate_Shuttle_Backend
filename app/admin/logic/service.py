@@ -2726,6 +2726,9 @@ class AdminService:
 	) -> schema.LinkedAccountStatus:
 		normalized = (provider_status or "").strip().lower()
 
+		if normalized == "created":
+			return schema.LinkedAccountStatus.CREATED
+
 		if normalized in {"active", "activated"}:
 			return schema.LinkedAccountStatus.ACTIVE
 
@@ -2882,10 +2885,18 @@ class AdminService:
 			payout.razorpay_linked_account_id
 		)
 
+		provider_status = str(provider_account.get("status") or "").strip()
+		provider_mapped_status = self._map_provider_linked_account_status(
+			provider_status
+		)
+
 		return {
 			"driver_user_id": driver_user_id,
 			"razorpay_linked_account_id": payout.razorpay_linked_account_id,
 			"linked_account_status": payout.linked_account_status,
+			"provider_linked_account_status": provider_status,
+			"provider_linked_account_mapped_status": provider_mapped_status,
+			"status_in_sync": payout.linked_account_status == provider_mapped_status,
 			"provider_account": provider_account,
 		}
 
