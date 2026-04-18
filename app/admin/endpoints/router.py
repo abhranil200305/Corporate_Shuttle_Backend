@@ -16,8 +16,13 @@ from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
+	BookingFullDetailsResponse,
+	BookingFullDetailsResponsee,
 	BulkPayoutTriggerRequest,
 	BulkStopAddRequest,
+	CommercialRuleCreateRequest,
+	CommercialRuleStatusUpdateRequest,
+	CommercialRuleUpdateRequest,
 	DriverLinkedAccountUpdate,
 	DriverPayoutDetailsUpsert,
 	DriverPayoutEligibilityUpdate,
@@ -31,12 +36,10 @@ from app.admin.structs.dto import (
 	StopCreate,
 	TriggerBookingPayoutRequest,
 	TriggerDriverMonthlyPayoutRequest,
+	TripManifestResponse,
 	VehicleInspectionUpdate,
 	VehicleVerificationUpdate,
 	VerificationUpdate,
-    CommercialRuleCreateRequest,
-    CommercialRuleStatusUpdateRequest,
-    CommercialRuleUpdateRequest
 )
 from app.auth.dependencies import (
 	get_current_active_user,
@@ -2425,6 +2428,44 @@ async def admin_complete_trip(
 	)
 
 
+@router.get("/{trip_id}/passengers", response_model=TripManifestResponse)
+async def get_trip_passengers(
+	trip_id: str,
+	db: AsyncSession = Depends(get_async_session),
+	# Add your admin authentication dependency here
+	current_admin=Depends(get_current_admin),
+):
+	service = AdminService(db)
+
+	# Check if trip exists first
+	trip = await service.get_trip_by_id(trip_id)
+	if not trip:
+		raise HTTPException(status_code=404, detail="Trip not found")
+
+	passengers = await service.get_trip_passenger_list(trip_id)
+
+	return {
+		"trip_id": trip_id,
+		"total_bookings": len(passengers),
+		"passengers": passengers,
+	}
+
+
+@router.get("/booking/{booking_id}", response_model=BookingFullDetailsResponsee)
+async def get_specific_booking_details(
+	booking_id: str,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin=Depends(get_current_admin),
+):
+	service = AdminService(db)
+	details = await service.get_booking_details(booking_id)
+
+	if not details:
+		raise HTTPException(status_code=404, detail="Booking record not found")
+
+	return details
+
+
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
@@ -2686,65 +2727,66 @@ async def sync_driver_linked_account(
 
 @router.get("/payouts/drivers/{driver_user_id}/linked-account/provider")
 async def get_driver_linked_account_provider_detail(
-    driver_user_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	driver_user_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_driver_linked_account_provider_detail(driver_user_id)
+	service = AdminService(db)
+	return await service.get_driver_linked_account_provider_detail(
+		driver_user_id
+	)
+
 
 @router.get("/commercial-rules")
 async def list_commercial_rules(
-    rule_type: str | None = Query(default=None),
-    is_active: bool | None = Query(default=None),
-    db: AsyncSession = Depends(get_async_session),
+	rule_type: str | None = Query(default=None),
+	is_active: bool | None = Query(default=None),
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.list_commercial_rules(
-        rule_type=rule_type,
-        is_active=is_active,
-    )
+	service = AdminService(db)
+	return await service.list_commercial_rules(
+		rule_type=rule_type, is_active=is_active
+	)
+
 
 @router.get("/commercial-rules/{rule_id}")
 async def get_commercial_rule(
-    rule_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	rule_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.get_commercial_rule(rule_id)
+	service = AdminService(db)
+	return await service.get_commercial_rule(rule_id)
+
 
 @router.post("/commercial-rules")
 async def create_commercial_rule(
-    payload: CommercialRuleCreateRequest,
-    db: AsyncSession = Depends(get_async_session),
+	payload: CommercialRuleCreateRequest,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.create_commercial_rule(payload)
+	service = AdminService(db)
+	return await service.create_commercial_rule(payload)
+
 
 @router.patch("/commercial-rules/{rule_id}")
 async def update_commercial_rule(
-    rule_id: str,
-    payload: CommercialRuleUpdateRequest,
-    db: AsyncSession = Depends(get_async_session),
+	rule_id: str,
+	payload: CommercialRuleUpdateRequest,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.update_commercial_rule(rule_id, payload)
+	service = AdminService(db)
+	return await service.update_commercial_rule(rule_id, payload)
+
 
 @router.delete("/commercial-rules/{rule_id}")
 async def delete_commercial_rule(
-    rule_id: str,
-    db: AsyncSession = Depends(get_async_session),
+	rule_id: str, db: AsyncSession = Depends(get_async_session)
 ):
-    service = AdminService(db)
-    return await service.delete_commercial_rule(rule_id)
+	service = AdminService(db)
+	return await service.delete_commercial_rule(rule_id)
+
 
 @router.patch("/commercial-rules/{rule_id}/status")
 async def set_commercial_rule_status(
-    rule_id: str,
-    payload: CommercialRuleStatusUpdateRequest,
-    db: AsyncSession = Depends(get_async_session),
+	rule_id: str,
+	payload: CommercialRuleStatusUpdateRequest,
+	db: AsyncSession = Depends(get_async_session),
 ):
-    service = AdminService(db)
-    return await service.set_commercial_rule_active(
-        rule_id,
-        payload.is_active,
-    )
+	service = AdminService(db)
+	return await service.set_commercial_rule_active(rule_id, payload.is_active)
