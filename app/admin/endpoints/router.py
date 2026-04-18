@@ -16,7 +16,6 @@ from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.structs.dto import (
-	BookingFullDetailsResponse,
 	BookingFullDetailsResponsee,
 	BulkPayoutTriggerRequest,
 	BulkStopAddRequest,
@@ -130,6 +129,7 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
 					"vehicle_id": v.id if v else None,
 					"reg_no": v.registration_number if v else None,
 					"reg_valid_till": v.registration_valid_till if v else None,
+					"color": v.color if v else None,
 					"model": v.vehicle_model if v else None,
 					"capacity": v.seat_count if v else 0,
 					"ac": v.has_ac if v else False,
@@ -149,6 +149,22 @@ async def get_all_drivers_info(db: AsyncSession = Depends(get_async_session)):
 					"vechical_auth_file_path": v.authentication_file_path
 					if v
 					else None,
+					"front_photo_file_path": v.front_photo_file_path
+					if v
+					else None,
+					"interior_photo_file_path": v.interior_photo_file_path
+					if v
+					else None,
+					"left_side_file_path": v.left_side_file_path
+					if v
+					else None,
+					"right_side_file_path": v.right_side_file_path
+					if v
+					else None,
+					"insurance_document": v.insurance_document if v else None,
+					"pollution_document": v.pollution_document if v else None,
+					"owner_aadhaar_card": v.owner_aadhaar_card if v else None,
+					"owner_name": v.owner_name if v else None,
 				},
 				"account_info": {
 					"account_number": p.bank_account_number if p else None,
@@ -199,7 +215,6 @@ async def get_driver_details(
 
 	if not d:
 		return {"error": "Driver not found"}
-	v = d.vehicle
 	return {
 		"user_id": d.id,
 		"email": d.email,
@@ -243,6 +258,7 @@ async def get_driver_details(
 			"reg_valid_till": d.vehicle.registration_valid_till
 			if d.vehicle
 			else None,
+			"color": d.vehicle.color if d.vehicle else None,
 			"model": d.vehicle.vehicle_model if d.vehicle else None,
 			"vehical_name": d.vehicle.vehicle_name if d.vehicle else None,
 			"capacity": d.vehicle.seat_count if d.vehicle else 0,
@@ -250,18 +266,46 @@ async def get_driver_details(
 			"verification": d.vehicle.verification_status
 			if d.vehicle
 			else "N/A",
-			"rc_file_path": v.rc_file_path if (v and v.rc_file_path) else "NA",
-			"rear_photo_file_path": v.rear_photo_file_path
-			if (v and v.rear_photo_file_path)
+			"rc_file_path": d.vehicle.rc_file_path
+			if (d and d.vehicle.rc_file_path)
 			else "NA",
-			"vechical_verification_req_date": v.verification_requested_at
-			if v
+			"rear_photo_file_path": d.vehicle.rear_photo_file_path
+			if (d and d.vehicle.rear_photo_file_path)
+			else "NA",
+			"vechical_verification_req_date": d.vehicle.verification_requested_at
+			if d.vehicle
 			else None,
-			"vehical_reviewed_at": v.reviewed_at if v else None,
-			"vehical_owner_ship_type": v.ownership_type if v else None,
-			"vechical_auth_file_path": v.authentication_file_path
-			if v
+			"vehical_reviewed_at": d.vehicle.reviewed_at
+			if d.vehicle
+			else None,
+			"vehical_owner_ship_type": d.vehicle.ownership_type
+			if d.vehicle
+			else None,
+			"vechical_auth_file_path": d.vehicle.authentication_file_path
+			if d.vehicle
 			else "NA",
+			"front_photo_file_path": d.vehicle.front_photo_file_path
+			if d.vehicle
+			else None,
+			"interior_photo_file_path": d.vehicle.interior_photo_file_path
+			if d.vehicle
+			else None,
+			"left_side_file_path": d.vehicle.left_side_file_path
+			if d.vehicle
+			else None,
+			"right_side_file_path": d.vehicle.right_side_file_path
+			if d.vehicle
+			else None,
+			"insurance_document": d.vehicle.insurance_document
+			if d.vehicle
+			else None,
+			"pollution_document": d.vehicle.pollution_document
+			if d.vehicle
+			else None,
+			"owner_aadhaar_card": d.vehicle.owner_aadhaar_card
+			if d.vehicle
+			else None,
+			"owner_name": d.vehicle.owner_name if d.vehicle else None,
 		},
 		"vehical_physical_inspection": {
 			"inspection_status": d.vehicle.inspection_status
@@ -2451,7 +2495,9 @@ async def get_trip_passengers(
 	}
 
 
-@router.get("/booking/{booking_id}", response_model=BookingFullDetailsResponsee)
+@router.get(
+	"/booking/{booking_id}", response_model=BookingFullDetailsResponsee
+)
 async def get_specific_booking_details(
 	booking_id: str,
 	db: AsyncSession = Depends(get_async_session),
