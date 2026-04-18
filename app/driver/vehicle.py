@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from app.notifications.service import NotificationService
 from app.notifications.hub import WSHub
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Request
-import asyncio
 
 
 from app.db.database import get_async_session
@@ -415,7 +414,15 @@ async def submit_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    # Get vehicle
+    # ---------------------------
+    # ROLE CHECK
+    # ---------------------------
+    if current_driver.role != UserRole.DRIVER:
+        raise HTTPException(status_code=403, detail="Only drivers allowed")
+
+    # ---------------------------
+    # FETCH VEHICLE
+    # ---------------------------
     result = await session.execute(
         select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
     )
@@ -424,7 +431,9 @@ async def submit_vehicle(
     if not vehicle:
         raise HTTPException(status_code=404, detail="No vehicle found")
 
-    # Only DRAFT or REJECTED allowed
+    # ---------------------------
+    # STATUS CHECK
+    # ---------------------------
     if vehicle.verification_status not in [
         VehicleVerificationStatus.DRAFT,
         VehicleVerificationStatus.REJECTED
@@ -434,18 +443,50 @@ async def submit_vehicle(
             detail="Vehicle already submitted or verified"
         )
 
-    # Update status
+    # ---------------------------
+    # 🔥 VALIDATION BEFORE SUBMIT
+    # ---------------------------
+
+    if not vehicle.rc_file_path:
+        raise HTTPException(400, "RC file is required before submission")
+
+    if not vehicle.rear_photo_file_path:
+        raise HTTPException(400, "Rear photo is required before submission")
+
+    if not vehicle.front_photo_file_path:
+        raise HTTPException(400, "Front photo is required")
+
+    if not vehicle.left_side_file_path:
+        raise HTTPException(400, "Left side photo is required")
+
+    if vehicle.ownership_type == VehicleOwnershipType.RENTED:
+        if not vehicle.owner_name:
+            raise HTTPException(400, "Owner name required for rented vehicle")
+
+        if not vehicle.owner_aadhaar_card:
+            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
+
+        if not vehicle.authentication_file_path:
+            raise HTTPException(400, "Authentication file required for rented vehicle")
+
+    if not vehicle.insurance_document:
+        raise HTTPException(400, "Insurance document required")
+
+    if not vehicle.pollution_document:
+        raise HTTPException(400, "Pollution document required")
+
+    # ---------------------------
+    # UPDATE STATUS
+    # ---------------------------
     vehicle.verification_status = VehicleVerificationStatus.PENDING
     vehicle.verification_requested_at = datetime.now(timezone.utc)
 
     await session.commit()
     await session.refresh(vehicle)
 
-    # ============================================================
-    # 🔥 SEND NOTIFICATION TO ADMINS
-    # ============================================================
-
-    # Get WS Hub (safe)
+    # ---------------------------
+    # 🔔 SEND NOTIFICATION (FIXED)
+    # ---------------------------
     ws_hub = getattr(request.app.state, "ws_hub", None)
     if ws_hub is None:
         print("⚠️ WS Hub not initialized - real-time notifications disabled")
@@ -455,29 +496,28 @@ async def submit_vehicle(
         ws_hub=ws_hub
     )
 
-    # Get all admins
+    # ✅ Get active admins only
     result = await session.execute(
-        select(User).where(User.role == UserRole.ADMIN)
+        select(User.id).where(
+            User.role == UserRole.ADMIN,
+            User.is_active.is_(True),
+        )
     )
-    admins = result.scalars().all()
+    admin_user_ids = list(result.scalars().all())
 
-    # 🚀 Send notifications in parallel
-    tasks = [
-        notification_service.notify_user(
-            user_id=admin.id,
+    # ✅ Single call (NO asyncio.gather)
+    if admin_user_ids:
+        await notification_service.notify_user(
+            user_id=admin_user_ids[0],           # primary
+            user_ids=admin_user_ids[1:],         # rest
             title="New Vehicle Submitted 🚗",
             message=f"Driver {current_driver.email} submitted vehicle {vehicle.registration_number}",
             data={
                 "vehicle_id": vehicle.id,
                 "driver_id": current_driver.id,
-                "type": "VEHICLE_SUBMITTED"
-            }
+                "type": "VEHICLE_SUBMITTED",
+            },
         )
-        for admin in admins
-    ]
-
-    if tasks:
-        await asyncio.gather(*tasks)
 
     return vehicle
 # ---------------------------

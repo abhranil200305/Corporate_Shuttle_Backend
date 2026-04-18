@@ -5,7 +5,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import and_, desc, func, select, update
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from app.db import schema
 from app.notifications.hub import WSHub
@@ -837,12 +837,21 @@ class AdminService:
 			boarded_stmt = (
 				select(
 					schema.TripBooking.id.label("booking_id"),
-					schema.PassengerProfile.full_name.label("user_name")
+					schema.PassengerProfile.full_name.label("user_name"),
 				)
-				.join(schema.User, schema.TripBooking.passenger_user_id == schema.User.id)
-				.join(schema.PassengerProfile, schema.User.id == schema.PassengerProfile.user_id)
+				.join(
+					schema.User,
+					schema.TripBooking.passenger_user_id == schema.User.id,
+				)
+				.join(
+					schema.PassengerProfile,
+					schema.User.id == schema.PassengerProfile.user_id,
+				)
 				.where(schema.TripBooking.scheduled_trip_id == trip_id)
-				.where(schema.TripBooking.booking_status == schema.BookingStatus.BOARDED)
+				.where(
+					schema.TripBooking.booking_status
+					== schema.BookingStatus.BOARDED
+				)
 			)
 
 			boarded_result = await self.db.execute(boarded_stmt)
@@ -858,7 +867,7 @@ class AdminService:
 				)
 
 			# 3. Update Trip
-			now = datetime.utcnow()
+			now = datetime.now(datetime.timezone.utc)
 			trip.status = schema.ScheduledTripStatus.COMPLETED
 			trip.actual_end_at = now
 			trip.admin_note = f"Manually closed by {admin_id}. {note or ''}"
@@ -1116,6 +1125,300 @@ class AdminService:
 		except Exception as e:
 			await self.db.rollback()
 			raise e
+
+	async def get_trip_passenger_list(self, trip_id: str):
+		stmt = (
+			select(
+				schema.TripBooking.id.label("booking_id"),
+				schema.PassengerProfile.full_name.label("passenger_name"),
+				schema.TripBooking.booking_status,
+			)
+			.join(
+				schema.User,
+				schema.TripBooking.passenger_user_id == schema.User.id,
+			)
+			.join(
+				schema.PassengerProfile,
+				schema.User.id == schema.PassengerProfile.user_id,
+			)
+			.where(schema.TripBooking.scheduled_trip_id == trip_id)
+		)
+
+		result = await self.db.execute(stmt)
+		rows = result.all()
+
+		# Explicitly map the rows to dictionaries and handle the Enum value
+		return [
+			{
+				"booking_id": row.booking_id,
+				"passenger_name": row.passenger_name,
+				"status": row.booking_status.value,  # .value converts Enum to 'completed'
+			}
+			for row in rows
+		]
+
+	async def get_booking_details(self, booking_id: str):
+		# Create aliases for scan events
+		BoardingScan = aliased(schema.TripScanEvent)
+		DeboardingScan = aliased(schema.TripScanEvent)
+
+		# Aliases for stops
+		PickupStop = aliased(schema.Stop)
+		DropoffStop = aliased(schema.Stop)
+		BoardingStop = aliased(schema.Stop)
+		DeboardingStop = aliased(schema.Stop)
+
+		stmt = (
+			select(
+				# Booking info
+				schema.TripBooking.id.label("booking_id"),
+				schema.TripBooking.booking_status,
+				schema.TripBooking.created_at.label("booked_at"),
+				# Passenger details
+				schema.PassengerProfile.full_name,
+				schema.PassengerProfile.profile_picture_path,
+				schema.User.email,
+				schema.User.role,
+				schema.User.is_active,
+				# Scheduled trip info
+				schema.ScheduledTrip.id.label("trip_id"),
+				schema.ScheduledTrip.planned_start_at,
+				schema.ScheduledTrip.planned_end_at,
+				schema.ScheduledTrip.status.label("trip_status"),
+				schema.ScheduledTrip.actual_start_at,
+				schema.ScheduledTrip.actual_end_at,
+				# Route info
+				schema.Route.name.label("route_name"),
+				schema.Route.code.label("route_code"),
+				# Pickup/Booked stop (where they were supposed to board)
+				schema.TripBooking.pickup_stop_id,
+				PickupStop.name.label("pickup_stop_name"),
+				PickupStop.lat.label("pickup_stop_lat"),
+				PickupStop.lng.label("pickup_stop_lng"),
+				# Dropoff/Booked stop (where they were supposed to deboard)
+				schema.TripBooking.dropoff_stop_id,
+				DropoffStop.name.label("dropoff_stop_name"),
+				DropoffStop.lat.label("dropoff_stop_lat"),
+				DropoffStop.lng.label("dropoff_stop_lng"),
+				# Boarding scan event (when they actually boarded)
+				BoardingScan.scan_type.label("boarding_scan_type"),
+				BoardingScan.created_at.label("boarding_scan_time"),
+				BoardingScan.scan_lat.label("boarding_scan_lat"),
+				BoardingScan.scan_lng.label("boarding_scan_lng"),
+				BoardingScan.within_radius.label("boarding_within_radius"),
+				BoardingStop.name.label("boarding_matched_stop_name"),
+				BoardingStop.id.label("boarding_matched_stop_id"),
+				# Deboarding scan event (when they actually deboarded)
+				DeboardingScan.scan_type.label("deboarding_scan_type"),
+				DeboardingScan.created_at.label("deboarding_scan_time"),
+				DeboardingScan.scan_lat.label("deboarding_scan_lat"),
+				DeboardingScan.scan_lng.label("deboarding_scan_lng"),
+				DeboardingScan.within_radius.label("deboarding_within_radius"),
+				DeboardingStop.name.label("deboarding_matched_stop_name"),
+				DeboardingStop.id.label("deboarding_matched_stop_id"),
+			)
+			.join(
+				schema.User,
+				schema.TripBooking.passenger_user_id == schema.User.id,
+			)
+			.join(
+				schema.PassengerProfile,
+				schema.User.id == schema.PassengerProfile.user_id,
+			)
+			.join(
+				schema.ScheduledTrip,
+				schema.TripBooking.scheduled_trip_id
+				== schema.ScheduledTrip.id,
+			)
+			.join(
+				schema.Route, schema.ScheduledTrip.route_id == schema.Route.id
+			)
+			# Join pickup stop
+			.join(
+				PickupStop,
+				PickupStop.id == schema.TripBooking.pickup_stop_id,
+				isouter=True,
+			)
+			# Join dropoff stop
+			.join(
+				DropoffStop,
+				DropoffStop.id == schema.TripBooking.dropoff_stop_id,
+				isouter=True,
+			)
+			# Join boarding scan event (scan_type = 'board')
+			.join(
+				BoardingScan,
+				and_(
+					BoardingScan.booking_id == schema.TripBooking.id,
+					BoardingScan.scan_type == schema.ScanType.BOARD,
+				),
+				isouter=True,
+			)
+			# Join the matched stop for boarding scan
+			.join(
+				BoardingStop,
+				BoardingStop.id == BoardingScan.matched_stop_id,
+				isouter=True,
+			)
+			# Join deboarding scan event (scan_type = 'drop')
+			.join(
+				DeboardingScan,
+				and_(
+					DeboardingScan.booking_id == schema.TripBooking.id,
+					DeboardingScan.scan_type == schema.ScanType.DROP,
+				),
+				isouter=True,
+			)
+			# Join the matched stop for deboarding scan
+			.join(
+				DeboardingStop,
+				DeboardingStop.id == DeboardingScan.matched_stop_id,
+				isouter=True,
+			)
+			.where(schema.TripBooking.id == booking_id)
+		)
+
+		result = await self.db.execute(stmt)
+		booking = result.first()
+
+		if not booking:
+			return None
+
+		return {
+			"booking_id": booking.booking_id,
+			"trip_id": booking.trip_id,
+			"passenger": {
+				"name": booking.full_name,
+				"email": booking.email,
+				"role": booking.role.value if booking.role else None,
+				"is_active": booking.is_active,
+				"profile_picture": booking.profile_picture_path,
+			},
+			"booking_status": booking.booking_status.value
+			if booking.booking_status
+			else None,
+			"trip_status": booking.trip_status.value
+			if booking.trip_status
+			else None,
+			"route": {"name": booking.route_name, "code": booking.route_code},
+			"scheduled_times": {
+				"planned_start": booking.planned_start_at,
+				"planned_end": booking.planned_end_at,
+				"actual_start": booking.actual_start_at,
+				"actual_end": booking.actual_end_at,
+			},
+			"pickup_location": {
+				"booked_stop_id": booking.pickup_stop_id,
+				"booked_stop_name": booking.pickup_stop_name,
+				"booked_location": {
+					"lat": float(booking.pickup_stop_lat)
+					if booking.pickup_stop_lat
+					else None,
+					"lng": float(booking.pickup_stop_lng)
+					if booking.pickup_stop_lng
+					else None,
+				},
+			},
+			"dropoff_location": {
+				"booked_stop_id": booking.dropoff_stop_id,
+				"booked_stop_name": booking.dropoff_stop_name,
+				"booked_location": {
+					"lat": float(booking.dropoff_stop_lat)
+					if booking.dropoff_stop_lat
+					else None,
+					"lng": float(booking.dropoff_stop_lng)
+					if booking.dropoff_stop_lng
+					else None,
+				},
+			},
+			"boarding_event": {
+				"scanned_at": booking.boarding_scan_time,
+				"scan_type": booking.boarding_scan_type.value
+				if booking.boarding_scan_type
+				else None,
+				"scan_location": {
+					"lat": float(booking.boarding_scan_lat)
+					if booking.boarding_scan_lat
+					else None,
+					"lng": float(booking.boarding_scan_lng)
+					if booking.boarding_scan_lng
+					else None,
+				},
+				"matched_stop": {
+					"stop_id": booking.boarding_matched_stop_id,
+					"name": booking.boarding_matched_stop_name,
+				},
+				"within_radius": booking.boarding_within_radius,
+			},
+			"deboarding_event": {
+				"scanned_at": booking.deboarding_scan_time,
+				"scan_type": booking.deboarding_scan_type.value
+				if booking.deboarding_scan_type
+				else None,
+				"scan_location": {
+					"lat": float(booking.deboarding_scan_lat)
+					if booking.deboarding_scan_lat
+					else None,
+					"lng": float(booking.deboarding_scan_lng)
+					if booking.deboarding_scan_lng
+					else None,
+				},
+				"matched_stop": {
+					"stop_id": booking.deboarding_matched_stop_id,
+					"name": booking.deboarding_matched_stop_name,
+				},
+				"within_radius": booking.deboarding_within_radius,
+			},
+			"timeline": {
+				"booked_at": booking.booked_at,
+				"boarded_at": booking.boarding_scan_time,  # From QR scan
+				"deboarded_at": booking.deboarding_scan_time,  # From QR scan
+			},
+		}
+
+	# async def get_booking_details(self, booking_id: str):
+	# 	stmt = (
+	# 		select(
+	# 			schema.TripBooking.id.label("booking_id"),
+	# 			schema.PassengerProfile.full_name,
+	# 			schema.TripBooking.booking_status,
+	# 			schema.TripBooking.boarded_at,
+	# 			schema.TripBooking.completed_at,
+	# 			schema.TripBooking.created_at.label("booked_at"),
+	# 			schema.TripBooking.pickup_stop_id,
+	# 			schema.TripBooking.dropoff_stop_id,
+	# 		)
+	# 		.join(
+	# 			schema.User,
+	# 			schema.TripBooking.passenger_user_id == schema.User.id,
+	# 		)
+	# 		.join(
+	# 			schema.PassengerProfile,
+	# 			schema.User.id == schema.PassengerProfile.user_id,
+	# 		)
+	# 		.where(schema.TripBooking.id == booking_id)
+	# 	)
+
+	# 	result = await self.db.execute(stmt)
+	# 	booking = result.first()
+
+	# 	if not booking:
+	# 		return None
+
+	# 	return {
+	# 		"booking_id": booking.booking_id,
+	# 		"passenger_name": booking.full_name,
+	# 		"status": booking.booking_status.value,
+	# 		"times": {
+	# 			"booked_at": booking.booked_at,
+	# 			"arrived_at_bus": booking.boarded_at,  # When they boarded
+	# 			"departed_bus_at": booking.completed_at,  # When they deboarded
+	# 		},
+	# 		"route_details": {
+	# 			"pickup_stop_id": booking.pickup_stop_id,
+	# 			"dropoff_stop_id": booking.dropoff_stop_id,
+	# 		},
+	# 	}
 
 	# async def handle_premature_trip_end(self, trip_id: str):
 	#     try:
@@ -1581,8 +1884,7 @@ class AdminService:
 		}
 
 	def _build_booking_adjustment_map(
-		self,
-		booking_items: list | None,
+		self, booking_items: list | None
 	) -> dict[str, list[dict]]:
 		booking_adjustment_map: dict[str, list[dict]] = {}
 		seen_booking_ids: set[str] = set()
@@ -1636,7 +1938,9 @@ class AdminService:
 					)
 				seen_adjustment_ids.add(adjustment_id)
 
-				applied_amount = self._quantize_money(Decimal(raw_alloc.applied_amount))
+				applied_amount = self._quantize_money(
+					Decimal(raw_alloc.applied_amount)
+				)
 				if applied_amount <= Decimal("0.00"):
 					raise HTTPException(
 						status_code=400,
@@ -1659,7 +1963,6 @@ class AdminService:
 
 		return booking_adjustment_map
 
-
 	def _validate_booking_items_match_selected_bookings(
 		self,
 		*,
@@ -1669,7 +1972,9 @@ class AdminService:
 		selected_booking_ids = {booking.id for booking in selected_bookings}
 		payload_booking_ids = set(booking_adjustment_map.keys())
 
-		unknown_booking_ids = sorted(payload_booking_ids - selected_booking_ids)
+		unknown_booking_ids = sorted(
+			payload_booking_ids - selected_booking_ids
+		)
 		if unknown_booking_ids:
 			raise HTTPException(
 				status_code=400,
