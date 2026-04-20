@@ -117,9 +117,21 @@ class VehicleVerificationStatus(str, enum.Enum):
 class LinkedAccountStatus(str, enum.Enum):
     NOT_CREATED = "not_created"
     CREATED = "created"
+    UNDER_REVIEW = "under_review"
+    NEEDS_CLARIFICATION = "needs_clarification"
     ACTIVE = "active"
     BLOCKED = "blocked"
+    REJECTED = "rejected"
     DELETED = "deleted"
+
+
+class RouteProductStatus(str, enum.Enum):
+    NOT_REQUESTED = "not_requested"
+    REQUESTED = "requested"
+    UNDER_REVIEW = "under_review"
+    NEEDS_CLARIFICATION = "needs_clarification"
+    ACTIVATED = "activated"
+    SUSPENDED = "suspended"
 
 
 class ScheduledTripStatus(str, enum.Enum):
@@ -456,6 +468,24 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     bank_account_number: Mapped[str | None] = mapped_column(String(64), nullable=True)
     ifsc_code: Mapped[str | None] = mapped_column(String(20), nullable=True)
     passbook_file_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    residential_street_line_1: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    residential_street_line_2: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    residential_city: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
+    residential_state: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
+    residential_postal_code: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )
+    residential_country: Mapped[str | None] = mapped_column(
+        String(2), nullable=True
+    )
 
     verification_status: Mapped[DriverVerificationStatus] = mapped_column(
         enum_type(DriverVerificationStatus, "driver_verification_status"),
@@ -524,10 +554,33 @@ class DriverPayoutDetails(UUIDPKMixin, TimestampMixin, Base):
         unique=True,
         nullable=True,
     )
+    razorpay_stakeholder_id: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
+    razorpay_route_product_id: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
     linked_account_status: Mapped[LinkedAccountStatus] = mapped_column(
         enum_type(LinkedAccountStatus, "linked_account_status"),
         nullable=False,
         default=LinkedAccountStatus.NOT_CREATED,
+    )
+    route_product_status: Mapped[RouteProductStatus] = mapped_column(
+        enum_type(RouteProductStatus, "route_product_status"),
+        nullable=False,
+        default=RouteProductStatus.NOT_REQUESTED,
+    )
+    route_product_requirements_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+    provider_onboarding_last_synced_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     is_payout_eligible: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
