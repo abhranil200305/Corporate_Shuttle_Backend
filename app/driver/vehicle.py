@@ -21,6 +21,7 @@ from app.db.schema import (
 )
 from app.driver.schemas import VehicleOut
 from app.auth.dependencies import get_current_active_user
+from app.driver.validators import validate_registration_number
 
 router = APIRouter(prefix="/driver/vehicle", tags=["Driver Vehicle"])
 
@@ -92,7 +93,8 @@ async def register_vehicle(
     # ---------------------------
     if current_driver.role != UserRole.DRIVER:
         raise HTTPException(status_code=403, detail="Only drivers allowed")
-
+    
+    registration_number = validate_registration_number(registration_number)
     # ---------------------------
     # OWNERSHIP VALIDATION
     # ---------------------------

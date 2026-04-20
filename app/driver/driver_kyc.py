@@ -20,6 +20,12 @@ from app.db.schema import (
 )
 from app.auth.dependencies import get_current_user
 
+from app.driver.validators import (
+    validate_aadhaar,
+    validate_pan,
+    validate_ifsc,
+)
+
 router = APIRouter(prefix="/driver/kyc", tags=["Driver KYC"])
 
 # -----------------------------
@@ -88,7 +94,7 @@ async def upload_documents(
         driver.aadhaar_file_path = save_file(aadhaar_card)
         updated_fields["aadhaar_card_file"] = driver.aadhaar_file_path
     if aadhaar_number:
-        driver.aadhaar_number = aadhaar_number
+        driver.aadhaar_number = validate_aadhaar(aadhaar_number)
         updated_fields["aadhaar_number"] = driver.aadhaar_number
 
     if pan:
@@ -96,7 +102,7 @@ async def upload_documents(
         driver.pan_file_path = save_file(pan)
         updated_fields["pan_file"] = driver.pan_file_path
     if pan_number:
-        driver.pan_number = pan_number
+        driver.pan_number = validate_pan(pan_number)
         updated_fields["pan_number"] = driver.pan_number
 
     if driving_license:
@@ -112,8 +118,8 @@ async def upload_documents(
         driver.bank_account_number = bank_account_number
         updated_fields["bank_account_number"] = bank_account_number
     if ifsc_code:
-        driver.ifsc_code = ifsc_code
-        updated_fields["ifsc_code"] = ifsc_code
+        driver.ifsc_code = validate_ifsc(ifsc_code)
+        updated_fields["ifsc_code"] = driver.ifsc_code
     if passbook_file:
         delete_old_file(driver.passbook_file_path)
         driver.passbook_file_path = save_file(passbook_file)
