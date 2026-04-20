@@ -1229,18 +1229,27 @@ class RoutePayoutService:
         }
     
     async def create_linked_account(
-    self,
-    *,
-    email: str,
-    phone: str,
-    full_name: str,
-    city: str = "Kolkata",
-    state: str = "WEST BENGAL",
-    country: str = "india",
-) -> dict[str, Any]:
+        self,
+        *,
+        email: str,
+        phone: str,
+        full_name: str,
+        street1: str,
+        street2: str | None = None,
+        city: str = "Kolkata",
+        state: str = "WEST BENGAL",
+        postal_code: str = "700156",
+        country: str = "IN",
+    ) -> dict[str, Any]:
         cleaned_email = (email or "").strip()
         cleaned_phone = (phone or "").strip()
         cleaned_full_name = (full_name or "").strip()
+        cleaned_street1 = (street1 or "").strip()
+        cleaned_street2 = (street2 or "").strip()
+        cleaned_city = (city or "").strip()
+        cleaned_state = (state or "").strip()
+        cleaned_postal_code = (postal_code or "").strip()
+        cleaned_country = (country or "").strip().upper()
 
         if not cleaned_email:
             raise HTTPException(
@@ -1269,6 +1278,51 @@ class RoutePayoutService:
                 },
             )
 
+        if not cleaned_street1:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_street1",
+                    "message": "Registered address street line 1 is required.",
+                },
+            )
+
+        if not cleaned_city:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_city",
+                    "message": "Registered city is required.",
+                },
+            )
+
+        if not cleaned_state:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_state",
+                    "message": "Registered state is required.",
+                },
+            )
+
+        if not cleaned_postal_code:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_postal_code",
+                    "message": "Registered postal code is required.",
+                },
+            )
+
+        if not cleaned_country:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_country",
+                    "message": "Registered country is required.",
+                },
+            )
+
         api_root = self._get_razorpay_api_root()
 
         payload = {
@@ -1281,16 +1335,16 @@ class RoutePayoutService:
             "profile": {
                 "addresses": {
                     "registered": {
-                        "street1": "Mani Casadona",
-                        "street2": "Newtown Action Area II",
-                        "city": city,
-                        "state": state,
-                        "postal_code":"700156",
-                        "country": country,
+                        "street1": cleaned_street1,
+                        "street2": cleaned_street2 or None,
+                        "city": cleaned_city,
+                        "state": cleaned_state,
+                        "postal_code": cleaned_postal_code,
+                        "country": cleaned_country,
                     }
                 },
-                "category":"transport",
-                "subcategory":"bus"
+                "category": "transport",
+                "subcategory": "bus",
             },
         }
 
@@ -1516,7 +1570,6 @@ class RoutePayoutService:
             "addresses": {
                 "residential": {
                     "street": cleaned_street_line_1,
-                    "street2": cleaned_street_line_2 or None,
                     "city": cleaned_city,
                     "state": cleaned_state,
                     "postal_code": cleaned_postal_code,

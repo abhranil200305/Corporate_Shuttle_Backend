@@ -371,7 +371,7 @@ class BookingMutationResponse(BaseModel):
 class BookingCreateResponse(BaseModel):
     message: str
     booking: TripBookingResponse
-    payment_order: dict[str, Any]
+    payment_order: dict[str, Any] | None = None
 
 
 class BookingQRResponse(BaseModel):
