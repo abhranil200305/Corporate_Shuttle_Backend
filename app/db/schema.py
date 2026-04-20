@@ -571,7 +571,7 @@ class DriverPayoutDetails(UUIDPKMixin, TimestampMixin, Base):
     )
     route_product_status: Mapped[RouteProductStatus] = mapped_column(
         enum_type(RouteProductStatus, "route_product_status"),
-        nullable=False,
+        nullable=True,
         default=RouteProductStatus.NOT_REQUESTED,
     )
     route_product_requirements_json: Mapped[str | None] = mapped_column(
