@@ -1570,7 +1570,6 @@ class RoutePayoutService:
             "addresses": {
                 "residential": {
                     "street": cleaned_street_line_1,
-                    "street2": cleaned_street_line_2 or None,
                     "city": cleaned_city,
                     "state": cleaned_state,
                     "postal_code": cleaned_postal_code,
