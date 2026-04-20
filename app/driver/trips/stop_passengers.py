@@ -1,6 +1,6 @@
 # app/driver/trips/stop_passengers.py
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
@@ -25,7 +25,7 @@ async def get_stop_passengers(
     session: AsyncSession = Depends(get_async_session)
 ):
     # -----------------------------
-    # FETCH BOOKINGS
+    # FETCH BOOKINGS (only relevant)
     # -----------------------------
     result = await session.execute(
         select(TripBooking)
@@ -47,15 +47,20 @@ async def get_stop_passengers(
 
     if not bookings:
         return {
-            "message": "No active passengers found for this trip",
-            "data": []
+            "trip_id": trip_id,
+            "stop_id": stop_id,
+            "boarding_count": 0,
+            "drop_count": 0,
+            "boarding_passengers": [],
+            "drop_passengers": []
         }
 
-    # -----------------------------
-    # CLASSIFY PASSENGERS
-    # -----------------------------
-    data = []
+    boarding_list = []
+    drop_list = []
 
+    # -----------------------------
+    # CLASSIFY
+    # -----------------------------
     for booking in bookings:
         passenger_profile: PassengerProfile | None = (
             booking.passenger.passenger_profile
@@ -66,40 +71,10 @@ async def get_stop_passengers(
             if passenger_profile else "Unknown"
         )
 
-        status = ""
-
-        # -----------------------------
-        # CASE 1: Not boarded yet (at this stop)
-        # -----------------------------
-        if (
-            booking.booking_status == BookingStatus.BOOKED
-            and booking.pickup_stop_id == stop_id
-        ):
-            status = "NOT_BOARDED_AT_THIS_STOP"
-
-        # -----------------------------
-        # CASE 2: Boarded from this stop
-        # -----------------------------
-        elif (
-            booking.booking_status == BookingStatus.BOARDED
-            and booking.pickup_stop_id == stop_id
-        ):
-            status = "BOARDED_FROM_THIS_STOP"
-
-        # -----------------------------
-        # CASE 3: Boarded earlier (in bus)
-        # -----------------------------
-        elif booking.booking_status == BookingStatus.BOARDED:
-            status = "IN_BUS_FROM_PREVIOUS_STOP"
-
-        else:
-            continue  # skip anything else
-
-        data.append({
+        passenger_data = {
             "booking_id": booking.id,
             "passenger_id": booking.passenger_user_id,
             "passenger_name": passenger_name,
-            "status": status,
             "pickup_stop": {
                 "id": booking.pickup_stop.id,
                 "name": booking.pickup_stop.name
@@ -110,11 +85,31 @@ async def get_stop_passengers(
             },
             "fare": float(booking.fare_amount),
             "booking_status": booking.booking_status,
-        })
+        }
+
+        # -----------------------------
+        # BOARDING PASSENGERS
+        # -----------------------------
+        if (
+            booking.pickup_stop_id == stop_id
+            and booking.booking_status == BookingStatus.BOOKED
+        ):
+            boarding_list.append(passenger_data)
+
+        # -----------------------------
+        # DROPPING PASSENGERS
+        # -----------------------------
+        elif (
+            booking.dropoff_stop_id == stop_id
+            and booking.booking_status == BookingStatus.BOARDED
+        ):
+            drop_list.append(passenger_data)
 
     return {
         "trip_id": trip_id,
         "stop_id": stop_id,
-        "total_passengers": len(data),
-        "data": data
+        "boarding_count": len(boarding_list),
+        "drop_count": len(drop_list),
+        "boarding_passengers": boarding_list,
+        "drop_passengers": drop_list
     }
