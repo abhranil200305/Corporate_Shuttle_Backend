@@ -2512,6 +2512,70 @@ async def get_specific_booking_details(
 	return details
 
 
+@router.get("/trip/{trip_id}/status-only")
+async def get_trip_status_only(
+	trip_id: str,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin=Depends(get_current_admin),
+):
+	"""
+	Simple GET to check trip status without any updates
+	"""
+	stmt = (
+		select(
+			schema.ScheduledTrip,
+			schema.Route.name.label("route_name"),
+			schema.DriverProfile.full_name.label("driver_name"),
+		)
+		.join(
+			schema.Route,
+			schema.ScheduledTrip.route_id == schema.Route.id,
+			isouter=True,
+		)
+		.join(
+			schema.User,
+			schema.ScheduledTrip.driver_user_id == schema.User.id,
+			isouter=True,
+		)
+		.join(
+			schema.DriverProfile,
+			schema.User.id == schema.DriverProfile.user_id,
+			isouter=True,
+		)
+		.where(schema.ScheduledTrip.id == trip_id)
+	)
+
+	result = await db.execute(stmt)
+	row = result.first()
+
+	if not row:
+		raise HTTPException(status_code=404, detail="Trip not found")
+
+	trip = row.ScheduledTrip
+
+	return {
+		"trip_id": trip.id,
+		"status": trip.status.value,
+		"is_in_progress": trip.status
+		== schema.ScheduledTripStatus.IN_PROGRESS,
+		"route_name": row.route_name,
+		"driver_name": row.driver_name,
+		"last_known_location": {
+			"lat": float(trip.last_lat) if trip.last_lat else None,
+			"lng": float(trip.last_lng) if trip.last_lng else None,
+		},
+		"planned_times": {
+			"start": trip.planned_start_at,
+			"end": trip.planned_end_at,
+		},
+		"actual_times": {
+			"start": trip.actual_start_at,
+			"end": trip.actual_end_at,
+		},
+		"last_updated": trip.updated_at,
+	}
+
+
 # ============================================================
 # Admin payout management by Anubhab Dey
 # ============================================================
