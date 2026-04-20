@@ -2,30 +2,41 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.dependencies import get_current_active_user, get_db, get_current_admin
+from app.auth.dependencies import get_current_active_user, get_current_admin, get_db
 from app.auth.exceptions import AuthError
 from app.auth.service import AuthService
 from app.db.database import AsyncSessionLocal
-from app.db.schema import User
+from app.db.schema import DriverProfile, PassengerProfile, User, UserRole
 from app.notifications.schemas import (
+    DevTriggerNotificationRequest,
+    DevTriggerNotificationResponse,
     NotificationListResponse,
     NotificationMessageResponse,
     NotificationUnreadCountResponse,
-    DevTriggerNotificationRequest,
-    DevTriggerNotificationResponse,
 )
 from app.notifications.service import NotificationService
-
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 WS_PING_INTERVAL_SECONDS = 15
 WS_PONG_TIMEOUT_SECONDS = 30
+
+logger = logging.getLogger(__name__)
 
 
 def _get_ws_hub_from_app(app: Any):
@@ -100,11 +111,36 @@ async def mark_all_read(
     return {"message": "All notifications marked as read."}
 
 
-async def _authenticate_ws_user(token: str) -> User:
+async def _resolve_ws_display_name(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    role: UserRole,
+) -> str | None:
+    if role == UserRole.DRIVER:
+        result = await db.execute(
+            select(DriverProfile.full_name)
+            .where(DriverProfile.user_id == user_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    if role == UserRole.PASSENGER:
+        result = await db.execute(
+            select(PassengerProfile.full_name)
+            .where(PassengerProfile.user_id == user_id)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    return None
+
+
+async def _authenticate_ws_user(token: str) -> tuple[User, str | None]:
     async with AsyncSessionLocal() as db:
         auth_service = AuthService(db)
         try:
-            return await auth_service.authenticate_token(token)
+            user = await auth_service.authenticate_token(token)
         except AuthError as exc:
             raise HTTPException(
                 status_code=exc.status_code,
@@ -113,6 +149,14 @@ async def _authenticate_ws_user(token: str) -> User:
                     "message": exc.message,
                 },
             ) from exc
+
+        display_name = await _resolve_ws_display_name(
+            db,
+            user_id=user.id,
+            role=user.role,
+        )
+
+        return user, display_name
 
 
 async def _heartbeat_loop(
@@ -146,6 +190,12 @@ async def _heartbeat_loop(
 async def notifications_ws(websocket: WebSocket) -> None:
     token = (websocket.query_params.get("token") or "").strip()
 
+    current_user: User | None = None
+    display_name: str | None = None
+    hub = None
+    connection_id: str | None = None
+    heartbeat_task: asyncio.Task | None = None
+
     await websocket.accept()
 
     if not token:
@@ -159,7 +209,7 @@ async def notifications_ws(websocket: WebSocket) -> None:
         return
 
     try:
-        current_user = await _authenticate_ws_user(token)
+        current_user, display_name = await _authenticate_ws_user(token)
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, dict) else {}
         await websocket.send_json(
@@ -173,6 +223,14 @@ async def notifications_ws(websocket: WebSocket) -> None:
 
     hub = _get_ws_hub_from_app(websocket.app)
     connection_id = await hub.register(current_user.id, websocket)
+
+    logger.info(
+        "ws_connected user_id=%s user_type=%s name=%r connection_id=%s",
+        current_user.id,
+        current_user.role.value,
+        display_name,
+        connection_id,
+    )
 
     heartbeat_task = asyncio.create_task(
         _heartbeat_loop(
@@ -188,6 +246,8 @@ async def notifications_ws(websocket: WebSocket) -> None:
             {
                 "message": "WebSocket authenticated successfully.",
                 "user_id": current_user.id,
+                "user_type": current_user.role.value,
+                "name": display_name,
             }
         )
 
@@ -233,18 +293,36 @@ async def notifications_ws(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     except Exception:
+        logger.exception(
+            "ws_connection_error user_id=%s user_type=%s name=%r connection_id=%s",
+            current_user.id if current_user else None,
+            current_user.role.value if current_user else None,
+            display_name,
+            connection_id,
+        )
         try:
             await websocket.close(code=1011)
         except Exception:
             pass
     finally:
-        heartbeat_task.cancel()
-        try:
-            await heartbeat_task
-        except asyncio.CancelledError:
-            pass
+        logger.info(
+            "ws_disconnected user_id=%s user_type=%s name=%r connection_id=%s",
+            current_user.id if current_user else None,
+            current_user.role.value if current_user else None,
+            display_name,
+            connection_id,
+        )
 
-        await hub.unregister(current_user.id, connection_id)
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+
+        if hub is not None and current_user is not None and connection_id is not None:
+            await hub.unregister(current_user.id, connection_id)
+
 
 @router.post(
     "/dev/trigger",
