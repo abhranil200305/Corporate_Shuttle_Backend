@@ -1,8 +1,8 @@
 # app/driver/driverprofile.py
+
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from sqlalchemy.exc import IntegrityError
 from pathlib import Path
 import shutil
@@ -10,18 +10,17 @@ import uuid
 from typing import Optional
 import aiofiles
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
+from datetime import datetime, timezone
+
 from app.db.schema import BookingRating
 from app.db.schema import DriverProfile, User, DriverVerificationStatus
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
-from sqlalchemy.orm import selectinload
-from sqlalchemy.exc import IntegrityError
-from datetime import datetime
-
-
 
 
 router = APIRouter(prefix="/driver-profile", tags=["DriverProfile"])
+
 
 # ------------------------------
 # Upload folder
@@ -29,6 +28,7 @@ router = APIRouter(prefix="/driver-profile", tags=["DriverProfile"])
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 UPLOAD_DIR = BASE_DIR / "uploads" / "upload_pic"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 
 # ------------------------------
 # Pydantic Schemas
@@ -39,36 +39,28 @@ class DriverProfileResponse(BaseModel):
     full_name: str
     phone: str
     profile_picture_path: Optional[str]
+
+    residential_street_line_1: Optional[str]
+    residential_street_line_2: Optional[str]
+    residential_city: Optional[str]
+    residential_state: Optional[str]
+    residential_postal_code: Optional[str]
+    residential_country: Optional[str]
+
     verification_status: DriverVerificationStatus
     average_rating: Optional[float]
     total_reviews: int
-    email: Optional[str]  # ✅ ADD THIS
-    created_at: datetime   # ✅ ADD THIS
-    updated_at: datetime   # ✅ ADD THIS
-
+    email: Optional[str]
+    created_at: datetime
+    updated_at: datetime
 
     class Config:
-        from_attributes = True  # ✅ Pydantic v2
+        from_attributes = True
+
 
 # ------------------------------
 # Helper functions
 # ------------------------------
-def save_upload(upload: UploadFile, prefix: str) -> Optional[str]:
-    if not upload or not upload.filename:
-        return None
-
-    ext = Path(upload.filename).suffix or ".jpg"
-    filename = f"{prefix}_{uuid.uuid4().hex}{ext}"
-    file_path = UPLOAD_DIR / filename
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-
-    upload.file.seek(0)
-    with file_path.open("wb") as buffer:
-        shutil.copyfileobj(upload.file, buffer)
-
-    # Return relative path
-    return str(file_path.relative_to(BASE_DIR))
-
 async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
     ext = Path(file.filename).suffix or ".jpg"
     filename = f"{uuid.uuid4().hex}{ext}"
@@ -78,8 +70,8 @@ async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
         content = await file.read()
         await out_file.write(content)
 
-    # Return relative path
     return str(dest.relative_to(BASE_DIR))
+
 
 # ------------------------------
 # Create Driver Profile
@@ -88,15 +80,24 @@ async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
 async def create_driver_profile(
     full_name: str = Form(...),
     phone: str = Form(...),
+
+    residential_street_line_1: Optional[str] = Form(None),
+    residential_street_line_2: Optional[str] = Form(None),
+    residential_city: Optional[str] = Form(None),
+    residential_state: Optional[str] = Form(None),
+    residential_postal_code: Optional[str] = Form(None),
+    residential_country: Optional[str] = Form(None),
+
     profile_pic: Optional[UploadFile] = File(None),
+
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Create driver profile"""
     result = await db.execute(
         select(DriverProfile).where(DriverProfile.user_id == current_user.id)
     )
     existing = result.scalar_one_or_none()
+
     if existing:
         raise HTTPException(status_code=400, detail="Driver profile already exists")
 
@@ -107,32 +108,39 @@ async def create_driver_profile(
         full_name=full_name.strip(),
         phone=phone.strip(),
         profile_picture_path=profile_pic_path,
+
+        residential_street_line_1=residential_street_line_1.strip() if residential_street_line_1 else None,
+        residential_street_line_2=residential_street_line_2.strip() if residential_street_line_2 else None,
+        residential_city=residential_city.strip() if residential_city else None,
+        residential_state=residential_state.strip() if residential_state else None,
+        residential_postal_code=residential_postal_code.strip() if residential_postal_code else None,
+        residential_country=residential_country.strip() if residential_country else None,
+
         aadhaar_file_path="",
         pan_file_path="",
         verification_status=DriverVerificationStatus.DRAFT,
     )
 
     db.add(driver_profile)
+
     try:
         await db.commit()
         await db.refresh(driver_profile)
     except IntegrityError as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Profile creation failed: {str(e.orig)}"
-        )
+        raise HTTPException(status_code=400, detail=str(e.orig))
 
     return driver_profile
 
+
+# ------------------------------
+# Get Driver Profile
+# ------------------------------
 @router.get("/me", response_model=DriverProfileResponse)
 async def get_my_driver_profile(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Get logged-in driver's profile WITH rating + email"""
-
-    # 👇 Load user relation
     result = await db.execute(
         select(DriverProfile)
         .where(DriverProfile.user_id == current_user.id)
@@ -143,7 +151,6 @@ async def get_my_driver_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    # 👇 Ratings
     rating_result = await db.execute(
         select(BookingRating.driver_rating).where(
             BookingRating.driver_user_id == current_user.id
@@ -154,20 +161,30 @@ async def get_my_driver_profile(
     avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
     total_reviews = len(ratings)
 
-    # 👇 Clean response (NO __dict__)
     return DriverProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
         full_name=profile.full_name,
         phone=profile.phone,
         profile_picture_path=profile.profile_picture_path,
+
+        residential_street_line_1=profile.residential_street_line_1,
+        residential_street_line_2=profile.residential_street_line_2,
+        residential_city=profile.residential_city,
+        residential_state=profile.residential_state,
+        residential_postal_code=profile.residential_postal_code,
+        residential_country=profile.residential_country,
+
         verification_status=profile.verification_status,
-        email=profile.user.email if profile.user else None,  # ✅ EMAIL
+        email=profile.user.email if profile.user else None,
         average_rating=avg_rating,
         total_reviews=total_reviews,
+
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )
+
+
 # ------------------------------
 # Update Driver Profile
 # ------------------------------
@@ -175,13 +192,19 @@ async def get_my_driver_profile(
 async def update_driver_profile(
     full_name: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
+
+    residential_street_line_1: Optional[str] = Form(None),
+    residential_street_line_2: Optional[str] = Form(None),
+    residential_city: Optional[str] = Form(None),
+    residential_state: Optional[str] = Form(None),
+    residential_postal_code: Optional[str] = Form(None),
+    residential_country: Optional[str] = Form(None),
+
     profile_pic: Optional[UploadFile] = File(None),
+
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Update logged-in driver's profile"""
-
-    # 🔍 Get existing profile
     result = await db.execute(
         select(DriverProfile)
         .where(DriverProfile.user_id == current_user.id)
@@ -192,32 +215,43 @@ async def update_driver_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    # ✏️ Update fields (only if provided)
     if full_name is not None:
         profile.full_name = full_name.strip()
 
     if phone is not None:
         profile.phone = phone.strip()
 
-    # 🖼️ Update profile picture
-    if profile_pic:
-        new_path = await save_upload_async(profile_pic)
-        profile.profile_picture_path = new_path
+    if residential_street_line_1 is not None:
+        profile.residential_street_line_1 = residential_street_line_1.strip()
 
-    # ⏱️ Update timestamp
-    profile.updated_at = datetime.utcnow()
+    if residential_street_line_2 is not None:
+        profile.residential_street_line_2 = residential_street_line_2.strip()
+
+    if residential_city is not None:
+        profile.residential_city = residential_city.strip()
+
+    if residential_state is not None:
+        profile.residential_state = residential_state.strip()
+
+    if residential_postal_code is not None:
+        profile.residential_postal_code = residential_postal_code.strip()
+
+    if residential_country is not None:
+        profile.residential_country = residential_country.strip()
+
+    if profile_pic:
+        profile.profile_picture_path = await save_upload_async(profile_pic)
+
+    # ✅ FIXED HERE (correct place)
+    profile.updated_at = datetime.now(timezone.utc)
 
     try:
         await db.commit()
         await db.refresh(profile)
     except IntegrityError as e:
         await db.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=f"Update failed: {str(e.orig)}"
-        )
+        raise HTTPException(status_code=400, detail=str(e.orig))
 
-    # ⭐ Ratings
     rating_result = await db.execute(
         select(BookingRating.driver_rating).where(
             BookingRating.driver_user_id == current_user.id
@@ -228,18 +262,25 @@ async def update_driver_profile(
     avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
     total_reviews = len(ratings)
 
-    # ✅ Return response
     return DriverProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
         full_name=profile.full_name,
         phone=profile.phone,
         profile_picture_path=profile.profile_picture_path,
+
+        residential_street_line_1=profile.residential_street_line_1,
+        residential_street_line_2=profile.residential_street_line_2,
+        residential_city=profile.residential_city,
+        residential_state=profile.residential_state,
+        residential_postal_code=profile.residential_postal_code,
+        residential_country=profile.residential_country,
+
         verification_status=profile.verification_status,
         email=profile.user.email if profile.user else None,
         average_rating=avg_rating,
         total_reviews=total_reviews,
+
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )
-
