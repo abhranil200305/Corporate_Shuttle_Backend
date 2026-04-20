@@ -1499,6 +1499,15 @@ class AdminService:
 		payout = driver.payout_details
 		agg = aggregates or {}
 
+		route_product_requirements = None
+		if payout is not None and (payout.route_product_requirements_json or "").strip():
+			try:
+				route_product_requirements = json.loads(
+					payout.route_product_requirements_json
+				)
+			except Exception:
+				route_product_requirements = payout.route_product_requirements_json
+
 		return {
 			"user_id": driver.id,
 			"email": driver.email,
@@ -1510,6 +1519,23 @@ class AdminService:
 				if profile
 				else None,
 				"lifecycle_status": profile.lifecycle_status
+				if profile
+				else None,
+				"pan_number": profile.pan_number if profile else None,
+				"residential_street_line_1": profile.residential_street_line_1
+				if profile
+				else None,
+				"residential_street_line_2": profile.residential_street_line_2
+				if profile
+				else None,
+				"residential_city": profile.residential_city if profile else None,
+				"residential_state": profile.residential_state
+				if profile
+				else None,
+				"residential_postal_code": profile.residential_postal_code
+				if profile
+				else None,
+				"residential_country": profile.residential_country
 				if profile
 				else None,
 			},
@@ -1536,7 +1562,12 @@ class AdminService:
 				"ifsc_code": payout.ifsc_code,
 				"phone_number": payout.phone_number,
 				"razorpay_linked_account_id": payout.razorpay_linked_account_id,
+				"razorpay_stakeholder_id": payout.razorpay_stakeholder_id,
+				"razorpay_route_product_id": payout.razorpay_route_product_id,
 				"linked_account_status": payout.linked_account_status,
+				"route_product_status": payout.route_product_status,
+				"route_product_requirements": route_product_requirements,
+				"provider_onboarding_last_synced_at": payout.provider_onboarding_last_synced_at,
 				"is_payout_eligible": payout.is_payout_eligible,
 				"created_at": payout.created_at,
 				"updated_at": payout.updated_at,
@@ -2170,8 +2201,18 @@ class AdminService:
 				detail="Driver payout details not found. Create payout details first.",
 			)
 
-		payout.razorpay_linked_account_id = payload.razorpay_linked_account_id
+		previous_linked_account_id = payout.razorpay_linked_account_id
+		new_linked_account_id = payload.razorpay_linked_account_id
+
+		payout.razorpay_linked_account_id = new_linked_account_id
 		payout.linked_account_status = payload.linked_account_status
+
+		if previous_linked_account_id != new_linked_account_id:
+			payout.razorpay_stakeholder_id = None
+			payout.razorpay_route_product_id = None
+			payout.route_product_status = schema.RouteProductStatus.NOT_REQUESTED
+			payout.route_product_requirements_json = None
+			payout.provider_onboarding_last_synced_at = None
 
 		self.db.add(payout)
 		await self.db.commit()
@@ -3034,90 +3075,240 @@ class AdminService:
 		if normalized == "created":
 			return schema.LinkedAccountStatus.CREATED
 
+		if normalized == "under_review":
+			return schema.LinkedAccountStatus.UNDER_REVIEW
+
+		if normalized == "needs_clarification":
+			return schema.LinkedAccountStatus.NEEDS_CLARIFICATION
+
 		if normalized in {"active", "activated"}:
 			return schema.LinkedAccountStatus.ACTIVE
 
 		if normalized in {"blocked", "suspended"}:
 			return schema.LinkedAccountStatus.BLOCKED
 
+		if normalized == "rejected":
+			return schema.LinkedAccountStatus.REJECTED
+
 		if normalized in {"deleted", "closed"}:
 			return schema.LinkedAccountStatus.DELETED
 
 		return schema.LinkedAccountStatus.NOT_CREATED
+	
+	def _map_provider_route_product_status(
+		self, provider_status: str | None
+	) -> schema.RouteProductStatus:
+		normalized = (provider_status or "").strip().lower()
 
-	async def create_and_save_driver_linked_account(self, driver_user_id: str):
-		driver = await self.fetch_driver_by_id(driver_user_id)
-		if not driver or not driver.driver_profile:
+		if normalized == "requested":
+			return schema.RouteProductStatus.REQUESTED
+
+		if normalized == "under_review":
+			return schema.RouteProductStatus.UNDER_REVIEW
+
+		if normalized == "needs_clarification":
+			return schema.RouteProductStatus.NEEDS_CLARIFICATION
+
+		if normalized == "activated":
+			return schema.RouteProductStatus.ACTIVATED
+
+		if normalized == "suspended":
+			return schema.RouteProductStatus.SUSPENDED
+
+		return schema.RouteProductStatus.NOT_REQUESTED
+	
+	def _clean_required_text(
+		self,
+		value: str | None,
+		*,
+		error_code: str,
+		message: str,
+		status_code: int = 409,
+	) -> str:
+		cleaned = (value or "").strip()
+		if not cleaned:
 			raise HTTPException(
-				status_code=404, detail="Driver profile not found"
+				status_code=status_code,
+				detail={
+					"error": error_code,
+					"message": message,
+				},
 			)
+		return cleaned
 
+
+	async def _get_or_create_driver_payout_details_for_onboarding(self, driver):
 		profile = driver.driver_profile
 		payout = driver.payout_details
 
-		if payout is not None and payout.razorpay_linked_account_id:
-			return {
-				"message": "Linked account already exists for this driver.",
-				"driver": self._serialize_driver_payout_profile(driver),
-				"razorpay_account_id": payout.razorpay_linked_account_id,
-			}
+		if payout is not None:
+			return payout
 
-		if payout is None:
-			missing_fields = []
-
-			if not (profile.bank_account_number or "").strip():
-				missing_fields.append("bank_account_number")
-
-			if not (profile.ifsc_code or "").strip():
-				missing_fields.append("ifsc_code")
-
-			if missing_fields:
-				raise HTTPException(
-					status_code=409,
-					detail={
-						"error": "driver_payout_details_required",
-						"message": "Driver payout details are missing. Save payout details first or ensure bank details exist on the driver profile.",
-						"missing_fields": missing_fields,
-					},
-				)
-
-			payout = schema.DriverPayoutDetails(
-				driver_user_id=driver_user_id,
-				account_holder_name=(profile.full_name or "").strip(),
-				bank_account_number=(
-					profile.bank_account_number or ""
-				).strip(),
-				ifsc_code=(profile.ifsc_code or "").strip(),
-				phone_number=(profile.phone or "").strip(),
-				linked_account_status=schema.LinkedAccountStatus.NOT_CREATED,
-				is_payout_eligible=False,
+		if profile is None:
+			raise HTTPException(
+				status_code=404,
+				detail="Driver profile not found",
 			)
-			self.db.add(payout)
-			await self.db.flush()
+
+		account_holder_name = self._clean_required_text(
+			profile.full_name,
+			error_code="missing_account_holder_name",
+			message="Driver full name is required to bootstrap payout details.",
+		)
+		bank_account_number = self._clean_required_text(
+			profile.bank_account_number,
+			error_code="missing_bank_account_number",
+			message="Driver bank account number is required to bootstrap payout details.",
+		)
+		ifsc_code = self._clean_required_text(
+			profile.ifsc_code,
+			error_code="missing_ifsc_code",
+			message="Driver IFSC code is required to bootstrap payout details.",
+		)
+		phone_number = self._clean_required_text(
+			profile.phone,
+			error_code="missing_driver_phone",
+			message="Driver phone is required to bootstrap payout details.",
+		)
+
+		payout = schema.DriverPayoutDetails(
+			driver_user_id=driver.id,
+			account_holder_name=account_holder_name,
+			bank_account_number=bank_account_number,
+			ifsc_code=ifsc_code,
+			phone_number=phone_number,
+		)
+		self.db.add(payout)
+		await self.db.flush()
+
+		return payout
+
+
+	def _build_driver_route_onboarding_input(self, driver, payout) -> dict:
+		profile = driver.driver_profile
+		if profile is None:
+			raise HTTPException(status_code=404, detail="Driver profile not found")
+
+		return {
+			"linked_account_id": payout.razorpay_linked_account_id,
+			"stakeholder_id": payout.razorpay_stakeholder_id,
+			"route_product_id": payout.razorpay_route_product_id,
+			"email": self._clean_required_text(
+				driver.email,
+				error_code="missing_driver_email",
+				message="Driver email is required for Route onboarding.",
+			),
+			"phone": self._clean_required_text(
+				profile.phone,
+				error_code="missing_driver_phone",
+				message="Driver phone is required for Route onboarding.",
+			),
+			"full_name": self._clean_required_text(
+				profile.full_name,
+				error_code="missing_driver_full_name",
+				message="Driver full name is required for Route onboarding.",
+			),
+			"pan_number": self._clean_required_text(
+				profile.pan_number,
+				error_code="missing_driver_pan",
+				message="Driver PAN number is required for Route onboarding.",
+			),
+			"registered_street1": self._clean_required_text(
+				profile.residential_street_line_1,
+				error_code="missing_registered_street1",
+				message="Driver residential street line 1 is required for linked-account registration.",
+			),
+			"registered_street2": (profile.residential_street_line_2 or "").strip() or None,
+			"registered_city": self._clean_required_text(
+				profile.residential_city,
+				error_code="missing_registered_city",
+				message="Driver residential city is required for linked-account registration.",
+			),
+			"registered_state": self._clean_required_text(
+				profile.residential_state,
+				error_code="missing_registered_state",
+				message="Driver residential state is required for linked-account registration.",
+			),
+			"registered_postal_code": self._clean_required_text(
+				profile.residential_postal_code,
+				error_code="missing_registered_postal_code",
+				message="Driver residential postal code is required for linked-account registration.",
+			),
+			"registered_country": self._clean_required_text(
+				profile.residential_country,
+				error_code="missing_registered_country",
+				message="Driver residential country is required for linked-account registration.",
+			).upper(),
+			"residential_street_line_1": self._clean_required_text(
+				profile.residential_street_line_1,
+				error_code="missing_residential_street_line_1",
+				message="Driver residential street line 1 is required for stakeholder creation.",
+			),
+			"residential_street_line_2": (profile.residential_street_line_2 or "").strip() or None,
+			"residential_city": self._clean_required_text(
+				profile.residential_city,
+				error_code="missing_residential_city",
+				message="Driver residential city is required for stakeholder creation.",
+			),
+			"residential_state": self._clean_required_text(
+				profile.residential_state,
+				error_code="missing_residential_state",
+				message="Driver residential state is required for stakeholder creation.",
+			),
+			"residential_postal_code": self._clean_required_text(
+				profile.residential_postal_code,
+				error_code="missing_residential_postal_code",
+				message="Driver residential postal code is required for stakeholder creation.",
+			),
+			"residential_country": self._clean_required_text(
+				profile.residential_country,
+				error_code="missing_residential_country",
+				message="Driver residential country is required for stakeholder creation.",
+			).upper(),
+			"beneficiary_name": self._clean_required_text(
+				payout.account_holder_name,
+				error_code="missing_beneficiary_name",
+				message="Payout account holder name is required for Route settlement configuration.",
+			),
+			"account_number": self._clean_required_text(
+				payout.bank_account_number,
+				error_code="missing_bank_account_number",
+				message="Payout bank account number is required for Route settlement configuration.",
+			),
+			"ifsc_code": self._clean_required_text(
+				payout.ifsc_code,
+				error_code="missing_ifsc_code",
+				message="Payout IFSC code is required for Route settlement configuration.",
+			).upper(),
+		}
+
+	async def create_and_save_driver_linked_account(self, driver_user_id: str):
+		driver = await self.fetch_driver_by_id(driver_user_id)
+		if not driver:
+			raise HTTPException(status_code=404, detail="Driver not found")
+
+		if driver.driver_profile is None:
+			raise HTTPException(status_code=404, detail="Driver profile not found")
+
+		payout = await self._get_or_create_driver_payout_details_for_onboarding(driver)
+		onboarding_input = self._build_driver_route_onboarding_input(driver, payout)
 
 		payout_service = RoutePayoutService(self.db)
-		provider_account = await payout_service.create_linked_account(
-			email=driver.email,
-			phone=profile.phone,
-			full_name=profile.full_name,
+		onboarding_result = await payout_service.onboard_route_linked_account(
+			**onboarding_input
 		)
 
-		provider_account_id = str(provider_account.get("id") or "").strip()
-		if not provider_account_id:
-			raise HTTPException(
-				status_code=502,
-				detail={
-					"error": "invalid_linked_account_response",
-					"message": "Provider account creation response did not contain an account id.",
-				},
-			)
-
-		provider_status = str(provider_account.get("status") or "").strip()
-
-		payout.razorpay_linked_account_id = provider_account_id
-		payout.linked_account_status = (
-			self._map_provider_linked_account_status(provider_status)
+		payout.razorpay_linked_account_id = onboarding_result["linked_account_id"]
+		payout.razorpay_stakeholder_id = onboarding_result["stakeholder_id"]
+		payout.razorpay_route_product_id = onboarding_result["route_product_id"]
+		payout.linked_account_status = onboarding_result["linked_account_status"]
+		payout.route_product_status = onboarding_result["route_product_status"]
+		payout.route_product_requirements_json = json.dumps(
+			onboarding_result.get("route_product_requirements") or [],
+			separators=(",", ":"),
+			ensure_ascii=False,
 		)
+		payout.provider_onboarding_last_synced_at = utcnow()
 
 		self.db.add(payout)
 		await self.db.commit()
@@ -3126,9 +3317,11 @@ class AdminService:
 		refreshed_driver = await self.fetch_driver_by_id(driver_user_id)
 
 		return {
-			"message": "Driver linked account created and saved successfully.",
+			"message": "Driver linked account onboarding executed successfully.",
 			"driver": self._serialize_driver_payout_profile(refreshed_driver),
-			"provider_account": provider_account,
+			"provider_account": onboarding_result.get("provider_account"),
+			"provider_stakeholder": onboarding_result.get("provider_stakeholder"),
+			"provider_product": onboarding_result.get("provider_product"),
 		}
 
 	async def sync_driver_linked_account(self, driver_user_id: str):
@@ -3147,14 +3340,37 @@ class AdminService:
 			)
 
 		payout_service = RoutePayoutService(self.db)
+
 		provider_account = await payout_service.fetch_linked_account(
 			payout.razorpay_linked_account_id
 		)
 
-		provider_status = str(provider_account.get("status") or "").strip()
-		payout.linked_account_status = (
-			self._map_provider_linked_account_status(provider_status)
+		provider_product = None
+		if (payout.razorpay_route_product_id or "").strip():
+			provider_product = await payout_service.fetch_route_product(
+				linked_account_id=payout.razorpay_linked_account_id,
+				product_id=payout.razorpay_route_product_id,
+			)
+
+		payout.linked_account_status = self._map_provider_linked_account_status(
+			provider_account.get("status")
 		)
+
+		if provider_product is not None:
+			payout.route_product_status = self._map_provider_route_product_status(
+				provider_product.get("activation_status")
+				or provider_product.get("status")
+			)
+			payout.route_product_requirements_json = json.dumps(
+				provider_product.get("requirements") or [],
+				separators=(",", ":"),
+				ensure_ascii=False,
+			)
+		else:
+			payout.route_product_status = schema.RouteProductStatus.NOT_REQUESTED
+			payout.route_product_requirements_json = None
+
+		payout.provider_onboarding_last_synced_at = utcnow()
 
 		self.db.add(payout)
 		await self.db.commit()
@@ -3163,9 +3379,10 @@ class AdminService:
 		refreshed_driver = await self.fetch_driver_by_id(driver_user_id)
 
 		return {
-			"message": "Driver linked account synced successfully.",
+			"message": "Driver linked account onboarding synced successfully.",
 			"driver": self._serialize_driver_payout_profile(refreshed_driver),
 			"provider_account": provider_account,
+			"provider_product": provider_product,
 		}
 
 	async def get_driver_linked_account_provider_detail(
@@ -3186,23 +3403,48 @@ class AdminService:
 			)
 
 		payout_service = RoutePayoutService(self.db)
+
 		provider_account = await payout_service.fetch_linked_account(
 			payout.razorpay_linked_account_id
 		)
 
-		provider_status = str(provider_account.get("status") or "").strip()
-		provider_mapped_status = self._map_provider_linked_account_status(
-			provider_status
+		provider_product = None
+		if (payout.razorpay_route_product_id or "").strip():
+			provider_product = await payout_service.fetch_route_product(
+				linked_account_id=payout.razorpay_linked_account_id,
+				product_id=payout.razorpay_route_product_id,
+			)
+
+		provider_linked_account_status = self._map_provider_linked_account_status(
+			provider_account.get("status")
+		)
+		provider_route_product_status = (
+			self._map_provider_route_product_status(
+				provider_product.get("activation_status")
+				or provider_product.get("status")
+			)
+			if provider_product is not None
+			else schema.RouteProductStatus.NOT_REQUESTED
 		)
 
 		return {
 			"driver_user_id": driver_user_id,
 			"razorpay_linked_account_id": payout.razorpay_linked_account_id,
+			"razorpay_stakeholder_id": payout.razorpay_stakeholder_id,
+			"razorpay_route_product_id": payout.razorpay_route_product_id,
 			"linked_account_status": payout.linked_account_status,
-			"provider_linked_account_status": provider_status,
-			"provider_linked_account_mapped_status": provider_mapped_status,
-			"status_in_sync": payout.linked_account_status == provider_mapped_status,
+			"route_product_status": payout.route_product_status,
+			"provider_linked_account_status": provider_linked_account_status,
+			"provider_route_product_status": provider_route_product_status,
+			"linked_account_status_in_sync": (
+				payout.linked_account_status == provider_linked_account_status
+			),
+			"route_product_status_in_sync": (
+				payout.route_product_status == provider_route_product_status
+			),
+			"provider_onboarding_last_synced_at": payout.provider_onboarding_last_synced_at,
 			"provider_account": provider_account,
+			"provider_product": provider_product,
 		}
 
 	async def fetch_vehicle_details_by_id(self, vehicle_id: str):
