@@ -2709,6 +2709,54 @@ class PassengerService:
         )
 
         return self._serialize_current_trip_status(booking)
+    
+
+    async def get_booking_live_location(
+        self,
+        current_user: User,
+        booking_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=current_user.id,
+        )
+        trip = booking.scheduled_trip
+        now = utcnow()
+
+        terminal_booking_statuses = (
+            BookingStatus.CANCELLED,
+            BookingStatus.COMPLETED,
+            BookingStatus.MISSED,
+        )
+        terminal_trip_statuses = (
+            ScheduledTripStatus.CANCELLED,
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.PREMATURE_END,
+            ScheduledTripStatus.PREMATURED_END_REQUEST,
+        )
+
+        tracking_active = (
+            booking.booking_status not in terminal_booking_statuses
+            and trip.status not in terminal_trip_statuses
+            and trip.planned_start_at <= now
+            and booking.completed_at is None
+        )
+
+        return {
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "booking_status": booking.booking_status,
+            "trip_status": trip.status,
+            "tracking_active": tracking_active,
+            "last_lat": trip.last_lat if tracking_active else None,
+            "last_lng": trip.last_lng if tracking_active else None,
+            "planned_start_at": trip.planned_start_at,
+            "completed_at": booking.completed_at,
+            "actual_end_at": trip.actual_end_at,
+            "updated_at": trip.updated_at,
+        }
 
     # ------------------------------------------------------------------
     # rating

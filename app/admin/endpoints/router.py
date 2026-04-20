@@ -2308,7 +2308,9 @@ async def get_rating_summary(
 
 #     return {"total_count": len(report), "data": report}
 
-
+# -----------------------------
+# Admin: Get all Transactions details
+# -----------------------------
 async def get_all_transactions(
 	skip: int = 0,
 	limit: int = 50,
@@ -2458,6 +2460,9 @@ async def get_top_pickup_stops(
 		)
 
 
+# -----------------------------
+# Admin: Complete any trip when trip is currently in progress and all booked passengers are departure
+# -----------------------------
 @router.post("/trips/{trip_id}/complete-manually")
 async def admin_complete_trip(
 	trip_id: str,
@@ -2472,6 +2477,9 @@ async def admin_complete_trip(
 	)
 
 
+# -----------------------------
+# Admin: Get all passengers details
+# -----------------------------
 @router.get("/{trip_id}/passengers", response_model=TripManifestResponse)
 async def get_trip_passengers(
 	trip_id: str,
@@ -2495,6 +2503,9 @@ async def get_trip_passengers(
 	}
 
 
+# -----------------------------
+# Admin: Get all Details of bookings using booking_id
+# -----------------------------
 @router.get(
 	"/booking/{booking_id}", response_model=BookingFullDetailsResponsee
 )
@@ -2510,6 +2521,73 @@ async def get_specific_booking_details(
 		raise HTTPException(status_code=404, detail="Booking record not found")
 
 	return details
+
+
+# -----------------------------
+# Admin: Get in progress status of a trip using trip_id
+# -----------------------------
+@router.get("/trip/{trip_id}/status-only")
+async def get_trip_status_only(
+	trip_id: str,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin=Depends(get_current_admin),
+):
+	"""
+	Simple GET to check trip status without any updates
+	"""
+	stmt = (
+		select(
+			schema.ScheduledTrip,
+			schema.Route.name.label("route_name"),
+			schema.DriverProfile.full_name.label("driver_name"),
+		)
+		.join(
+			schema.Route,
+			schema.ScheduledTrip.route_id == schema.Route.id,
+			isouter=True,
+		)
+		.join(
+			schema.User,
+			schema.ScheduledTrip.driver_user_id == schema.User.id,
+			isouter=True,
+		)
+		.join(
+			schema.DriverProfile,
+			schema.User.id == schema.DriverProfile.user_id,
+			isouter=True,
+		)
+		.where(schema.ScheduledTrip.id == trip_id)
+	)
+
+	result = await db.execute(stmt)
+	row = result.first()
+
+	if not row:
+		raise HTTPException(status_code=404, detail="Trip not found")
+
+	trip = row.ScheduledTrip
+
+	return {
+		"trip_id": trip.id,
+		"status": trip.status.value,
+		"is_in_progress": trip.status
+		== schema.ScheduledTripStatus.IN_PROGRESS,
+		"route_name": row.route_name,
+		"driver_name": row.driver_name,
+		"last_known_location": {
+			"lat": float(trip.last_lat) if trip.last_lat else None,
+			"lng": float(trip.last_lng) if trip.last_lng else None,
+		},
+		"planned_times": {
+			"start": trip.planned_start_at,
+			"end": trip.planned_end_at,
+		},
+		"actual_times": {
+			"start": trip.actual_start_at,
+			"end": trip.actual_end_at,
+		},
+		"last_updated": trip.updated_at,
+	}
 
 
 # ============================================================
