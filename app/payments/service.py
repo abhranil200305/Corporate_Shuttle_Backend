@@ -479,6 +479,19 @@ class RoutePayoutService:
                 detail={
                     "error": "linked_account_not_active",
                     "message": "Driver linked payout account is not active.",
+                    "linked_account_status": payout_details.linked_account_status.value,
+                },
+            )
+
+        if payout_details.route_product_status != RouteProductStatus.ACTIVATED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "route_product_not_activated",
+                    "message": "Driver Route product is not activated.",
+                    "route_product_status": None
+                    if payout_details.route_product_status is None
+                    else payout_details.route_product_status.value,
                 },
             )
 
