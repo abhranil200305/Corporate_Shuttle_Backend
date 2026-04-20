@@ -266,11 +266,9 @@ async def get_driver_details(
 			"verification": d.vehicle.verification_status
 			if d.vehicle
 			else "N/A",
-			"rc_file_path": d.vehicle.rc_file_path
-			if (d and d.vehicle.rc_file_path)
-			else "NA",
+			"rc_file_path": d.vehicle.rc_file_path if d.vehicle else "NA",
 			"rear_photo_file_path": d.vehicle.rear_photo_file_path
-			if (d and d.vehicle.rear_photo_file_path)
+			if d.vehicle
 			else "NA",
 			"vechical_verification_req_date": d.vehicle.verification_requested_at
 			if d.vehicle
