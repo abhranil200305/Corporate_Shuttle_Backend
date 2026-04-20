@@ -819,11 +819,86 @@ class AdminService:
 	# 		"message": f"Trip {trip_id} has been manually closed.",
 	# 	}
 
+	# async def manually_complete_trip(
+	# 	self, trip_id: str, admin_id: str, note: str = None
+	# ):
+	# 	try:
+	# 		# 1. Fetch the trip
+	# 		stmt = select(schema.ScheduledTrip).where(
+	# 			schema.ScheduledTrip.id == trip_id
+	# 		)
+	# 		result = await self.db.execute(stmt)
+	# 		trip = result.scalar_one_or_none()
+
+	# 		if not trip:
+	# 			raise HTTPException(status_code=404, detail="Trip not found")
+
+	# 		# 2. Validation: Check if passengers are still boarded
+	# 		boarded_stmt = (
+	# 			select(
+	# 				schema.TripBooking.id.label("booking_id"),
+	# 				schema.PassengerProfile.full_name.label("user_name"),
+	# 			)
+	# 			.join(
+	# 				schema.User,
+	# 				schema.TripBooking.passenger_user_id == schema.User.id,
+	# 			)
+	# 			.join(
+	# 				schema.PassengerProfile,
+	# 				schema.User.id == schema.PassengerProfile.user_id,
+	# 			)
+	# 			.where(schema.TripBooking.scheduled_trip_id == trip_id)
+	# 			.where(
+	# 				schema.TripBooking.booking_status
+	# 				== schema.BookingStatus.BOARDED
+	# 			)
+	# 		)
+
+	# 		boarded_result = await self.db.execute(boarded_stmt)
+	# 		passengers_on_board = boarded_result.all()
+
+	# 		if passengers_on_board:
+	# 			raise HTTPException(
+	# 				status_code=409,
+	# 				detail={
+	# 					"error": "passengers_still_on_board",
+	# 					"message": "Cannot complete the trip while passengers are still on board.",
+	# 				},
+	# 			)
+
+	# 		# 3. Update Trip
+	# 		now = datetime.now(datetime.timezone.utc)
+	# 		trip.status = schema.ScheduledTripStatus.COMPLETED
+	# 		trip.actual_end_at = now
+	# 		trip.admin_note = f"Manually closed by {admin_id}. {note or ''}"
+
+	# 		# 4. Update 'booked' passengers to 'completed'
+	# 		update_stmt = (
+	# 			update(schema.TripBooking)
+	# 			.where(schema.TripBooking.scheduled_trip_id == trip_id)
+	# 			.where(
+	# 				schema.TripBooking.booking_status
+	# 				== schema.BookingStatus.BOOKED
+	# 			)
+	# 			.values(
+	# 				booking_status=schema.BookingStatus.COMPLETED,
+	# 				completed_at=now,
+	# 			)
+	# 		)
+	# 		await self.db.execute(update_stmt)
+
+	# 		await self.db.commit()
+	# 		return {"status": "success", "message": "Trip closed successfully"}
+
+	# 	except Exception as e:
+	# 		await self.db.rollback()
+	# 		raise e
+
 	async def manually_complete_trip(
 		self, trip_id: str, admin_id: str, note: str = None
 	):
 		try:
-			# 1. Fetch the trip
+			# 1. Fetch the trip with related data
 			stmt = select(schema.ScheduledTrip).where(
 				schema.ScheduledTrip.id == trip_id
 			)
@@ -832,6 +907,18 @@ class AdminService:
 
 			if not trip:
 				raise HTTPException(status_code=404, detail="Trip not found")
+
+			# Check if trip is already completed
+			if trip.status == schema.ScheduledTripStatus.COMPLETED:
+				raise HTTPException(
+					status_code=400, detail="Trip is already completed"
+				)
+
+			# Check if trip is cancelled
+			if trip.status == schema.ScheduledTripStatus.CANCELLED:
+				raise HTTPException(
+					status_code=400, detail="Cannot complete a cancelled trip"
+				)
 
 			# 2. Validation: Check if passengers are still boarded
 			boarded_stmt = (
@@ -863,36 +950,86 @@ class AdminService:
 					detail={
 						"error": "passengers_still_on_board",
 						"message": "Cannot complete the trip while passengers are still on board.",
+						"passenger_count": len(passengers_on_board),
+						"passengers": [
+							{"booking_id": p.booking_id, "name": p.user_name}
+							for p in passengers_on_board
+						],
 					},
 				)
 
-			# 3. Update Trip
-			now = datetime.now(datetime.timezone.utc)
+			# 3. Update Trip - FIXED datetime issue
+			now = datetime.now(timezone.utc)  # Make sure timezone is imported
 			trip.status = schema.ScheduledTripStatus.COMPLETED
 			trip.actual_end_at = now
-			trip.admin_note = f"Manually closed by {admin_id}. {note or ''}"
+			trip.admin_note = (
+				f"Manually completed by admin {admin_id}. {note or ''}"
+			)
 
-			# 4. Update 'booked' passengers to 'completed'
-			update_stmt = (
+			# 4. Update all booked passengers to completed
+			update_booked_stmt = (
 				update(schema.TripBooking)
 				.where(schema.TripBooking.scheduled_trip_id == trip_id)
 				.where(
-					schema.TripBooking.booking_status
-					== schema.BookingStatus.BOOKED
+					schema.TripBooking.booking_status.in_(
+						[
+							schema.BookingStatus.BOOKED,
+							schema.BookingStatus.PENDING_PAYMENT,
+						]
+					)
 				)
 				.values(
 					booking_status=schema.BookingStatus.COMPLETED,
 					completed_at=now,
 				)
 			)
-			await self.db.execute(update_stmt)
+			booked_result = await self.db.execute(update_booked_stmt)
+
+			# 5. Also update any missed bookings
+			update_missed_stmt = (
+				update(schema.TripBooking)
+				.where(schema.TripBooking.scheduled_trip_id == trip_id)
+				.where(
+					schema.TripBooking.booking_status
+					== schema.BookingStatus.MISSED
+				)
+				.values(
+					booking_status=schema.BookingStatus.COMPLETED,
+					completed_at=now,
+				)
+			)
+			missed_result = await self.db.execute(update_missed_stmt)
 
 			await self.db.commit()
-			return {"status": "success", "message": "Trip closed successfully"}
 
+			return {
+				"status": "success",
+				"message": "Trip completed successfully",
+				"trip_id": trip_id,
+				"completed_at": now.isoformat(),
+				"booked_passengers_updated": booked_result.rowcount
+				if hasattr(booked_result, "rowcount")
+				else 0,
+				"missed_passengers_updated": missed_result.rowcount
+				if hasattr(missed_result, "rowcount")
+				else 0,
+			}
+
+		except HTTPException:
+			await self.db.rollback()
+			raise
 		except Exception as e:
 			await self.db.rollback()
-			raise e
+			# Log the error
+			import logging
+
+			logging.error(
+				f"Error in manually_complete_trip for trip {trip_id}: {str(e)}",
+				exc_info=True,
+			)
+			raise HTTPException(
+				status_code=500, detail=f"Failed to complete trip: {str(e)}"
+			)
 
 	async def get_top_booking_routes(self):
 		query = (
@@ -1500,13 +1637,18 @@ class AdminService:
 		agg = aggregates or {}
 
 		route_product_requirements = None
-		if payout is not None and (payout.route_product_requirements_json or "").strip():
+		if (
+			payout is not None
+			and (payout.route_product_requirements_json or "").strip()
+		):
 			try:
 				route_product_requirements = json.loads(
 					payout.route_product_requirements_json
 				)
 			except Exception:
-				route_product_requirements = payout.route_product_requirements_json
+				route_product_requirements = (
+					payout.route_product_requirements_json
+				)
 
 		return {
 			"user_id": driver.id,
@@ -1528,7 +1670,9 @@ class AdminService:
 				"residential_street_line_2": profile.residential_street_line_2
 				if profile
 				else None,
-				"residential_city": profile.residential_city if profile else None,
+				"residential_city": profile.residential_city
+				if profile
+				else None,
 				"residential_state": profile.residential_state
 				if profile
 				else None,
@@ -2210,7 +2354,9 @@ class AdminService:
 		if previous_linked_account_id != new_linked_account_id:
 			payout.razorpay_stakeholder_id = None
 			payout.razorpay_route_product_id = None
-			payout.route_product_status = schema.RouteProductStatus.NOT_REQUESTED
+			payout.route_product_status = (
+				schema.RouteProductStatus.NOT_REQUESTED
+			)
 			payout.route_product_requirements_json = None
 			payout.provider_onboarding_last_synced_at = None
 
@@ -3094,7 +3240,7 @@ class AdminService:
 			return schema.LinkedAccountStatus.DELETED
 
 		return schema.LinkedAccountStatus.NOT_CREATED
-	
+
 	def _map_provider_route_product_status(
 		self, provider_status: str | None
 	) -> schema.RouteProductStatus:
@@ -3116,7 +3262,7 @@ class AdminService:
 			return schema.RouteProductStatus.SUSPENDED
 
 		return schema.RouteProductStatus.NOT_REQUESTED
-	
+
 	def _clean_required_text(
 		self,
 		value: str | None,
@@ -3129,15 +3275,13 @@ class AdminService:
 		if not cleaned:
 			raise HTTPException(
 				status_code=status_code,
-				detail={
-					"error": error_code,
-					"message": message,
-				},
+				detail={"error": error_code, "message": message},
 			)
 		return cleaned
 
-
-	async def _get_or_create_driver_payout_details_for_onboarding(self, driver):
+	async def _get_or_create_driver_payout_details_for_onboarding(
+		self, driver
+	):
 		profile = driver.driver_profile
 		payout = driver.payout_details
 
@@ -3146,8 +3290,7 @@ class AdminService:
 
 		if profile is None:
 			raise HTTPException(
-				status_code=404,
-				detail="Driver profile not found",
+				status_code=404, detail="Driver profile not found"
 			)
 
 		account_holder_name = self._clean_required_text(
@@ -3183,11 +3326,12 @@ class AdminService:
 
 		return payout
 
-
 	def _build_driver_route_onboarding_input(self, driver, payout) -> dict:
 		profile = driver.driver_profile
 		if profile is None:
-			raise HTTPException(status_code=404, detail="Driver profile not found")
+			raise HTTPException(
+				status_code=404, detail="Driver profile not found"
+			)
 
 		return {
 			"linked_account_id": payout.razorpay_linked_account_id,
@@ -3218,7 +3362,10 @@ class AdminService:
 				error_code="missing_registered_street1",
 				message="Driver residential street line 1 is required for linked-account registration.",
 			),
-			"registered_street2": (profile.residential_street_line_2 or "").strip() or None,
+			"registered_street2": (
+				profile.residential_street_line_2 or ""
+			).strip()
+			or None,
 			"registered_city": self._clean_required_text(
 				profile.residential_city,
 				error_code="missing_registered_city",
@@ -3244,7 +3391,10 @@ class AdminService:
 				error_code="missing_residential_street_line_1",
 				message="Driver residential street line 1 is required for stakeholder creation.",
 			),
-			"residential_street_line_2": (profile.residential_street_line_2 or "").strip() or None,
+			"residential_street_line_2": (
+				profile.residential_street_line_2 or ""
+			).strip()
+			or None,
 			"residential_city": self._clean_required_text(
 				profile.residential_city,
 				error_code="missing_residential_city",
@@ -3288,20 +3438,34 @@ class AdminService:
 			raise HTTPException(status_code=404, detail="Driver not found")
 
 		if driver.driver_profile is None:
-			raise HTTPException(status_code=404, detail="Driver profile not found")
+			raise HTTPException(
+				status_code=404, detail="Driver profile not found"
+			)
 
-		payout = await self._get_or_create_driver_payout_details_for_onboarding(driver)
-		onboarding_input = self._build_driver_route_onboarding_input(driver, payout)
+		payout = (
+			await self._get_or_create_driver_payout_details_for_onboarding(
+				driver
+			)
+		)
+		onboarding_input = self._build_driver_route_onboarding_input(
+			driver, payout
+		)
 
 		payout_service = RoutePayoutService(self.db)
 		onboarding_result = await payout_service.onboard_route_linked_account(
 			**onboarding_input
 		)
 
-		payout.razorpay_linked_account_id = onboarding_result["linked_account_id"]
+		payout.razorpay_linked_account_id = onboarding_result[
+			"linked_account_id"
+		]
 		payout.razorpay_stakeholder_id = onboarding_result["stakeholder_id"]
-		payout.razorpay_route_product_id = onboarding_result["route_product_id"]
-		payout.linked_account_status = onboarding_result["linked_account_status"]
+		payout.razorpay_route_product_id = onboarding_result[
+			"route_product_id"
+		]
+		payout.linked_account_status = onboarding_result[
+			"linked_account_status"
+		]
 		payout.route_product_status = onboarding_result["route_product_status"]
 		payout.route_product_requirements_json = json.dumps(
 			onboarding_result.get("route_product_requirements") or [],
@@ -3320,7 +3484,9 @@ class AdminService:
 			"message": "Driver linked account onboarding executed successfully.",
 			"driver": self._serialize_driver_payout_profile(refreshed_driver),
 			"provider_account": onboarding_result.get("provider_account"),
-			"provider_stakeholder": onboarding_result.get("provider_stakeholder"),
+			"provider_stakeholder": onboarding_result.get(
+				"provider_stakeholder"
+			),
 			"provider_product": onboarding_result.get("provider_product"),
 		}
 
@@ -3352,14 +3518,18 @@ class AdminService:
 				product_id=payout.razorpay_route_product_id,
 			)
 
-		payout.linked_account_status = self._map_provider_linked_account_status(
-			provider_account.get("status")
+		payout.linked_account_status = (
+			self._map_provider_linked_account_status(
+				provider_account.get("status")
+			)
 		)
 
 		if provider_product is not None:
-			payout.route_product_status = self._map_provider_route_product_status(
-				provider_product.get("activation_status")
-				or provider_product.get("status")
+			payout.route_product_status = (
+				self._map_provider_route_product_status(
+					provider_product.get("activation_status")
+					or provider_product.get("status")
+				)
 			)
 			payout.route_product_requirements_json = json.dumps(
 				provider_product.get("requirements") or [],
@@ -3367,7 +3537,9 @@ class AdminService:
 				ensure_ascii=False,
 			)
 		else:
-			payout.route_product_status = schema.RouteProductStatus.NOT_REQUESTED
+			payout.route_product_status = (
+				schema.RouteProductStatus.NOT_REQUESTED
+			)
 			payout.route_product_requirements_json = None
 
 		payout.provider_onboarding_last_synced_at = utcnow()
@@ -3415,8 +3587,10 @@ class AdminService:
 				product_id=payout.razorpay_route_product_id,
 			)
 
-		provider_linked_account_status = self._map_provider_linked_account_status(
-			provider_account.get("status")
+		provider_linked_account_status = (
+			self._map_provider_linked_account_status(
+				provider_account.get("status")
+			)
 		)
 		provider_route_product_status = (
 			self._map_provider_route_product_status(

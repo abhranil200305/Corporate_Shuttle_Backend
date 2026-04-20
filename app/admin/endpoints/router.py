@@ -2308,7 +2308,9 @@ async def get_rating_summary(
 
 #     return {"total_count": len(report), "data": report}
 
-
+# -----------------------------
+# Admin: Get all Transactions details
+# -----------------------------
 async def get_all_transactions(
 	skip: int = 0,
 	limit: int = 50,
@@ -2458,6 +2460,9 @@ async def get_top_pickup_stops(
 		)
 
 
+# -----------------------------
+# Admin: Complete any trip when trip is currently in progress and all booked passengers are departure
+# -----------------------------
 @router.post("/trips/{trip_id}/complete-manually")
 async def admin_complete_trip(
 	trip_id: str,
@@ -2472,6 +2477,9 @@ async def admin_complete_trip(
 	)
 
 
+# -----------------------------
+# Admin: Get all passengers details
+# -----------------------------
 @router.get("/{trip_id}/passengers", response_model=TripManifestResponse)
 async def get_trip_passengers(
 	trip_id: str,
@@ -2495,6 +2503,9 @@ async def get_trip_passengers(
 	}
 
 
+# -----------------------------
+# Admin: Get all Details of bookings using booking_id
+# -----------------------------
 @router.get(
 	"/booking/{booking_id}", response_model=BookingFullDetailsResponsee
 )
@@ -2512,6 +2523,9 @@ async def get_specific_booking_details(
 	return details
 
 
+# -----------------------------
+# Admin: Get in progress status of a trip using trip_id
+# -----------------------------
 @router.get("/trip/{trip_id}/status-only")
 async def get_trip_status_only(
 	trip_id: str,
