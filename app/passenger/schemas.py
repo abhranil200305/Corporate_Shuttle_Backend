@@ -321,6 +321,21 @@ class CurrentTripStatusResponse(BaseModel):
     current_progress_stop: CurrentTripProgressStopResponse | None
     segment_stops: list[CurrentTripSegmentStopResponse]
 
+
+class CurrentTripLiveLocationResponse(BaseModel):
+    booking_id: str
+    scheduled_trip_id: str
+    booking_status: str
+    trip_status: str
+    tracking_active: bool
+    last_lat: Decimal | None
+    last_lng: Decimal | None
+    planned_start_at: datetime
+    completed_at: datetime | None
+    actual_end_at: datetime | None
+    updated_at: datetime
+
+
 class SupportTicketResponse(BaseModel):
     id: str
     user_id: str

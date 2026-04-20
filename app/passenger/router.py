@@ -18,6 +18,7 @@ from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
     CurrentTripBookingListResponse,
+    CurrentTripLiveLocationResponse,
     CurrentTripStatusResponse,
     FarePreviewRequest,
     FarePreviewResponse,
@@ -238,6 +239,17 @@ async def get_current_trip_status(
     service: PassengerService = Depends(get_passenger_service),
 ) -> CurrentTripStatusResponse:
     return await service.get_current_trip_status(current_user, booking_id)
+
+@router.get(
+    "/bookings/{booking_id}/live-location",
+    response_model=CurrentTripLiveLocationResponse,
+)
+async def get_booking_live_location(
+    booking_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> CurrentTripLiveLocationResponse:
+    return await service.get_booking_live_location(current_user, booking_id)
 
 @router.post("/bookings/{booking_id}/rating", response_model=BookingRatingMutationResponse)
 async def create_rating(
