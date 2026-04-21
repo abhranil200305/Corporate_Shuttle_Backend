@@ -1397,6 +1397,165 @@ class PassengerService:
     # ------------------------------------------------------------------
     # discovery
     # ------------------------------------------------------------------
+
+    async def discover_route_trip_options(
+        self,
+        *,
+        from_stop_id: str,
+        to_stop_id: str,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        if from_stop_id == to_stop_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "same_pickup_dropoff",
+                    "message": "From stop and to stop must be different.",
+                },
+            )
+
+        normalized_from_time = self._normalize_optional_datetime(from_time)
+        normalized_to_time = self._normalize_optional_datetime(to_time)
+
+        if (
+            normalized_from_time is not None
+            and normalized_to_time is not None
+            and normalized_from_time > normalized_to_time
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_time_window",
+                    "message": "from_time cannot be greater than to_time.",
+                },
+            )
+
+        await self._get_stop_obj_or_raise(from_stop_id)
+        await self._get_stop_obj_or_raise(to_stop_id)
+
+        lower_bound = utcnow()
+        if normalized_from_time is not None and normalized_from_time > lower_bound:
+            lower_bound = normalized_from_time
+
+        stmt = (
+            select(RouteFare)
+            .join(Route, Route.id == RouteFare.route_id)
+            .where(
+                RouteFare.pickup_stop_id == from_stop_id,
+                RouteFare.dropoff_stop_id == to_stop_id,
+                RouteFare.is_active.is_(True),
+                Route.is_active.is_(True),
+            )
+            .options(
+                selectinload(RouteFare.pickup_stop),
+                selectinload(RouteFare.dropoff_stop),
+                selectinload(RouteFare.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+                selectinload(RouteFare.route)
+                .selectinload(Route.scheduled_trips)
+                .selectinload(ScheduledTrip.vehicle),
+                selectinload(RouteFare.route)
+                .selectinload(Route.scheduled_trips)
+                .selectinload(ScheduledTrip.driver),
+                selectinload(RouteFare.route)
+                .selectinload(Route.scheduled_trips)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
+            )
+            .order_by(Route.name.asc(), RouteFare.amount.asc())
+        )
+
+        result = await self.db.execute(stmt)
+        segment_fares = result.scalars().unique().all()
+
+        items: list[dict[str, Any]] = []
+
+        for segment_fare in segment_fares:
+            route = segment_fare.route
+
+            route_stop_by_stop_id = {
+                route_stop.stop_id: route_stop
+                for route_stop in route.route_stops
+            }
+
+            pickup_route_stop = route_stop_by_stop_id.get(from_stop_id)
+            dropoff_route_stop = route_stop_by_stop_id.get(to_stop_id)
+
+            if pickup_route_stop is None or dropoff_route_stop is None:
+                continue
+
+            if pickup_route_stop.sequence_no >= dropoff_route_stop.sequence_no:
+                continue
+
+            if not pickup_route_stop.boarding_allowed:
+                continue
+
+            if not dropoff_route_stop.deboarding_allowed:
+                continue
+
+            upcoming_scheduled_trips: list[dict[str, Any]] = []
+
+            for trip in sorted(route.scheduled_trips, key=lambda item: item.planned_start_at):
+                if trip.status != ScheduledTripStatus.SCHEDULED:
+                    continue
+
+                pickup_planned_time = self._get_route_stop_planned_time(
+                    trip=trip,
+                    target_sequence_no=pickup_route_stop.sequence_no,
+                )
+
+                if pickup_planned_time < lower_bound:
+                    continue
+
+                if normalized_to_time is not None and pickup_planned_time > normalized_to_time:
+                    continue
+
+                upcoming_scheduled_trips.append(
+                    await self._serialize_route_trip_discovery_trip(
+                        trip=trip,
+                        pickup_route_stop=pickup_route_stop,
+                        dropoff_route_stop=dropoff_route_stop,
+                    )
+                )
+
+            items.append(
+                {
+                    "route": self._serialize_route(route),
+                    "pickup_stop": self._serialize_stop_brief(pickup_route_stop.stop),
+                    "dropoff_stop": self._serialize_stop_brief(dropoff_route_stop.stop),
+                    "pickup_sequence_no": pickup_route_stop.sequence_no,
+                    "dropoff_sequence_no": dropoff_route_stop.sequence_no,
+                    "fare_amount": self._quantize_money(segment_fare.amount),
+                    "upcoming_scheduled_trips": upcoming_scheduled_trips,
+                    "upcoming_scheduled_trip_count": len(upcoming_scheduled_trips),
+                }
+            )
+
+        return {
+            "from_stop_id": from_stop_id,
+            "to_stop_id": to_stop_id,
+            "from_time": normalized_from_time,
+            "to_time": normalized_to_time,
+            "items": items,
+            "count": len(items),
+        }
+
+    async def list_stops(self, *, active_only: bool = True) -> dict[str, Any]:
+        stmt = select(Stop).order_by(Stop.name.asc())
+
+        if active_only:
+            stmt = stmt.where(Stop.is_active.is_(True))
+
+        result = await self.db.execute(stmt)
+        stops = result.scalars().all()
+
+        return {
+            "items": [self._serialize_stop_brief(stop) for stop in stops],
+            "count": len(stops),
+        }
+    
     async def list_routes(
     self,
     *,
@@ -2895,6 +3054,96 @@ class PassengerService:
         return {
             "items": [self._serialize_transaction(payment) for payment in payments],
             "count": total_count,
+        }
+    
+    @staticmethod
+    def _normalize_optional_datetime(value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+
+        if value.tzinfo is None or value.utcoffset() is None:
+            return value.replace(tzinfo=timezone.utc)
+
+        return value.astimezone(timezone.utc)
+
+    async def _get_stop_obj_or_raise(self, stop_id: str) -> Stop:
+        stmt = select(Stop).where(Stop.id == stop_id)
+        result = await self.db.execute(stmt)
+        stop = result.scalar_one_or_none()
+
+        if stop is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "stop_not_found",
+                    "message": "Stop not found.",
+                    "stop_id": stop_id,
+                },
+            )
+
+        return stop
+
+    async def _serialize_route_trip_discovery_trip(
+        self,
+        *,
+        trip: ScheduledTrip,
+        pickup_route_stop: RouteStop,
+        dropoff_route_stop: RouteStop,
+    ) -> dict[str, Any]:
+        pickup_planned_time = self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=pickup_route_stop.sequence_no,
+        )
+        dropoff_planned_time = self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        seat_capacity = trip.vehicle.seat_count if trip.vehicle is not None else 0
+
+        overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        available_seats = max(seat_capacity - overlapping_active_bookings, 0)
+
+        trip_bookable = (
+            trip.status == ScheduledTripStatus.SCHEDULED
+            and trip.planned_start_at > utcnow()
+            and available_seats > 0
+        )
+
+        return {
+            "scheduled_trip_id": trip.id,
+            "route_id": trip.route_id,
+            "status": trip.status,
+            "planned_start_at": trip.planned_start_at,
+            "planned_end_at": trip.planned_end_at,
+            "pickup_stop": self._serialize_stop_brief(pickup_route_stop.stop),
+            "dropoff_stop": self._serialize_stop_brief(dropoff_route_stop.stop),
+            "pickup_sequence_no": pickup_route_stop.sequence_no,
+            "dropoff_sequence_no": dropoff_route_stop.sequence_no,
+            "pickup_planned_time": pickup_planned_time,
+            "dropoff_planned_time": dropoff_planned_time,
+            "seat_capacity": seat_capacity,
+            "overlapping_active_bookings": overlapping_active_bookings,
+            "available_seats": available_seats,
+            "trip_bookable": trip_bookable,
+            "vehicle": None if trip.vehicle is None else {
+                "id": trip.vehicle.id,
+                "registration_number": trip.vehicle.registration_number,
+                "vehicle_name": trip.vehicle.vehicle_name,
+                "vehicle_model": trip.vehicle.vehicle_model,
+                "color": trip.vehicle.color,
+                "seat_count": trip.vehicle.seat_count,
+                "has_ac": trip.vehicle.has_ac,
+            },
+            "driver": None if trip.driver is None else {
+                "id": trip.driver.id,
+                "email": trip.driver.email,
+            },
         }
 
     # ------------------------------------------------------------------

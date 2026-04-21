@@ -42,6 +42,9 @@ class StopBriefResponse(BaseModel):
     radius_meters: int
     is_active: bool
 
+class StopListResponse(BaseModel):
+    items: list[StopBriefResponse]
+    count: int
 
 class RouteStopResponse(BaseModel):
     route_stop_id: str
@@ -469,4 +472,47 @@ class PassengerTransactionResponse(BaseModel):
 
 class PassengerTransactionHistoryResponse(BaseModel):
     items: list[PassengerTransactionResponse]
+    count: int
+
+class RouteTripDiscoveryTripResponse(BaseModel):
+    scheduled_trip_id: str
+    route_id: str
+    status: str
+    planned_start_at: datetime
+    planned_end_at: datetime
+
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    pickup_sequence_no: int
+    dropoff_sequence_no: int
+    pickup_planned_time: datetime
+    dropoff_planned_time: datetime
+
+    seat_capacity: int
+    overlapping_active_bookings: int
+    available_seats: int
+    trip_bookable: bool
+
+    vehicle: VehicleBriefResponse | None
+    driver: DriverBriefResponse | None
+
+
+class RouteTripDiscoveryOptionResponse(BaseModel):
+    route: RouteResponse
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    pickup_sequence_no: int
+    dropoff_sequence_no: int
+    fare_amount: Decimal
+
+    upcoming_scheduled_trips: list[RouteTripDiscoveryTripResponse]
+    upcoming_scheduled_trip_count: int
+
+
+class RouteTripDiscoveryResponse(BaseModel):
+    from_stop_id: str
+    to_stop_id: str
+    from_time: datetime | None
+    to_time: datetime | None
+    items: list[RouteTripDiscoveryOptionResponse]
     count: int
