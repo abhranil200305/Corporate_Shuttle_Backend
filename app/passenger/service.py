@@ -688,6 +688,69 @@ class PassengerService:
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
         }
+    
+    @staticmethod
+    def _generate_invoice_number(booking: TripBooking) -> str:
+        reference_time = booking.completed_at or booking.updated_at or booking.created_at
+        return f"INV-{reference_time.strftime('%Y%m%d')}-{booking.id[:8].upper()}"
+
+    def _get_latest_paid_payment(self, booking: TripBooking) -> BookingPayment | None:
+        paid_payments = [
+            payment
+            for payment in booking.payments
+            if payment.status == BookingPaymentStatus.PAID and payment.razorpay_payment_id
+        ]
+        if not paid_payments:
+            return None
+
+        paid_payments.sort(key=lambda item: item.created_at, reverse=True)
+        return paid_payments[0]
+
+    def _build_invoice_breakdown(
+        self,
+        *,
+        total_booking_amount: Decimal,
+        is_ac: bool,
+    ) -> dict[str, Any]:
+        total_booking_amount = self._quantize_money(Decimal(total_booking_amount))
+
+        cgst_rate_percent = Decimal("2.50") if is_ac else Decimal("0.00")
+        sgst_rate_percent = Decimal("2.50") if is_ac else Decimal("0.00")
+        divisor_used = Decimal("1.05") if is_ac else Decimal("1.00")
+
+        if is_ac:
+            taxable_value = self._quantize_money(total_booking_amount / divisor_used)
+            cgst_amount = self._quantize_money(
+                (taxable_value * cgst_rate_percent) / Decimal("100")
+            )
+            sgst_amount = self._quantize_money(
+                (taxable_value * sgst_rate_percent) / Decimal("100")
+            )
+        else:
+            taxable_value = total_booking_amount
+            cgst_amount = Decimal("0.00")
+            sgst_amount = Decimal("0.00")
+
+        total_tax_amount = self._quantize_money(cgst_amount + sgst_amount)
+        recomputed_total_amount = self._quantize_money(
+            taxable_value + total_tax_amount
+        )
+        rounding_adjustment = self._quantize_money(
+            total_booking_amount - recomputed_total_amount
+        )
+
+        return {
+            "total_booking_amount": total_booking_amount,
+            "divisor_used": divisor_used,
+            "taxable_value": taxable_value,
+            "cgst_rate_percent": cgst_rate_percent,
+            "cgst_amount": cgst_amount,
+            "sgst_rate_percent": sgst_rate_percent,
+            "sgst_amount": sgst_amount,
+            "total_tax_amount": total_tax_amount,
+            "recomputed_total_amount": recomputed_total_amount,
+            "rounding_adjustment": rounding_adjustment,
+        }
 
     def _serialize_trip_stops(self, trip: ScheduledTrip) -> list[dict[str, Any]]:
         sorted_route_stops = sorted(trip.route.route_stops, key=lambda item: item.sequence_no)
@@ -2500,6 +2563,84 @@ class PassengerService:
             passenger_user_id=current_user.id,
         )
         return await self._serialize_booking_detail(booking)
+    
+    async def get_booking_invoice(self, current_user: User, booking_id: str) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=current_user.id,
+        )
+
+        booking_status = (
+            booking.booking_status.value
+            if hasattr(booking.booking_status, "value")
+            else str(booking.booking_status)
+        )
+        trip_status = (
+            booking.scheduled_trip.status.value
+            if hasattr(booking.scheduled_trip.status, "value")
+            else str(booking.scheduled_trip.status)
+        )
+
+        if (
+            booking.booking_status != BookingStatus.COMPLETED
+            or booking.scheduled_trip.status != ScheduledTripStatus.COMPLETED
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "invoice_not_available",
+                    "message": "Invoice is available only after the trip is completed.",
+                    "booking_status": booking_status,
+                    "trip_status": trip_status,
+                },
+            )
+
+        latest_paid_payment = self._get_latest_paid_payment(booking)
+        if latest_paid_payment is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paid_payment_not_found",
+                    "message": "A paid payment record is required before an invoice can be generated.",
+                },
+            )
+
+        passenger_profile = await self._get_profile_obj(current_user.id)
+        route = booking.scheduled_trip.route
+        is_ac = bool(route.has_ac) if route is not None else False
+
+        return {
+            "invoice_number": self._generate_invoice_number(booking),
+            "booking_id": booking.id,
+            "invoice_generated_at": utcnow(),
+            "invoice_status": "preview",
+            "passenger": {
+                "user_id": current_user.id,
+                "full_name": None if passenger_profile is None else passenger_profile.full_name,
+                "email": current_user.email,
+            },
+            "trip": {
+                "scheduled_trip_id": booking.scheduled_trip_id,
+                "route_id": booking.route_id,
+                "route_name": None if route is None else route.name,
+                "route_code": None if route is None else route.code,
+                "is_ac": is_ac,
+                "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+                "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+                "planned_start_at": booking.scheduled_trip.planned_start_at,
+                "planned_end_at": booking.scheduled_trip.planned_end_at,
+                "actual_start_at": booking.scheduled_trip.actual_start_at,
+                "actual_end_at": booking.scheduled_trip.actual_end_at,
+                "completed_at": booking.completed_at,
+            },
+            "breakdown": self._build_invoice_breakdown(
+                total_booking_amount=booking.fare_amount,
+                is_ac=is_ac,
+            ),
+            "payment": self._serialize_payment(latest_paid_payment),
+        }
 
     async def cancel_booking(self, current_user: User, booking_id: str) -> dict[str, Any]:
         self.ensure_passenger(current_user)
