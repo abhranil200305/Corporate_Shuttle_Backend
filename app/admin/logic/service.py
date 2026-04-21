@@ -1041,19 +1041,19 @@ class AdminService:
 			booked_result = await self.db.execute(update_booked_stmt)
 
 			# 5. Also update any missed bookings
-			update_missed_stmt = (
-				update(schema.TripBooking)
-				.where(schema.TripBooking.scheduled_trip_id == trip_id)
-				.where(
-					schema.TripBooking.booking_status
-					== schema.BookingStatus.MISSED
-				)
-				.values(
-					booking_status=schema.BookingStatus.COMPLETED,
-					completed_at=now,
-				)
-			)
-			missed_result = await self.db.execute(update_missed_stmt)
+			# update_missed_stmt = (
+			# 	update(schema.TripBooking)
+			# 	.where(schema.TripBooking.scheduled_trip_id == trip_id)
+			# 	.where(
+			# 		schema.TripBooking.booking_status
+			# 		== schema.BookingStatus.MISSED
+			# 	)
+			# 	.values(
+			# 		booking_status=schema.BookingStatus.COMPLETED,
+			# 		completed_at=now,
+			# 	)
+			# )
+			# missed_result = await self.db.execute(update_missed_stmt)
 
 			await self.db.commit()
 
