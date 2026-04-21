@@ -629,7 +629,7 @@ async def end_trip(
     current_time = now_utc()
 
     # =========================
-    # 🚫 BLOCK IF STOPS NOT COMPLETED
+    # CHECK STOPS
     # =========================
     result = await session.execute(
         select(TripEvent).where(
@@ -646,11 +646,11 @@ async def end_trip(
     if incomplete_stops:
         raise HTTPException(
             400,
-            f"Cannot end trip. Some stops are not completed (arrival/departure missing). Count={len(incomplete_stops)}"
+            f"Stops incomplete: {len(incomplete_stops)} stop(s) missing arrival/departure"
         )
 
     # =========================
-    # 🚫 BLOCK IF PASSENGERS STILL IN BUS
+    # CHECK PASSENGERS
     # =========================
     boarded_result = await session.execute(
         select(func.count()).select_from(TripScanEvent).where(
@@ -671,7 +671,16 @@ async def end_trip(
     if boarded_count > dropped_count:
         raise HTTPException(
             400,
-            f"Cannot end trip. {boarded_count - dropped_count} passenger(s) still not dropped."
+            f"{boarded_count - dropped_count} passenger(s) still inside bus"
+        )
+
+    # =========================
+    # TIME CHECK (STRICT)
+    # =========================
+    if current_time < trip.planned_end_at:
+        raise HTTPException(
+            400,
+            f"Too early to end trip. Planned end at {to_ist(trip.planned_end_at)}"
         )
 
     # =========================
@@ -693,19 +702,22 @@ async def end_trip(
         raise HTTPException(400, "Last stop not found")
 
     # =========================
-    # ❌ EARLY END BLOCK
+    # GEO VALIDATION (FIXED)
     # =========================
-    if current_time < trip.planned_end_at:
+    distance = geodesic(
+        (float(last_stop.lat), float(last_stop.lng)),
+        (lat, lng)
+    ).meters
+
+    base_radius = last_stop.radius_meters or 0
+    gps_buffer = 50  # you can tune this
+    allowed_radius = base_radius + gps_buffer
+
+    if distance > allowed_radius:
         raise HTTPException(
             400,
-            "Trip cannot be ended before planned time. Use emergency end."
+            f"Driver not at last stop | distance={round(distance,2)}m | allowed={allowed_radius}m"
         )
-
-    # =========================
-    # 📍 GEO VALIDATION
-    # =========================
-    if not is_within_radius(last_stop, lat, lng):
-        raise HTTPException(400, "Use emergency end")
 
     # =========================
     # UPDATE TRIP
@@ -721,6 +733,10 @@ async def end_trip(
     return {
         "message": "Trip completed",
         "time": to_ist(trip.actual_end_at),
+        "geo_debug": {
+            "distance_m": round(distance, 2),
+            "allowed_radius_m": allowed_radius
+        },
         "passenger_check": {
             "boarded": boarded_count,
             "dropped": dropped_count
