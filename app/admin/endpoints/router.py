@@ -378,6 +378,54 @@ async def get_driver_details_vechicals(
 # -----------------------------
 # Admin: Specific Passenger Details Using User_id
 # -----------------------------
+# @router.get("/passenger/{user_id}")
+# async def get_passenger_details(
+# 	user_id: str, db: AsyncSession = Depends(get_async_session)
+# ):
+# 	service = AdminService(db)
+# 	p = await service.fetch_passenger_by_id(user_id)
+
+# 	if not p:
+# 		return {"error": "Passenger not found"}
+
+# 	return {
+# 		"user_id": p.id,
+# 		"email": p.email,
+# 		"joined_at": p.created_at,
+# 		"is_active": p.is_active,
+# 		"profile": {
+# 			"full_name": p.passenger_profile.full_name
+# 			if p.passenger_profile
+# 			else "Not Set",
+# 			"avatar": p.passenger_profile.profile_picture_path
+# 			if p.passenger_profile
+# 			else None,
+# 		},
+# 		"booking_history": {
+# 			"total_count": len(p.passenger_bookings),
+# 			"bookings": [
+# 				{
+# 					"booking_id": b.id,
+# 					"status": b.booking_status,
+# 					"fare": float(b.fare_amount),
+# 					"created_at": b.created_at,
+# 					"pickup_stop": {
+# 						"id": b.pickup_stop.id,
+# 						"name": b.pickup_stop.name,
+# 						"sequence": b.pickup_sequence_no_snapshot,
+# 					},
+# 					"dropoff_stop": {
+# 						"id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
+# 						"name": b.dropoff_stop.name,  # Ensure this says dropoff_stop
+# 						"sequence": b.dropoff_sequence_no_snapshot,
+# 					},
+# 				}
+# 				for b in p.passenger_bookings
+# 			],
+# 		},
+# 	}
+
+
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
 	user_id: str, db: AsyncSession = Depends(get_async_session)
@@ -387,6 +435,41 @@ async def get_passenger_details(
 
 	if not p:
 		return {"error": "Passenger not found"}
+
+	bookings_data = []
+	for booking in p.passenger_bookings:
+		# Find the drop scan event
+		drop_scan = None
+		for scan in booking.scan_events:
+			if scan.scan_type == schema.ScanType.DROP:
+				drop_scan = scan
+				break
+
+		booking_info = {
+			"booking_id": booking.id,
+			"status": booking.booking_status,
+			"fare": float(booking.fare_amount),
+			"created_at": booking.created_at,
+			"pickup_stop": {
+				"id": booking.pickup_stop.id,
+				"name": booking.pickup_stop.name,
+				"sequence": booking.pickup_sequence_no_snapshot,
+			},
+			"dropoff_stop": {
+				"id": booking.dropoff_stop.id,
+				"name": booking.dropoff_stop.name,
+				"sequence": booking.dropoff_sequence_no_snapshot,
+			},
+			# NEW: Actual drop information (where they actually got off)
+			"actual_drop_stop_id": drop_scan.matched_stop_id
+			if drop_scan
+			else None,
+			"actual_drop_stop_name": drop_scan.matched_stop.name
+			if drop_scan and drop_scan.matched_stop
+			else None,
+			"actual_dropped_at": drop_scan.created_at if drop_scan else None,
+		}
+		bookings_data.append(booking_info)
 
 	return {
 		"user_id": p.id,
@@ -403,25 +486,7 @@ async def get_passenger_details(
 		},
 		"booking_history": {
 			"total_count": len(p.passenger_bookings),
-			"bookings": [
-				{
-					"booking_id": b.id,
-					"status": b.booking_status,
-					"fare": float(b.fare_amount),
-					"created_at": b.created_at,
-					"pickup_stop": {
-						"id": b.pickup_stop.id,
-						"name": b.pickup_stop.name,
-						"sequence": b.pickup_sequence_no_snapshot,
-					},
-					"dropoff_stop": {
-						"id": b.dropoff_stop.id,  # Ensure this says dropoff_stop
-						"name": b.dropoff_stop.name,  # Ensure this says dropoff_stop
-						"sequence": b.dropoff_sequence_no_snapshot,
-					},
-				}
-				for b in p.passenger_bookings
-			],
+			"bookings": bookings_data,
 		},
 	}
 
