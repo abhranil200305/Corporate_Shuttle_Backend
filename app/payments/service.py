@@ -1330,7 +1330,7 @@ class RoutePayoutService:
             "email": cleaned_email,
             "phone": cleaned_phone,
             "legal_business_name": cleaned_full_name,
-            "business_type": "individual",
+            "business_type": "proprietorship",
             "contact_name": cleaned_full_name,
             "profile": {
                 "addresses": {
