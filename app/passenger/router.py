@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
+from datetime import datetime
 
 from app.auth.dependencies import get_current_active_user
 from app.db.database import get_async_session
@@ -31,9 +32,11 @@ from app.passenger.schemas import (
     PassengerTransactionHistoryResponse,
     RouteListResponse,
     RouteResponse,
+    RouteTripDiscoveryResponse,
     ScheduledTripDriverVehicleInfoResponse,
     ScheduledTripListResponse,
     ScheduledTripResponse,
+    StopListResponse,
     SupportTicketCreateResponse,
     SupportTicketListResponse,
     SupportTicketResponse,
@@ -89,6 +92,28 @@ async def upsert_profile_picture(
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
     return await service.upsert_profile_picture(current_user, file)
+
+@router.get("/route-trip-options", response_model=RouteTripDiscoveryResponse)
+async def discover_route_trip_options(
+    from_stop_id: str = Query(..., min_length=1, max_length=36),
+    to_stop_id: str = Query(..., min_length=1, max_length=36),
+    from_time: datetime | None = Query(default=None),
+    to_time: datetime | None = Query(default=None),
+    service: PassengerService = Depends(get_passenger_service),
+) -> RouteTripDiscoveryResponse:
+    return await service.discover_route_trip_options(
+        from_stop_id=from_stop_id,
+        to_stop_id=to_stop_id,
+        from_time=from_time,
+        to_time=to_time,
+    )
+
+@router.get("/stops", response_model=StopListResponse)
+async def list_stops(
+    active_only: bool = Query(default=True),
+    service: PassengerService = Depends(get_passenger_service),
+) -> StopListResponse:
+    return await service.list_stops(active_only=active_only)
 
 @router.get("/routes", response_model=RouteListResponse)
 async def list_routes(
