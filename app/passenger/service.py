@@ -2583,10 +2583,7 @@ class PassengerService:
             else str(booking.scheduled_trip.status)
         )
 
-        if (
-            booking.booking_status != BookingStatus.COMPLETED
-            or booking.scheduled_trip.status != ScheduledTripStatus.COMPLETED
-        ):
+        if booking.booking_status != BookingStatus.COMPLETED:
             raise HTTPException(
                 status_code=409,
                 detail={
