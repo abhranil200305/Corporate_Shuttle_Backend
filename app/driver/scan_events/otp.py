@@ -25,9 +25,6 @@ from app.db.schema import (
 router = APIRouter(prefix="/driver/otp", tags=["Driver OTP"])
 
 
-# =========================
-# REQUEST BODY
-# =========================
 class OTPVerifyRequest(BaseModel):
     otp_code: str
     lat: float
@@ -48,9 +45,6 @@ def haversine(lat1, lon1, lat2, lon2):
     return 6371 * c * 1000
 
 
-# =========================
-# OTP VERIFY
-# =========================
 @router.post("/{trip_id}/verify")
 async def verify_otp_scan(
     trip_id: str,
@@ -69,7 +63,7 @@ async def verify_otp_scan(
         raise HTTPException(403, "Not your trip")
 
     # =========================
-    # 2. FIND BOOKING USING OTP
+    # 2. FIND BOOKING
     # =========================
     result = await db.execute(
         select(TripBooking).where(
@@ -82,18 +76,12 @@ async def verify_otp_scan(
     if not booking:
         raise HTTPException(400, "Invalid OTP")
 
-    # =========================
-    # 3. VALID BOOKING STATE
-    # =========================
     if booking.booking_status not in [
         BookingStatus.BOOKED,
         BookingStatus.BOARDED,
     ]:
-        raise HTTPException(400, "Booking not valid for OTP scan")
+        raise HTTPException(400, "Booking not valid")
 
-    # =========================
-    # 4. DETECT TYPE
-    # =========================
     scan_type = (
         ScanType.BOARD
         if booking.booking_status == BookingStatus.BOOKED
@@ -101,39 +89,34 @@ async def verify_otp_scan(
     )
 
     # =========================
-    # 5. BLOCK DUPLICATE DROP
+    # BLOCK DUPLICATE DROP
     # =========================
     if scan_type == ScanType.DROP:
-        existing_drop = await db.execute(
+        existing = await db.execute(
             select(TripScanEvent).where(
                 TripScanEvent.booking_id == booking.id,
                 TripScanEvent.scan_type == ScanType.DROP
             )
         )
-        if existing_drop.scalar_one_or_none():
-            raise HTTPException(400, "Passenger already dropped")
+        if existing.scalar_one_or_none():
+            raise HTTPException(400, "Already dropped")
 
     # =========================
-    # 6. BOARD LOGIC
+    # BOARD LOGIC
     # =========================
     if scan_type == ScanType.BOARD:
         stop = await db.get(Stop, booking.pickup_stop_id)
 
-        if not stop:
-            raise HTTPException(404, "Stop not found")
-
         distance = haversine(
-            data.lat,
-            data.lng,
-            float(stop.lat),
-            float(stop.lng),
+            data.lat, data.lng,
+            float(stop.lat), float(stop.lng)
         )
 
         if distance > stop.radius_meters:
-            raise HTTPException(400, "Not within pickup stop radius")
+            raise HTTPException(400, "Outside pickup radius")
 
     # =========================
-    # 7. DROP LOGIC (FIXED)
+    # DROP LOGIC (FINAL FIX)
     # =========================
     else:
         route_stops = (await db.execute(
@@ -150,26 +133,25 @@ async def verify_otp_scan(
         if not pickup_rs or not drop_rs:
             raise HTTPException(400, "Invalid route stops")
 
-        # ✅ valid range only
-        valid_route_stops = [
+        # ✅ valid stops only
+        valid_rs = [
             rs for rs in route_stops
             if pickup_rs.sequence_no < rs.sequence_no <= drop_rs.sequence_no
         ]
 
-        # fetch stops
         stops = (await db.execute(
             select(Stop).where(
-                Stop.id.in_([rs.stop_id for rs in valid_route_stops])
+                Stop.id.in_([rs.stop_id for rs in valid_rs])
             )
         )).scalars().all()
 
         stop_map = {s.id: s for s in stops}
 
         matched_stop = None
-        distance = None
+        min_distance = float("inf")
 
-        # 🔥 KEY FIX: SEQUENCE ORDER MATCH
-        for rs in valid_route_stops:
+        # 🔥 FINAL FIX: CLOSEST MATCH ONLY
+        for rs in valid_rs:
             s = stop_map.get(rs.stop_id)
             if not s:
                 continue
@@ -181,18 +163,18 @@ async def verify_otp_scan(
                 float(s.lng),
             )
 
-            if dist <= s.radius_meters:
+            if dist <= s.radius_meters and dist < min_distance:
                 matched_stop = s
-                distance = dist
-                break   # ✅ FIRST MATCH → NO RANDOMNESS
+                min_distance = dist
 
         if not matched_stop:
-            raise HTTPException(400, "Not within any valid drop stop")
+            raise HTTPException(400, "Not inside any valid stop")
 
         stop = matched_stop
+        distance = min_distance
 
     # =========================
-    # 8. SAVE SCAN EVENT
+    # SAVE EVENT
     # =========================
     scan_event = TripScanEvent(
         scheduled_trip_id=trip_id,
@@ -201,38 +183,27 @@ async def verify_otp_scan(
         scan_type=scan_type,
         scan_lat=Decimal(str(data.lat)),
         scan_lng=Decimal(str(data.lng)),
-        matched_stop_id=stop.id,
+        matched_stop_id=stop.id,   # ✅ ALWAYS CORRECT NOW
         within_radius=True,
         qr_payload_user_id=booking.passenger_user_id,
     )
 
     db.add(scan_event)
 
-    # =========================
-    # 9. UPDATE BOOKING
-    # =========================
     now = datetime.now(timezone.utc)
 
     if scan_type == ScanType.BOARD:
         booking.booking_status = BookingStatus.BOARDED
         booking.boarded_at = now
         booking.boarded_near_stop_id = stop.id
-
     else:
         booking.booking_status = BookingStatus.COMPLETED
         booking.completed_at = now
         booking.completed_near_stop_id = stop.id
 
     db.add(booking)
-
-    # =========================
-    # 10. COMMIT
-    # =========================
     await db.commit()
 
-    # =========================
-    # RESPONSE
-    # =========================
     return {
         "message": "OTP verified successfully",
         "scan_type": scan_type.value,
