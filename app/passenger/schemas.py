@@ -397,3 +397,30 @@ class CreateBookingRatingRequest(BaseModel):
 class BookingRatingMutationResponse(BaseModel):
     message: str
     rating: BookingRatingResponse
+
+class PassengerTransactionResponse(BaseModel):
+    payment_id: str
+    booking_id: str
+    scheduled_trip_id: str
+    route_id: str
+    booking_status: str
+    payment_status: str
+    effective_status: str
+    amount: Decimal
+    razorpay_order_id: str
+    razorpay_payment_id: str | None
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    route_name: str | None
+    route_code: str | None
+    planned_start_at: datetime | None
+    planned_end_at: datetime | None
+    completed_at: datetime | None
+    cancelled_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerTransactionHistoryResponse(BaseModel):
+    items: list[PassengerTransactionResponse]
+    count: int

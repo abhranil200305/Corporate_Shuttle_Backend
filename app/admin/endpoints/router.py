@@ -266,11 +266,9 @@ async def get_driver_details(
 			"verification": d.vehicle.verification_status
 			if d.vehicle
 			else "N/A",
-			"rc_file_path": d.vehicle.rc_file_path
-			if (d and d.vehicle.rc_file_path)
-			else "NA",
+			"rc_file_path": d.vehicle.rc_file_path if d.vehicle else "NA",
 			"rear_photo_file_path": d.vehicle.rear_photo_file_path
-			if (d and d.vehicle.rear_photo_file_path)
+			if d.vehicle
 			else "NA",
 			"vechical_verification_req_date": d.vehicle.verification_requested_at
 			if d.vehicle
@@ -1337,6 +1335,64 @@ async def premature_end_trip(
 # -----------------------------
 
 
+# @router.get("/trips/{trip_id}")
+# async def get_specific_trip_status(
+# 	trip_id: str, db: AsyncSession = Depends(get_async_session)
+# ):
+# 	service = AdminService(db)
+# 	trip = await service.get_trip_by_id(trip_id)
+
+# 	if not trip:
+# 		raise HTTPException(status_code=404, detail="Trip not found")
+
+
+# 	return {
+# 		"trip_id": trip.id,
+# 		"status": trip.status,
+# 		"route": {"name": trip.route.name, "code": trip.route.code},
+# 		"assignment": {
+# 			# FIX: Access .driver_profile.full_name
+# 			"driver": trip.driver.driver_profile.full_name
+# 			if trip.driver and trip.driver.driver_profile
+# 			else "No Driver Assigned",
+# 			"vehicle": trip.vehicle.registration_number,
+# 		},
+# 		"timing": {
+# 			"planned_start": trip.planned_start_at,
+# 			"actual_start": trip.actual_start_at,
+# 			"planned_end": trip.planned_end_at,
+# 			"actual_end": trip.actual_end_at,
+# 		},
+# 		"cancelation": {
+# 			"cancellation_reason": trip.cancellation_reason if trip else "N/A",
+# 			"premature_end_reason": trip.premature_end_reason
+# 			if trip
+# 			else "N/A",
+# 		},
+# 		"occupancy": {
+# 			"total_bookings": len(trip.bookings),
+# 			"passengers": [
+# 				{
+# 					# FIX: Access .passenger_profile.full_name
+# 					"passenger_id": b.passenger.passenger_profile.user_id,
+# 					"name": b.passenger.passenger_profile.full_name
+# 					if b.passenger and b.passenger.passenger_profile
+# 					else "Unknown Passenger",
+# 					"status": b.booking_status,
+# 					"pickup_stop_id": b.pickup_stop_id,
+# 					"pickup_stop_name": b.pickup_stop.name
+# 					if b.pickup_stop
+# 					else None,
+# 					"dropoff_stop_id": b.dropoff_stop_id,
+# 					"dropoff_stop_name": b.dropoff_stop.name
+# 					if b.dropoff_stop
+# 					else None,
+# 				}
+# 				for b in trip.bookings
+# 			],
+# 		},
+# 		"admin_note": trip.admin_note,
+# 	}
 @router.get("/trips/{trip_id}")
 async def get_specific_trip_status(
 	trip_id: str, db: AsyncSession = Depends(get_async_session)
@@ -1347,12 +1403,54 @@ async def get_specific_trip_status(
 	if not trip:
 		raise HTTPException(status_code=404, detail="Trip not found")
 
+	passengers_data = []
+	for booking in trip.bookings:
+		# Safely access eagerly loaded relationships
+		# These won't trigger lazy loading now
+		pickup_stop_name = (
+			booking.pickup_stop.name if booking.pickup_stop else None
+		)
+		dropoff_stop_name = (
+			booking.dropoff_stop.name if booking.dropoff_stop else None
+		)
+
+		# Find drop scan event from eagerly loaded scan_events
+		drop_scan = None
+
+		# Scan events are already loaded via joinedload
+		for scan in booking.scan_events:
+			if scan.scan_type == schema.ScanType.DROP:
+				drop_scan = scan
+			elif scan.scan_type == schema.ScanType.BOARD:
+				pass
+
+		passenger_info = {
+			"passenger_id": booking.passenger.passenger_profile.user_id,
+			"name": booking.passenger.passenger_profile.full_name
+			if booking.passenger and booking.passenger.passenger_profile
+			else "Unknown Passenger",
+			"status": booking.booking_status,
+			# Booked locations
+			"pickup_stop_id": booking.pickup_stop_id,
+			"pickup_stop_name": pickup_stop_name,
+			"dropoff_stop_id": booking.dropoff_stop_id,
+			"dropoff_stop_name": dropoff_stop_name,
+			# Actual drop location from scan event
+			"actual_drop_stop_id": drop_scan.matched_stop_id
+			if drop_scan
+			else None,
+			"actual_drop_stop_name": drop_scan.matched_stop.name
+			if drop_scan and drop_scan.matched_stop
+			else None,
+			"actual_dropped_at": drop_scan.created_at if drop_scan else None,
+		}
+		passengers_data.append(passenger_info)
+
 	return {
 		"trip_id": trip.id,
 		"status": trip.status,
 		"route": {"name": trip.route.name, "code": trip.route.code},
 		"assignment": {
-			# FIX: Access .driver_profile.full_name
 			"driver": trip.driver.driver_profile.full_name
 			if trip.driver and trip.driver.driver_profile
 			else "No Driver Assigned",
@@ -1372,17 +1470,7 @@ async def get_specific_trip_status(
 		},
 		"occupancy": {
 			"total_bookings": len(trip.bookings),
-			"passengers": [
-				{
-					# FIX: Access .passenger_profile.full_name
-					"passenger_id": b.passenger.passenger_profile.user_id,
-					"name": b.passenger.passenger_profile.full_name
-					if b.passenger and b.passenger.passenger_profile
-					else "Unknown Passenger",
-					"status": b.booking_status,
-				}
-				for b in trip.bookings
-			],
+			"passengers": passengers_data,
 		},
 		"admin_note": trip.admin_note,
 	}

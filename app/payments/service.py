@@ -1087,7 +1087,6 @@ class RoutePayoutService:
                 status=BookingTransferStatus.CREATED,
             )
             self.db.add(transfer)
-            await self.db.flush()
         else:
             transfer.driver_user_id = booking.scheduled_trip.driver_user_id
             transfer.source_booking_payment_id = source_payment.id
@@ -1095,13 +1094,18 @@ class RoutePayoutService:
             transfer.amount = net_transfer_amount
             transfer.status = BookingTransferStatus.CREATED
             transfer.failure_reason = None
+            transfer.razorpay_transfer_id = None
+            transfer.processed_at = None
             self.db.add(transfer)
-            await self.db.flush()
+
+        # Keep current-session ORM state coherent.
+        booking.transfer = transfer
+        await self.db.flush()
 
         booking.withheld_at = None
         self.db.add(booking)
 
-        # Persist commercial readiness before provider I/O.
+        # Persist local readiness before provider I/O.
         await self.db.commit()
 
         try:
@@ -1112,30 +1116,42 @@ class RoutePayoutService:
                 booking=booking,
             )
         except HTTPException as exc:
-            booking = await self._get_booking_obj(booking_id)
-            if booking.transfer is not None:
-                booking.transfer.status = BookingTransferStatus.FAILED
-                booking.transfer.failure_reason = (
-                    exc.detail.get("message")
-                    if isinstance(exc.detail, dict)
-                    else str(exc.detail)
-                )
-                self.db.add(booking.transfer)
+            failure_reason = None
+            if isinstance(exc.detail, dict):
+                provider_error = exc.detail.get("provider_response")
+                if isinstance(provider_error, dict):
+                    nested_error = provider_error.get("error")
+                    if isinstance(nested_error, dict):
+                        failure_reason = (
+                            nested_error.get("description")
+                            or nested_error.get("reason")
+                        )
+                if not failure_reason:
+                    failure_reason = exc.detail.get("message")
 
+            if not failure_reason:
+                failure_reason = str(exc.detail)
+
+            transfer.status = BookingTransferStatus.FAILED
+            transfer.failure_reason = str(failure_reason)
+
+            booking.transfer = transfer
             booking.transfer_status = TransferStatus.FAILED
+
+            self.db.add(transfer)
             self.db.add(booking)
             await self.db.commit()
             raise
 
         items = provider_response.get("items") or []
         if not items:
-            booking = await self._get_booking_obj(booking_id)
-            if booking.transfer is not None:
-                booking.transfer.status = BookingTransferStatus.FAILED
-                booking.transfer.failure_reason = "Provider response did not contain transfer items."
-                self.db.add(booking.transfer)
+            transfer.status = BookingTransferStatus.FAILED
+            transfer.failure_reason = "Provider response did not contain transfer items."
 
+            booking.transfer = transfer
             booking.transfer_status = TransferStatus.FAILED
+
+            self.db.add(transfer)
             self.db.add(booking)
             await self.db.commit()
 
@@ -1152,43 +1168,43 @@ class RoutePayoutService:
         provider_transfer_status = provider_transfer.get("status")
         provider_error = provider_transfer.get("error")
 
-        booking = await self._get_booking_obj(booking_id)
-        if booking.transfer is None:
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "error": "transfer_row_missing_after_provider_call",
-                    "message": "Transfer row is missing after provider call.",
-                },
-            )
-
         mapped_transfer_status, mapped_booking_status = self._map_provider_transfer_status(
             str(provider_transfer_status or "")
         )
 
-        booking.transfer.razorpay_transfer_id = provider_transfer_id
-        booking.transfer.status = mapped_transfer_status
-        booking.transfer.failure_reason = None if not provider_error else str(provider_error)
+        provider_error_text = None
+        if provider_error:
+            if isinstance(provider_error, dict):
+                provider_error_text = (
+                    provider_error.get("description")
+                    or provider_error.get("reason")
+                    or str(provider_error)
+                )
+            else:
+                provider_error_text = str(provider_error)
 
+        transfer.razorpay_transfer_id = provider_transfer_id
+        transfer.status = mapped_transfer_status
+        transfer.failure_reason = provider_error_text
+
+        booking.transfer = transfer
         booking.transfer_status = mapped_booking_status
 
         if mapped_transfer_status == BookingTransferStatus.PROCESSED:
-            booking.transfer.processed_at = utcnow()
-            booking.transfer_processed_at = booking.transfer.processed_at
+            transfer.processed_at = utcnow()
+            booking.transfer_status = TransferStatus.TRANSFERRED
+            booking.transfer_processed_at = transfer.processed_at
 
         created_applications: list[PayoutAdjustmentApplication] = []
-        if (
-            normalized_allocations
-            and mapped_transfer_status == BookingTransferStatus.PROCESSED
-        ):
+        if normalized_allocations and mapped_transfer_status == BookingTransferStatus.PROCESSED:
             created_applications = await self._create_adjustment_applications(
                 booking=booking,
-                booking_transfer_id=booking.transfer.id,
+                booking_transfer_id=transfer.id,
                 applied_by_admin_id=applied_by_admin_id,  # type: ignore[arg-type]
                 normalized_allocations=normalized_allocations,
             )
 
-        self.db.add(booking.transfer)
+        self.db.add(transfer)
         self.db.add(booking)
         await self.db.commit()
 
@@ -1330,7 +1346,7 @@ class RoutePayoutService:
             "email": cleaned_email,
             "phone": cleaned_phone,
             "legal_business_name": cleaned_full_name,
-            "business_type": "individual",
+            "business_type": "proprietorship",
             "contact_name": cleaned_full_name,
             "profile": {
                 "addresses": {

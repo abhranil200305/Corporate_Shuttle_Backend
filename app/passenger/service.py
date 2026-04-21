@@ -1053,6 +1053,50 @@ class PassengerService:
             "segment_stops": self._serialize_segment_stops(booking),
         }
     
+    @staticmethod
+    def _get_transaction_effective_status(
+        booking: TripBooking,
+        payment: BookingPayment,
+    ) -> str:
+        if payment.status == BookingPaymentStatus.REFUNDED:
+            return "refunded"
+
+        if (
+            booking.booking_status == BookingStatus.CANCELLED
+            and payment.status == BookingPaymentStatus.PAID
+        ):
+            return "refund_pending"
+
+        return payment.status.value
+
+    def _serialize_transaction(self, payment: BookingPayment) -> dict[str, Any]:
+        booking = payment.booking
+        route = booking.route
+        trip = booking.scheduled_trip
+
+        return {
+            "payment_id": payment.id,
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "booking_status": booking.booking_status,
+            "payment_status": payment.status,
+            "effective_status": self._get_transaction_effective_status(booking, payment),
+            "amount": payment.amount,
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "route_name": None if route is None else route.name,
+            "route_code": None if route is None else route.code,
+            "planned_start_at": None if trip is None else trip.planned_start_at,
+            "planned_end_at": None if trip is None else trip.planned_end_at,
+            "completed_at": booking.completed_at,
+            "cancelled_at": booking.cancelled_at,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+        }
+    
     def _get_notification_service(self) -> NotificationService:
         return NotificationService(
             db=self.db,
@@ -2636,6 +2680,83 @@ class PassengerService:
         return {
             "items": [self._serialize_booking(booking) for booking in bookings],
             "count": len(bookings),
+        }
+    
+    async def list_transaction_history(
+        self,
+        current_user: User,
+        *,
+        status: BookingPaymentStatus | None = None,
+        month: int | None = None,
+        year: int | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        if month is not None and year is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "year_required_for_month_filter",
+                    "message": "year is required when month filter is provided.",
+                },
+            )
+
+        stmt = (
+            select(BookingPayment)
+            .join(TripBooking, TripBooking.id == BookingPayment.booking_id)
+            .where(TripBooking.passenger_user_id == current_user.id)
+            .options(
+                selectinload(BookingPayment.booking).selectinload(TripBooking.pickup_stop),
+                selectinload(BookingPayment.booking).selectinload(TripBooking.dropoff_stop),
+                selectinload(BookingPayment.booking).selectinload(TripBooking.route),
+                selectinload(BookingPayment.booking).selectinload(TripBooking.scheduled_trip),
+            )
+            .order_by(BookingPayment.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+
+        count_stmt = (
+            select(func.count(BookingPayment.id))
+            .join(TripBooking, TripBooking.id == BookingPayment.booking_id)
+            .where(TripBooking.passenger_user_id == current_user.id)
+        )
+
+        if status is not None:
+            stmt = stmt.where(BookingPayment.status == status)
+            count_stmt = count_stmt.where(BookingPayment.status == status)
+        else:
+            visible_statuses = (
+                BookingPaymentStatus.PAID,
+                BookingPaymentStatus.FAILED,
+                BookingPaymentStatus.REFUNDED,
+            )
+            stmt = stmt.where(BookingPayment.status.in_(visible_statuses))
+            count_stmt = count_stmt.where(BookingPayment.status.in_(visible_statuses))
+
+        if year is not None:
+            stmt = stmt.where(func.extract("year", BookingPayment.created_at) == year)
+            count_stmt = count_stmt.where(
+                func.extract("year", BookingPayment.created_at) == year
+            )
+
+        if month is not None:
+            stmt = stmt.where(func.extract("month", BookingPayment.created_at) == month)
+            count_stmt = count_stmt.where(
+                func.extract("month", BookingPayment.created_at) == month
+            )
+
+        result = await self.db.execute(stmt)
+        payments = result.scalars().unique().all()
+
+        count_result = await self.db.execute(count_stmt)
+        total_count = int(count_result.scalar_one() or 0)
+
+        return {
+            "items": [self._serialize_transaction(payment) for payment in payments],
+            "count": total_count,
         }
 
     # ------------------------------------------------------------------
