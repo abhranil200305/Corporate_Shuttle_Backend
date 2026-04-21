@@ -31,6 +31,7 @@ from app.jobs.vehicle_registration_expiry_reminder import (
 from app.jobs.vehicle_inspection_status_reminder import (
     vehicle_inspection_status_reminder_loop,
 )
+from app.driver.trips.drop_events import router as drop_events_router
 from app.passenger.router import router as passenger_route
 from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
@@ -199,6 +200,7 @@ app.include_router(otp_router)
 app.include_router(driver_trip_router)
 app.include_router(fines_router)
 app.include_router(stop_passengers_router)
+app.include_router(drop_events_router)
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",
