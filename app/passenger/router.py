@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user
 from app.db.database import get_async_session
-from app.db.schema import BookingStatus, User
+from app.db.schema import BookingPaymentStatus, BookingStatus, User
 from app.notifications.hub import WSHub
 from app.passenger.schemas import (
     BookingCreateResponse,
@@ -36,6 +36,7 @@ from app.passenger.schemas import (
     SupportTicketListResponse,
     SupportTicketResponse,
     VerifyBookingPaymentRequest,
+    PassengerTransactionHistoryResponse
 )
 from app.passenger.service import PassengerService
 
@@ -204,6 +205,25 @@ async def list_history(
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingListResponse:
     return await service.list_history(current_user)
+
+@router.get("/transactions", response_model=PassengerTransactionHistoryResponse)
+async def list_transaction_history(
+    status: BookingPaymentStatus | None = Query(default=None),
+    month: int | None = Query(default=None, ge=1, le=12),
+    year: int | None = Query(default=None, ge=2000, le=2100),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerTransactionHistoryResponse:
+    return await service.list_transaction_history(
+        current_user,
+        status=status,
+        month=month,
+        year=year,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @router.get("/bookings/{booking_id}", response_model=BookingDetailResponse)
