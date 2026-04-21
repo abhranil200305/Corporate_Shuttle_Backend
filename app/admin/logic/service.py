@@ -1064,10 +1064,7 @@ class AdminService:
 				"completed_at": now.isoformat(),
 				"booked_passengers_updated": booked_result.rowcount
 				if hasattr(booked_result, "rowcount")
-				else 0,
-				"missed_passengers_updated": missed_result.rowcount
-				if hasattr(missed_result, "rowcount")
-				else 0,
+				else 0
 			}
 
 		except HTTPException:
