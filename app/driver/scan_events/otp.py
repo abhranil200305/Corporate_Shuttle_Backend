@@ -58,9 +58,9 @@ async def verify_otp_scan(
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
-    # =========================================
+    # =========================
     # 1. TRIP VALIDATION
-    # =========================================
+    # =========================
     trip = await db.get(ScheduledTrip, trip_id)
     if not trip:
         raise HTTPException(404, "Trip not found")
@@ -68,9 +68,9 @@ async def verify_otp_scan(
     if trip.driver_user_id != current_user.id:
         raise HTTPException(403, "Not your trip")
 
-    # =========================================
+    # =========================
     # 2. FIND BOOKING USING OTP
-    # =========================================
+    # =========================
     result = await db.execute(
         select(TripBooking).where(
             TripBooking.scheduled_trip_id == trip_id,
@@ -82,26 +82,27 @@ async def verify_otp_scan(
     if not booking:
         raise HTTPException(400, "Invalid OTP")
 
-    # =========================================
+    # =========================
     # 3. VALID BOOKING STATE
-    # =========================================
+    # =========================
     if booking.booking_status not in [
         BookingStatus.BOOKED,
         BookingStatus.BOARDED,
     ]:
         raise HTTPException(400, "Booking not valid for OTP scan")
 
-    # =========================================
+    # =========================
     # 4. DETECT TYPE
-    # =========================================
-    if booking.booking_status == BookingStatus.BOOKED:
-        scan_type = ScanType.BOARD
-    else:
-        scan_type = ScanType.DROP
+    # =========================
+    scan_type = (
+        ScanType.BOARD
+        if booking.booking_status == BookingStatus.BOOKED
+        else ScanType.DROP
+    )
 
-    # =========================================
-    # 🔥 BLOCK duplicate DROP ONLY
-    # =========================================
+    # =========================
+    # 5. BLOCK DUPLICATE DROP
+    # =========================
     if scan_type == ScanType.DROP:
         existing_drop = await db.execute(
             select(TripScanEvent).where(
@@ -112,9 +113,9 @@ async def verify_otp_scan(
         if existing_drop.scalar_one_or_none():
             raise HTTPException(400, "Passenger already dropped")
 
-    # =========================================
-    # 5. BOARD LOGIC
-    # =========================================
+    # =========================
+    # 6. BOARD LOGIC
+    # =========================
     if scan_type == ScanType.BOARD:
         stop = await db.get(Stop, booking.pickup_stop_id)
 
@@ -131,9 +132,9 @@ async def verify_otp_scan(
         if distance > stop.radius_meters:
             raise HTTPException(400, "Not within pickup stop radius")
 
-    # =========================================
-    # 6. DROP LOGIC (EARLY DROP SUPPORTED)
-    # =========================================
+    # =========================
+    # 7. DROP LOGIC (FIXED)
+    # =========================
     else:
         route_stops = (await db.execute(
             select(RouteStop)
@@ -149,21 +150,30 @@ async def verify_otp_scan(
         if not pickup_rs or not drop_rs:
             raise HTTPException(400, "Invalid route stops")
 
-        # 🔥 allows early drop (stop3 instead of stop5)
-        valid_stop_ids = [
-            rs.stop_id
-            for rs in route_stops
+        # ✅ valid range only
+        valid_route_stops = [
+            rs for rs in route_stops
             if pickup_rs.sequence_no < rs.sequence_no <= drop_rs.sequence_no
         ]
 
-        valid_stops = (await db.execute(
-            select(Stop).where(Stop.id.in_(valid_stop_ids))
+        # fetch stops
+        stops = (await db.execute(
+            select(Stop).where(
+                Stop.id.in_([rs.stop_id for rs in valid_route_stops])
+            )
         )).scalars().all()
 
-        matched_stop = None
-        matched_distance = None
+        stop_map = {s.id: s for s in stops}
 
-        for s in valid_stops:
+        matched_stop = None
+        distance = None
+
+        # 🔥 KEY FIX: SEQUENCE ORDER MATCH
+        for rs in valid_route_stops:
+            s = stop_map.get(rs.stop_id)
+            if not s:
+                continue
+
             dist = haversine(
                 data.lat,
                 data.lng,
@@ -172,19 +182,18 @@ async def verify_otp_scan(
             )
 
             if dist <= s.radius_meters:
-                if matched_stop is None or dist < matched_distance:
-                    matched_stop = s
-                    matched_distance = dist
+                matched_stop = s
+                distance = dist
+                break   # ✅ FIRST MATCH → NO RANDOMNESS
 
         if not matched_stop:
             raise HTTPException(400, "Not within any valid drop stop")
 
         stop = matched_stop
-        distance = matched_distance
 
-    # =========================================
-    # 7. SAVE SCAN EVENT
-    # =========================================
+    # =========================
+    # 8. SAVE SCAN EVENT
+    # =========================
     scan_event = TripScanEvent(
         scheduled_trip_id=trip_id,
         booking_id=booking.id,
@@ -199,9 +208,9 @@ async def verify_otp_scan(
 
     db.add(scan_event)
 
-    # =========================================
-    # 8. UPDATE BOOKING
-    # =========================================
+    # =========================
+    # 9. UPDATE BOOKING
+    # =========================
     now = datetime.now(timezone.utc)
 
     if scan_type == ScanType.BOARD:
@@ -216,14 +225,14 @@ async def verify_otp_scan(
 
     db.add(booking)
 
-    # =========================================
-    # 9. COMMIT
-    # =========================================
+    # =========================
+    # 10. COMMIT
+    # =========================
     await db.commit()
 
-    # =========================================
+    # =========================
     # RESPONSE
-    # =========================================
+    # =========================
     return {
         "message": "OTP verified successfully",
         "scan_type": scan_type.value,

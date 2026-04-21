@@ -134,7 +134,7 @@ async def scan_passenger(
         raise HTTPException(400, "Invalid booking state")
 
     # =========================
-    # 🔥 BLOCK duplicate DROP ONLY
+    # BLOCK duplicate DROP
     # =========================
     if scan_type == ScanType.DROP:
         existing_drop = await db.execute(
@@ -164,7 +164,7 @@ async def scan_passenger(
             raise HTTPException(400, "Not within pickup stop radius")
 
     # =========================
-    # 6. DROP LOGIC (EARLY DROP SUPPORTED)
+    # 6. DROP LOGIC (FIXED 🔥)
     # =========================
     else:
         route_stops = (await db.execute(
@@ -181,21 +181,29 @@ async def scan_passenger(
         if not pickup_rs or not drop_rs:
             raise HTTPException(400, "Invalid route stops")
 
-        # 🔥 KEY: allows early drop
-        valid_stop_ids = [
-            rs.stop_id
-            for rs in route_stops
+        # ✅ valid sequence range
+        valid_route_stops = [
+            rs for rs in route_stops
             if pickup_rs.sequence_no < rs.sequence_no <= drop_rs.sequence_no
         ]
 
-        valid_stops = (await db.execute(
-            select(Stop).where(Stop.id.in_(valid_stop_ids))
+        stops = (await db.execute(
+            select(Stop).where(
+                Stop.id.in_([rs.stop_id for rs in valid_route_stops])
+            )
         )).scalars().all()
 
-        matched_stop = None
-        matched_distance = None
+        stop_map = {s.id: s for s in stops}
 
-        for s in valid_stops:
+        matched_stop = None
+        distance = None
+
+        # 🔥 FIX: SEQUENCE ORDER MATCHING
+        for rs in valid_route_stops:
+            s = stop_map.get(rs.stop_id)
+            if not s:
+                continue
+
             dist = haversine(
                 data.lat,
                 data.lng,
@@ -204,15 +212,14 @@ async def scan_passenger(
             )
 
             if dist <= s.radius_meters:
-                if matched_stop is None or dist < matched_distance:
-                    matched_stop = s
-                    matched_distance = dist
+                matched_stop = s
+                distance = dist
+                break   # ✅ FIRST MATCH ONLY
 
         if not matched_stop:
             raise HTTPException(400, "Not within any valid drop stop")
 
         stop = matched_stop
-        distance = matched_distance
 
     # =========================
     # 7. SAVE SCAN
@@ -237,7 +244,6 @@ async def scan_passenger(
         booking.booking_status = BookingStatus.BOARDED
         booking.boarded_at = now
         booking.boarded_near_stop_id = stop.id
-
     else:
         booking.booking_status = BookingStatus.COMPLETED
         booking.completed_at = now
