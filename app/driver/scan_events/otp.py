@@ -18,7 +18,7 @@ from app.db.schema import (
     ScanType,
     BookingStatus,
     Stop,
-    RouteStop,   # ✅ NEW
+    RouteStop,
     User,
 )
 
@@ -96,12 +96,24 @@ async def verify_otp_scan(
     # =========================================
     if booking.booking_status == BookingStatus.BOOKED:
         scan_type = ScanType.BOARD
-
     else:
         scan_type = ScanType.DROP
 
     # =========================================
-    # 5. BOARD LOGIC (NO CHANGE)
+    # 🔥 BLOCK duplicate DROP ONLY
+    # =========================================
+    if scan_type == ScanType.DROP:
+        existing_drop = await db.execute(
+            select(TripScanEvent).where(
+                TripScanEvent.booking_id == booking.id,
+                TripScanEvent.scan_type == ScanType.DROP
+            )
+        )
+        if existing_drop.scalar_one_or_none():
+            raise HTTPException(400, "Passenger already dropped")
+
+    # =========================================
+    # 5. BOARD LOGIC
     # =========================================
     if scan_type == ScanType.BOARD:
         stop = await db.get(Stop, booking.pickup_stop_id)
@@ -120,16 +132,14 @@ async def verify_otp_scan(
             raise HTTPException(400, "Not within pickup stop radius")
 
     # =========================================
-    # 🔥 DROP LOGIC (UPDATED SAME AS QR)
+    # 6. DROP LOGIC (EARLY DROP SUPPORTED)
     # =========================================
     else:
-        # 1. Get ordered route stops
-        route_stops_result = await db.execute(
+        route_stops = (await db.execute(
             select(RouteStop)
             .where(RouteStop.route_id == booking.route_id)
             .order_by(RouteStop.sequence_no)
-        )
-        route_stops = route_stops_result.scalars().all()
+        )).scalars().all()
 
         route_map = {rs.stop_id: rs for rs in route_stops}
 
@@ -139,34 +149,31 @@ async def verify_otp_scan(
         if not pickup_rs or not drop_rs:
             raise HTTPException(400, "Invalid route stops")
 
-        # 2. Valid range
+        # 🔥 allows early drop (stop3 instead of stop5)
         valid_stop_ids = [
             rs.stop_id
             for rs in route_stops
             if pickup_rs.sequence_no < rs.sequence_no <= drop_rs.sequence_no
         ]
 
-        # 3. Fetch stops
-        stops_result = await db.execute(
+        valid_stops = (await db.execute(
             select(Stop).where(Stop.id.in_(valid_stop_ids))
-        )
-        valid_stops = stops_result.scalars().all()
+        )).scalars().all()
 
-        # 4. Find nearest valid stop
         matched_stop = None
         matched_distance = None
 
-        for stop in valid_stops:
+        for s in valid_stops:
             dist = haversine(
                 data.lat,
                 data.lng,
-                float(stop.lat),
-                float(stop.lng),
+                float(s.lat),
+                float(s.lng),
             )
 
-            if dist <= stop.radius_meters:
+            if dist <= s.radius_meters:
                 if matched_stop is None or dist < matched_distance:
-                    matched_stop = stop
+                    matched_stop = s
                     matched_distance = dist
 
         if not matched_stop:
@@ -176,7 +183,7 @@ async def verify_otp_scan(
         distance = matched_distance
 
     # =========================================
-    # 6. SAVE SCAN EVENT
+    # 7. SAVE SCAN EVENT
     # =========================================
     scan_event = TripScanEvent(
         scheduled_trip_id=trip_id,
@@ -193,7 +200,7 @@ async def verify_otp_scan(
     db.add(scan_event)
 
     # =========================================
-    # 7. UPDATE BOOKING
+    # 8. UPDATE BOOKING
     # =========================================
     now = datetime.now(timezone.utc)
 
@@ -210,7 +217,7 @@ async def verify_otp_scan(
     db.add(booking)
 
     # =========================================
-    # 8. COMMIT
+    # 9. COMMIT
     # =========================================
     await db.commit()
 
