@@ -1378,6 +1378,14 @@ async def get_specific_trip_status(
 					if b.passenger and b.passenger.passenger_profile
 					else "Unknown Passenger",
 					"status": b.booking_status,
+					"pickup_stop_id": b.pickup_stop_id,
+					"pickup_stop_name": b.pickup_stop.name
+					if b.pickup_stop
+					else None,
+					"dropoff_stop_id": b.dropoff_stop_id,
+					"dropoff_stop_name": b.dropoff_stop.name
+					if b.dropoff_stop
+					else None,
 				}
 				for b in trip.bookings
 			],
