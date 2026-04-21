@@ -335,6 +335,10 @@ class AdminService:
 				.joinedload(
 					schema.User.passenger_profile
 				),  # <--- Add this deep join
+				joinedload(schema.ScheduledTrip.bookings)
+				.joinedload(schema.TripBooking.pickup_stop),
+				joinedload(schema.ScheduledTrip.bookings)
+				.joinedload(schema.TripBooking.dropoff_stop),
 			)
 			.where(schema.ScheduledTrip.id == trip_id)
 		)
