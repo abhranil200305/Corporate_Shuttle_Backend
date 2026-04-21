@@ -258,6 +258,52 @@ class BookingDetailResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+
+class PassengerInvoicePartyResponse(BaseModel):
+    user_id: str
+    full_name: str | None
+    email: str | None
+
+
+class PassengerInvoiceTripResponse(BaseModel):
+    scheduled_trip_id: str
+    route_id: str
+    route_name: str | None
+    route_code: str | None
+    is_ac: bool
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    planned_start_at: datetime | None
+    planned_end_at: datetime | None
+    actual_start_at: datetime | None
+    actual_end_at: datetime | None
+    completed_at: datetime | None
+
+
+class PassengerInvoiceBreakdownResponse(BaseModel):
+    total_booking_amount: Decimal
+    divisor_used: Decimal
+    taxable_value: Decimal
+    cgst_rate_percent: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent: Decimal
+    sgst_amount: Decimal
+    total_tax_amount: Decimal
+    recomputed_total_amount: Decimal
+    rounding_adjustment: Decimal
+
+
+class PassengerInvoiceResponse(BaseModel):
+    invoice_number: str
+    booking_id: str
+    invoice_generated_at: datetime
+    invoice_status: str
+    passenger: PassengerInvoicePartyResponse
+    trip: PassengerInvoiceTripResponse
+    breakdown: PassengerInvoiceBreakdownResponse
+    payment: BookingPaymentResponse | None
+
+    
 class CurrentTripBookingResponse(BaseModel):
     id: str
     passenger_user_id: str

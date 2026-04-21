@@ -24,9 +24,11 @@ from app.passenger.schemas import (
     FarePreviewResponse,
     LegAvailableSeatsRequest,
     LegAvailableSeatsResponse,
+    PassengerInvoiceResponse,
     PassengerProfileMutationResponse,
     PassengerProfileResponse,
     PassengerProfileUpsertRequest,
+    PassengerTransactionHistoryResponse,
     RouteListResponse,
     RouteResponse,
     ScheduledTripDriverVehicleInfoResponse,
@@ -36,8 +38,8 @@ from app.passenger.schemas import (
     SupportTicketListResponse,
     SupportTicketResponse,
     VerifyBookingPaymentRequest,
-    PassengerTransactionHistoryResponse
 )
+
 from app.passenger.service import PassengerService
 
 router = APIRouter(prefix="/passenger", tags=["passenger"])
@@ -233,6 +235,15 @@ async def get_booking_detail(
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingDetailResponse:
     return await service.get_booking_detail(current_user, booking_id)
+
+
+@router.get("/bookings/{booking_id}/invoice", response_model=PassengerInvoiceResponse)
+async def get_booking_invoice(
+    booking_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerInvoiceResponse:
+    return await service.get_booking_invoice(current_user, booking_id)
 
 
 @router.post("/bookings/{booking_id}/cancel", response_model=BookingMutationResponse)

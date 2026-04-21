@@ -79,20 +79,42 @@ class AdminService:
 		result = await self.db.execute(stmt)
 		return result.scalars().first()
 
+	# async def fetch_passenger_by_id(self, user_id: str):
+	# 	stmt = (
+	# 		select(schema.User)
+	# 		.options(
+	# 			joinedload(schema.User.passenger_profile),
+	# 			# This part is the key:
+	# 			joinedload(schema.User.passenger_bookings).options(
+	# 				joinedload(schema.TripBooking.pickup_stop),
+	# 				joinedload(schema.TripBooking.dropoff_stop),
+	# 			),
+	# 		)
+	# 		.where(schema.User.id == user_id, schema.User.role == "passenger")
+	# 	)
+
+	# 	result = await self.db.execute(stmt)
+	# 	return result.unique().scalar_one_or_none()
+
 	async def fetch_passenger_by_id(self, user_id: str):
 		stmt = (
 			select(schema.User)
 			.options(
 				joinedload(schema.User.passenger_profile),
-				# This part is the key:
+				# Load bookings with all necessary relationships
 				joinedload(schema.User.passenger_bookings).options(
 					joinedload(schema.TripBooking.pickup_stop),
 					joinedload(schema.TripBooking.dropoff_stop),
+					# Load scan events for each booking
+					joinedload(schema.TripBooking.scan_events).joinedload(
+						schema.TripScanEvent.matched_stop
+					),
+					# Also load scheduled trip info if needed for timing
+					joinedload(schema.TripBooking.scheduled_trip),
 				),
 			)
 			.where(schema.User.id == user_id, schema.User.role == "passenger")
 		)
-
 		result = await self.db.execute(stmt)
 		return result.unique().scalar_one_or_none()
 
