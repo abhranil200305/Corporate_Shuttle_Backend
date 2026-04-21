@@ -320,25 +320,54 @@ class AdminService:
 	#     result = await self.db.execute(stmt)
 	#     return result.unique().scalar_one_or_none()
 
+	# async def get_trip_by_id(self, trip_id: str):
+	# 	stmt = (
+	# 		select(schema.ScheduledTrip)
+	# 		.options(
+	# 			joinedload(schema.ScheduledTrip.route),
+	# 			joinedload(schema.ScheduledTrip.vehicle),
+	# 			joinedload(schema.ScheduledTrip.driver).joinedload(
+	# 				schema.User.driver_profile
+	# 			),
+	# 			# Update this chain to go from Booking -> Passenger -> PassengerProfile
+	# 			joinedload(schema.ScheduledTrip.bookings)
+	# 			.joinedload(schema.TripBooking.passenger)
+	# 			.joinedload(
+	# 				schema.User.passenger_profile
+	# 			),  # <--- Add this deep join
+	# 			joinedload(schema.ScheduledTrip.bookings)
+	# 			.joinedload(schema.TripBooking.pickup_stop),
+	# 			joinedload(schema.ScheduledTrip.bookings)
+	# 			.joinedload(schema.TripBooking.dropoff_stop),
+	# 		)
+	# 		.where(schema.ScheduledTrip.id == trip_id)
+	# 	)
+	# 	result = await self.db.execute(stmt)
+	# 	return result.unique().scalar_one_or_none()
+
 	async def get_trip_by_id(self, trip_id: str):
 		stmt = (
 			select(schema.ScheduledTrip)
 			.options(
+				# Existing joins
 				joinedload(schema.ScheduledTrip.route),
 				joinedload(schema.ScheduledTrip.vehicle),
 				joinedload(schema.ScheduledTrip.driver).joinedload(
 					schema.User.driver_profile
 				),
-				# Update this chain to go from Booking -> Passenger -> PassengerProfile
+				# Load bookings with all necessary relationships
 				joinedload(schema.ScheduledTrip.bookings)
 				.joinedload(schema.TripBooking.passenger)
-				.joinedload(
-					schema.User.passenger_profile
-				),  # <--- Add this deep join
+				.joinedload(schema.User.passenger_profile),
+				# CRITICAL: Eagerly load pickup and dropoff stops
 				joinedload(schema.ScheduledTrip.bookings)
 				.joinedload(schema.TripBooking.pickup_stop),
 				joinedload(schema.ScheduledTrip.bookings)
 				.joinedload(schema.TripBooking.dropoff_stop),
+				# Load scan events and their matched stops
+				joinedload(schema.ScheduledTrip.bookings)
+				.joinedload(schema.TripBooking.scan_events)
+				.joinedload(schema.TripScanEvent.matched_stop),
 			)
 			.where(schema.ScheduledTrip.id == trip_id)
 		)
@@ -3525,14 +3554,18 @@ class AdminService:
 				product_id=route_product_id,
 			)
 
-		resolved_linked_account_status = self._map_provider_linked_account_status(
-			provider_account.get("status")
+		resolved_linked_account_status = (
+			self._map_provider_linked_account_status(
+				provider_account.get("status")
+			)
 		)
 
 		if provider_product is not None:
-			resolved_route_product_status = self._map_provider_route_product_status(
-				provider_product.get("activation_status")
-				or provider_product.get("status")
+			resolved_route_product_status = (
+				self._map_provider_route_product_status(
+					provider_product.get("activation_status")
+					or provider_product.get("status")
+				)
 			)
 			resolved_route_product_requirements_json = json.dumps(
 				provider_product.get("requirements") or [],
@@ -3540,7 +3573,9 @@ class AdminService:
 				ensure_ascii=False,
 			)
 		else:
-			resolved_route_product_status = schema.RouteProductStatus.NOT_REQUESTED
+			resolved_route_product_status = (
+				schema.RouteProductStatus.NOT_REQUESTED
+			)
 			resolved_route_product_requirements_json = None
 
 		payout.linked_account_status = resolved_linked_account_status
@@ -3599,8 +3634,10 @@ class AdminService:
 				product_id=route_product_id,
 			)
 
-		provider_linked_account_status = self._map_provider_linked_account_status(
-			provider_account.get("status")
+		provider_linked_account_status = (
+			self._map_provider_linked_account_status(
+				provider_account.get("status")
+			)
 		)
 		provider_route_product_status = (
 			self._map_provider_route_product_status(
