@@ -422,7 +422,7 @@ async def stop_action(
     current_time = now_utc()
 
     # -------------------------------
-    # Load ALL route stops (for validation)
+    # Load ALL route stops
     # -------------------------------
     result = await session.execute(
         select(RouteStop).where(RouteStop.route_id == trip.route_id)
@@ -433,7 +433,7 @@ async def stop_action(
     valid_stop_ids = set(route_stop_map.keys())
 
     # =========================================================
-    # 🔥 ROUTE VALIDATION (NEW)
+    # ROUTE VALIDATION
     # =========================================================
     result = await session.execute(
         select(TripBooking).where(
@@ -457,7 +457,7 @@ async def stop_action(
             )
 
     # =========================================================
-    # 🔥 BOARDING / DEBOARDING RULES (NEW)
+    # BOARDING / DEBOARDING RULES
     # =========================================================
     if mode == "arrive" and not route_stop.boarding_allowed:
         raise HTTPException(400, "Boarding not allowed at this stop")
@@ -466,7 +466,37 @@ async def stop_action(
         raise HTTPException(400, "Deboarding not allowed at this stop")
 
     # =========================================================
-    # 🔥 BLOCK DEPART IF PASSENGER NOT DROPPED (OPTIMIZED)
+    # BLOCK ARRIVE IF PREVIOUS STOP NOT DEPARTED
+    # =========================================================
+    if mode == "arrive":
+        current_sequence = route_stop.sequence_no
+
+        # first stop can always arrive
+        if current_sequence > 1:
+            previous_route_stop = next(
+                (rs for rs in route_stops if rs.sequence_no == current_sequence - 1),
+                None
+            )
+
+            if not previous_route_stop:
+                raise HTTPException(400, "Previous route stop not found")
+
+            previous_event_result = await session.execute(
+                select(TripEvent).where(
+                    TripEvent.scheduled_trip_id == trip_id,
+                    TripEvent.stop_id == previous_route_stop.stop_id
+                )
+            )
+            previous_event = previous_event_result.scalar_one_or_none()
+
+            if not previous_event or not previous_event.departure_time:
+                raise HTTPException(
+                    400,
+                    "Cannot arrive. Previous stop not departed yet."
+                )
+
+    # =========================================================
+    # BLOCK DEPART IF PASSENGER NOT DROPPED
     # =========================================================
     if mode == "depart":
         result = await session.execute(
@@ -505,11 +535,15 @@ async def stop_action(
     if mode == "arrive":
         if event.arrival_time:
             raise HTTPException(400, "Already arrived")
+
         event.arrival_time = current_time
 
     elif mode == "depart":
         if not event.arrival_time:
             raise HTTPException(400, "Arrive first")
+
+        if event.departure_time:
+            raise HTTPException(400, "Already departed")
 
         assume_minutes = route_stop.assume_time_diff_minutes or 0
         min_time = event.arrival_time + timedelta(minutes=assume_minutes)
@@ -603,6 +637,7 @@ async def stop_action(
         "time": to_ist(current_time),
         "distance_from_stop_meters": int(distance)
     }
+
 # ============================================================
 # END TRIP (WITH GEO + PASSENGER + STOP VALIDATION)
 # ============================================================
