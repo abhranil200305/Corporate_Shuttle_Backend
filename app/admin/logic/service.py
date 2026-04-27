@@ -1067,7 +1067,7 @@ class AdminService:
 				else 0
 			}
 
-		except HTTPException:
+		except HTTPException:                                                                                                                                                                                                                                                                                                                                                                                                    
 			await self.db.rollback()
 			raise
 		except Exception as e:
