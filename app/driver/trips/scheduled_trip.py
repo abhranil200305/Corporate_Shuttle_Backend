@@ -388,6 +388,7 @@ async def stop_action(
         raise HTTPException(400, "Stop not found in this route")
 
     stop = route_stop.stop
+    current_sequence = route_stop.sequence_no
 
     # -------------------------------
     # GEO VALIDATION
@@ -451,10 +452,7 @@ async def stop_action(
             str(booking.pickup_stop_id) not in valid_stop_ids
             or str(booking.dropoff_stop_id) not in valid_stop_ids
         ):
-            raise HTTPException(
-                400,
-                "Invalid booking: stop not part of route"
-            )
+            raise HTTPException(400, "Invalid booking: stop not part of route")
 
     # =========================================================
     # BOARDING / DEBOARDING RULES
@@ -468,32 +466,29 @@ async def stop_action(
     # =========================================================
     # BLOCK ARRIVE IF PREVIOUS STOP NOT DEPARTED
     # =========================================================
+    previous_route_stop = None
+    previous_event = None
+
+    if current_sequence > 1:
+        previous_route_stop = next(
+            (rs for rs in route_stops if rs.sequence_no == current_sequence - 1),
+            None
+        )
+
+        if not previous_route_stop:
+            raise HTTPException(400, "Previous route stop not found")
+
+        previous_event_result = await session.execute(
+            select(TripEvent).where(
+                TripEvent.scheduled_trip_id == trip_id,
+                TripEvent.stop_id == previous_route_stop.stop_id
+            )
+        )
+        previous_event = previous_event_result.scalar_one_or_none()
+
     if mode == "arrive":
-        current_sequence = route_stop.sequence_no
-
-        # first stop can always arrive
-        if current_sequence > 1:
-            previous_route_stop = next(
-                (rs for rs in route_stops if rs.sequence_no == current_sequence - 1),
-                None
-            )
-
-            if not previous_route_stop:
-                raise HTTPException(400, "Previous route stop not found")
-
-            previous_event_result = await session.execute(
-                select(TripEvent).where(
-                    TripEvent.scheduled_trip_id == trip_id,
-                    TripEvent.stop_id == previous_route_stop.stop_id
-                )
-            )
-            previous_event = previous_event_result.scalar_one_or_none()
-
-            if not previous_event or not previous_event.departure_time:
-                raise HTTPException(
-                    400,
-                    "Cannot arrive. Previous stop not departed yet."
-                )
+        if current_sequence > 1 and (not previous_event or not previous_event.departure_time):
+            raise HTTPException(400, "Cannot arrive. Previous stop not departed yet.")
 
     # =========================================================
     # BLOCK DEPART IF PASSENGER NOT DROPPED
@@ -519,15 +514,10 @@ async def stop_action(
             )
             dropped_ids = set(result.scalars().all())
 
-            not_dropped = [
-                b for b in drop_pending_bookings if b.id not in dropped_ids
-            ]
+            not_dropped = [b for b in drop_pending_bookings if b.id not in dropped_ids]
 
             if not_dropped:
-                raise HTTPException(
-                    400,
-                    "Cannot depart. Passenger not dropped at this stop."
-                )
+                raise HTTPException(400, "Cannot depart. Passenger not dropped at this stop.")
 
     # -------------------------------
     # ARRIVE / DEPART
@@ -545,14 +535,23 @@ async def stop_action(
         if event.departure_time:
             raise HTTPException(400, "Already departed")
 
-        assume_minutes = route_stop.assume_time_diff_minutes or 0
-        min_time = event.arrival_time + timedelta(minutes=assume_minutes)
+        # =====================================================
+        # SEGMENT TIME VALIDATION
+        # assume_time_diff_minutes means:
+        # previous stop departure -> current stop departure
+        # =====================================================
+        if current_sequence > 1:
+            if not previous_event or not previous_event.departure_time:
+                raise HTTPException(400, "Previous stop departure missing")
 
-        if current_time < min_time:
-            raise HTTPException(
-                400,
-                f"Cannot depart early. Wait {assume_minutes} minutes."
-            )
+            assume_minutes = route_stop.assume_time_diff_minutes or 0
+            min_departure_time = previous_event.departure_time + timedelta(minutes=assume_minutes)
+
+            if current_time < min_departure_time:
+                raise HTTPException(
+                    400,
+                    f"Cannot depart early. Minimum departure allowed after {assume_minutes} minutes from previous stop departure."
+                )
 
         event.departure_time = current_time
 
@@ -577,7 +576,6 @@ async def stop_action(
         if not pickup_rs or not drop_rs or not current_rs:
             continue
 
-        # ARRIVAL → Boarding alert
         if mode == "arrive" and str(booking.pickup_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
@@ -586,7 +584,6 @@ async def stop_action(
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # DEPART → Drop alert
         if mode == "depart" and str(booking.dropoff_stop_id) == str(stop_id):
             await notification_service.notify_user(
                 user_id=booking.passenger_user_id,
@@ -595,7 +592,6 @@ async def stop_action(
                 data={"trip_id": trip.id, "stop_id": stop_id},
             )
 
-        # MISSED BOARDING
         if (
             mode == "depart"
             and booking.booking_status == BookingStatus.BOOKED
@@ -617,11 +613,7 @@ async def stop_action(
                     data={"trip_id": trip.id},
                 )
 
-        # MISSED DROP
-        if (
-            mode == "depart"
-            and booking.booking_status == BookingStatus.BOARDED
-        ):
+        if mode == "depart" and booking.booking_status == BookingStatus.BOARDED:
             if drop_rs.sequence_no < current_rs.sequence_no:
                 await notification_service.notify_user(
                     user_id=booking.passenger_user_id,
