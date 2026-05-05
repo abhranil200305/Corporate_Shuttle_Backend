@@ -98,6 +98,51 @@ class VehicleInspectionUpdate(BaseModel):
 	reason: str | None = None
 
 
+class AdminVehicleInspectionDriverBrief(BaseModel):
+	user_id: str
+	email: str | None = None
+	full_name: str | None = None
+	phone: str | None = None
+
+
+class AdminVehiclePhysicalInspectionStatus(BaseModel):
+	status: schema.VehicleInspectionStatus | None = None
+	reason: str | None = None
+	created_at: datetime | None = None
+	reviewed_at: datetime | None = None
+
+
+class AdminVehicleInspectionStatusItem(BaseModel):
+	vehicle_id: str
+	driver: AdminVehicleInspectionDriverBrief
+	registration_number: str
+	registration_valid_till: datetime | None = None
+	vehicle_name: str
+	vehicle_model: str
+	color: str
+	seat_count: int
+	has_ac: bool
+	vehicle_verification_status: schema.VehicleVerificationStatus
+	is_active: bool
+	physical_inspection: AdminVehiclePhysicalInspectionStatus
+	created_at: datetime
+	updated_at: datetime
+
+
+class AdminVehicleInspectionPagination(BaseModel):
+	page: int
+	page_size: int
+	total: int
+	total_pages: int
+	has_next: bool
+	has_previous: bool
+
+
+class AdminVehicleInspectionStatusListResponse(BaseModel):
+	items: list[AdminVehicleInspectionStatusItem]
+	pagination: AdminVehicleInspectionPagination
+
+
 class PassengerManifestItem(BaseModel):
 	booking_id: str
 	passenger_name: str

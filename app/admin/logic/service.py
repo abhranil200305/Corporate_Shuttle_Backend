@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import and_, desc, func, select, update
+from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from app.db import schema
@@ -1165,6 +1165,153 @@ class AdminService:
 			.values(**values)
 		)
 		await self.db.execute(stmt)
+
+	def _serialize_vehicle_inspection_status(self, vehicle):
+		driver = vehicle.driver
+		driver_profile = driver.driver_profile if driver else None
+
+		return {
+			"vehicle_id": vehicle.id,
+			"driver": {
+				"user_id": vehicle.driver_user_id,
+				"email": driver.email if driver else None,
+				"full_name": driver_profile.full_name if driver_profile else None,
+				"phone": driver_profile.phone if driver_profile else None,
+			},
+			"registration_number": vehicle.registration_number,
+			"registration_valid_till": vehicle.registration_valid_till,
+			"vehicle_name": vehicle.vehicle_name,
+			"vehicle_model": vehicle.vehicle_model,
+			"color": vehicle.color,
+			"seat_count": vehicle.seat_count,
+			"has_ac": vehicle.has_ac,
+			"vehicle_verification_status": vehicle.verification_status,
+			"is_active": vehicle.is_active,
+			"physical_inspection": {
+				"status": vehicle.inspection_status,
+				"reason": vehicle.inspection_reason,
+				"created_at": vehicle.inspection_created_at,
+				"reviewed_at": vehicle.inspection_reviewed_at,
+			},
+			"created_at": vehicle.created_at,
+			"updated_at": vehicle.updated_at,
+		}
+
+
+	async def fetch_vehicle_inspection_statuses(
+		self,
+		*,
+		page: int,
+		page_size: int,
+		inspection_status: schema.VehicleInspectionStatus | None = None,
+		inspection_status_missing: bool | None = None,
+		vehicle_verification_status: schema.VehicleVerificationStatus | None = None,
+		is_active: bool | None = None,
+		driver_user_id: str | None = None,
+		q: str | None = None,
+	):
+		if inspection_status is not None and inspection_status_missing is True:
+			raise HTTPException(
+				status_code=400,
+				detail={
+					"error": "conflicting_inspection_status_filters",
+					"message": "Use either inspection_status or inspection_status_missing=true, not both.",
+				},
+			)
+
+		cleaned_q = (q or "").strip()
+		offset = (page - 1) * page_size
+
+		conditions = []
+
+		if inspection_status is not None:
+			conditions.append(schema.Vehicle.inspection_status == inspection_status)
+		elif inspection_status_missing is True:
+			conditions.append(schema.Vehicle.inspection_status.is_(None))
+		elif inspection_status_missing is False:
+			conditions.append(schema.Vehicle.inspection_status.is_not(None))
+
+		if vehicle_verification_status is not None:
+			conditions.append(
+				schema.Vehicle.verification_status == vehicle_verification_status
+			)
+
+		if is_active is not None:
+			conditions.append(schema.Vehicle.is_active.is_(is_active))
+
+		if driver_user_id:
+			conditions.append(schema.Vehicle.driver_user_id == driver_user_id)
+
+		if cleaned_q:
+			search = f"%{cleaned_q}%"
+			conditions.append(
+				or_(
+					schema.Vehicle.registration_number.ilike(search),
+					schema.Vehicle.vehicle_name.ilike(search),
+					schema.Vehicle.vehicle_model.ilike(search),
+					schema.User.email.ilike(search),
+					schema.DriverProfile.full_name.ilike(search),
+				)
+			)
+
+		base_count_stmt = (
+			select(func.count(schema.Vehicle.id))
+			.select_from(schema.Vehicle)
+			.join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
+			.join(
+				schema.DriverProfile,
+				schema.DriverProfile.user_id == schema.User.id,
+				isouter=True,
+			)
+		)
+
+		base_items_stmt = (
+			select(schema.Vehicle)
+			.join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
+			.join(
+				schema.DriverProfile,
+				schema.DriverProfile.user_id == schema.User.id,
+				isouter=True,
+			)
+			.options(
+				joinedload(schema.Vehicle.driver).joinedload(
+					schema.User.driver_profile
+				)
+			)
+			.order_by(
+				schema.Vehicle.updated_at.desc(),
+				schema.Vehicle.id.asc(),
+			)
+			.offset(offset)
+			.limit(page_size)
+		)
+
+		if conditions:
+			base_count_stmt = base_count_stmt.where(*conditions)
+			base_items_stmt = base_items_stmt.where(*conditions)
+
+		total_result = await self.db.execute(base_count_stmt)
+		total = int(total_result.scalar_one() or 0)
+
+		items_result = await self.db.execute(base_items_stmt)
+		vehicles = items_result.scalars().unique().all()
+
+		total_pages = (total + page_size - 1) // page_size if total else 0
+
+		return {
+			"items": [
+				self._serialize_vehicle_inspection_status(vehicle)
+				for vehicle in vehicles
+			],
+			"pagination": {
+				"page": page,
+				"page_size": page_size,
+				"total": total,
+				"total_pages": total_pages,
+				"has_next": page < total_pages,
+				"has_previous": page > 1 and total_pages > 0,
+			},
+		}
 
 	async def fetch_fully_verified_drivers(self):
 		"""

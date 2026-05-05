@@ -39,6 +39,7 @@ from app.admin.structs.dto import (
 	VehicleInspectionUpdate,
 	VehicleVerificationUpdate,
 	VerificationUpdate,
+	AdminVehicleInspectionStatusListResponse,
 )
 from app.auth.dependencies import (
 	get_current_active_user,
@@ -329,6 +330,41 @@ async def get_driver_details(
 			else None,
 		},
 	}
+
+@router.get(
+	"/vehicles/inspection-statuses",
+	response_model=AdminVehicleInspectionStatusListResponse,
+)
+async def list_vehicle_inspection_statuses(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	inspection_status: schema.VehicleInspectionStatus | None = Query(default=None),
+	inspection_status_missing: bool | None = Query(
+		default=None,
+		description="true = only vehicles with no inspection status; false = only vehicles with any inspection status",
+	),
+	vehicle_verification_status: schema.VehicleVerificationStatus | None = Query(default=None),
+	is_active: bool | None = Query(default=None),
+	driver_user_id: str | None = Query(default=None, min_length=1, max_length=36),
+	q: str | None = Query(
+		default=None,
+		min_length=1,
+		max_length=80,
+		description="Search registration number, vehicle name, model, driver email, or driver name.",
+	),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+	return await service.fetch_vehicle_inspection_statuses(
+		page=page,
+		page_size=page_size,
+		inspection_status=inspection_status,
+		inspection_status_missing=inspection_status_missing,
+		vehicle_verification_status=vehicle_verification_status,
+		is_active=is_active,
+		driver_user_id=driver_user_id,
+		q=q,
+	)
 
 
 # -----------------------------
