@@ -296,6 +296,18 @@ class AuthService:
     # -----------------------------
     # Session
     # -----------------------------
+
+    async def is_token_fresh(self, token: str) -> bool:
+        raw_token = token.strip() if token else ""
+        if not raw_token:
+            return False
+
+        token_hash = hash_session_token(raw_token)
+        return await self.repo.token_has_active_user_session(
+            token_hash,
+            now=utcnow(),
+        )
+    
     async def authenticate_token(self, token: str) -> User:
         if not token or not token.strip():
             raise InvalidSessionError()

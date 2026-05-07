@@ -193,6 +193,26 @@ class AuthRepository:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    async def token_has_active_user_session(
+        self,
+        token_hash: str,
+        *,
+        now: datetime | None = None,
+    ) -> bool:
+        current_time = now or utcnow()
+        stmt = (
+            select(UserSession.id)
+            .join(User, User.id == UserSession.user_id)
+            .where(
+                UserSession.token_hash == token_hash,
+                UserSession.expires_at > current_time,
+                User.is_active.is_(True),
+            )
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none() is not None
 
     async def touch_user_session(
         self,

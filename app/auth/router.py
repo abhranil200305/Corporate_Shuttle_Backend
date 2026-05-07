@@ -1,7 +1,7 @@
 # app/auth/router.py
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, Response, status
 from app.auth.dependencies import (
     get_auth_service,
     get_bearer_token_from_request,
@@ -22,9 +22,18 @@ from app.auth.schemas import (
     OTPVerifyResponse,
 )
 from app.auth.service import AuthService
+from app.auth.session_utils import extract_bearer_token
 from app.db.schema import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+def _empty_auth_probe_response(status_code: int) -> Response:
+    return Response(
+        status_code=status_code,
+        headers={
+            "Cache-Control": "no-store",
+            "Pragma": "no-cache",
+        },
+    )
 
 # -----------------------------
 # Signup Endpoints
@@ -110,6 +119,24 @@ async def logout(
         return await auth_service.logout(token)
     except AuthError as exc:
         raise to_http_exception(exc) from exc
+    
+
+# -----------------------------
+# Token Freshness Endpoint
+# -----------------------------
+@router.get("/session/freshness", status_code=status.HTTP_204_NO_CONTENT)
+async def session_freshness(
+    request: Request,
+    auth_service: AuthService = Depends(get_auth_service),
+) -> Response:
+    token = extract_bearer_token(request.headers.get("Authorization"))
+    if not token:
+        return _empty_auth_probe_response(status.HTTP_401_UNAUTHORIZED)
+
+    if not await auth_service.is_token_fresh(token):
+        return _empty_auth_probe_response(status.HTTP_401_UNAUTHORIZED)
+
+    return _empty_auth_probe_response(status.HTTP_204_NO_CONTENT)
 
 
 # -----------------------------
