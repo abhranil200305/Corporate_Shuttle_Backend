@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.rfid_schemas import (
     RFIDCardAssignRequest,
+    RFIDCardBlockRequest,
     RFIDCardBulkRegisterRequest,
     RFIDCardRegisterRequest,
     RFIDCardUnassignRequest,
@@ -653,6 +654,88 @@ class AdminRFIDService:
         card.inventory_status = schema.RFIDCardInventoryStatus.INVENTORY
 
         self.db.add(current_assignment)
+        self.db.add(card)
+        await self.db.flush()
+
+        return card
+    
+    @staticmethod
+    def _append_card_admin_note(
+        *,
+        existing_note: str | None,
+        action: str,
+        admin_user_id: str,
+        reason: str | None,
+    ) -> str:
+        now = schema.utcnow().isoformat()
+
+        line = f"[{now}] {action} by admin {admin_user_id}"
+
+        if reason is not None:
+            line = f"{line}: {reason}"
+
+        if existing_note is None or not existing_note.strip():
+            return line
+
+        return f"{existing_note.rstrip()}\n{line}"
+
+    async def block_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardBlockRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_decommissioned",
+                    "message": "A decommissioned RFID card cannot be blocked.",
+                },
+            )
+
+        card.authorization_status = schema.RFIDCardAuthorizationStatus.BLOCKED
+        card.notes = self._append_card_admin_note(
+            existing_note=card.notes,
+            action="RFID card blocked",
+            admin_user_id=admin_user_id,
+            reason=payload.reason,
+        )
+
+        self.db.add(card)
+        await self.db.flush()
+
+        return card
+
+    async def unblock_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardBlockRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_decommissioned",
+                    "message": "A decommissioned RFID card cannot be unblocked.",
+                },
+            )
+
+        card.authorization_status = schema.RFIDCardAuthorizationStatus.ALLOWED
+        card.notes = self._append_card_admin_note(
+            existing_note=card.notes,
+            action="RFID card unblocked",
+            admin_user_id=admin_user_id,
+            reason=payload.reason,
+        )
+
         self.db.add(card)
         await self.db.flush()
 
