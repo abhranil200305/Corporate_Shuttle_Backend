@@ -15,6 +15,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
 from app.admin.logic.service import AdminService
+from app.admin.rfid_service import AdminRFIDService
+from app.admin.rfid_schemas import (
+	RFIDDeviceCreateRequest,
+	RFIDDeviceListResponse,
+	RFIDDeviceMutationResponse,
+	RFIDDeviceUpdateRequest,
+)
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
 	BulkPayoutTriggerRequest,
@@ -661,6 +668,151 @@ async def verify_driver(
 	return {
 		"message": f"Driver verification status updated to {data.status}",
 		"user_id": user_id,
+	}
+
+# -----------------------------
+# Admin: RFID Devices
+# -----------------------------
+
+
+@router.post(
+	"/rfid/devices",
+	response_model=RFIDDeviceMutationResponse,
+	tags=["Admin RFID"],
+)
+async def create_rfid_device(
+	payload: RFIDDeviceCreateRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	device = await service.create_device(payload)
+
+	await db.commit()
+	await db.refresh(device)
+
+	return {
+		"message": "RFID device registered successfully.",
+		"device": service.serialize_device(device),
+	}
+
+
+@router.get(
+	"/rfid/devices",
+	response_model=RFIDDeviceListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_devices(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	vehicle_id: str | None = Query(default=None, min_length=1, max_length=36),
+	is_active: bool | None = Query(default=None),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	devices, count = await service.list_devices(
+		page=page,
+		page_size=page_size,
+		vehicle_id=vehicle_id,
+		is_active=is_active,
+	)
+
+	return {
+		"items": [service.serialize_device(device) for device in devices],
+		"count": count,
+	}
+
+
+@router.patch(
+	"/rfid/devices/{device_id}",
+	response_model=RFIDDeviceMutationResponse,
+	tags=["Admin RFID"],
+)
+async def update_rfid_device(
+	device_id: str,
+	payload: RFIDDeviceUpdateRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	device = await service.update_device(
+		device_id=device_id,
+		payload=payload,
+	)
+
+	await db.commit()
+	await db.refresh(device)
+
+	return {
+		"message": "RFID device updated successfully.",
+		"device": service.serialize_device(device),
+	}
+
+
+@router.post(
+	"/rfid/devices/{device_id}/activate",
+	response_model=RFIDDeviceMutationResponse,
+	tags=["Admin RFID"],
+)
+async def activate_rfid_device(
+	device_id: str,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	device = await service.set_device_active(
+		device_id=device_id,
+		is_active=True,
+	)
+
+	await db.commit()
+	await db.refresh(device)
+
+	return {
+		"message": "RFID device activated successfully.",
+		"device": service.serialize_device(device),
+	}
+
+
+@router.post(
+	"/rfid/devices/{device_id}/deactivate",
+	response_model=RFIDDeviceMutationResponse,
+	tags=["Admin RFID"],
+)
+async def deactivate_rfid_device(
+	device_id: str,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	device = await service.set_device_active(
+		device_id=device_id,
+		is_active=False,
+	)
+
+	await db.commit()
+	await db.refresh(device)
+
+	return {
+		"message": "RFID device deactivated successfully.",
+		"device": service.serialize_device(device),
+	}
+
+
+@router.post(
+	"/rfid/devices/{device_id}/decommission",
+	response_model=RFIDDeviceMutationResponse,
+	tags=["Admin RFID"],
+)
+async def decommission_rfid_device(
+	device_id: str,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	device = await service.decommission_device(device_id)
+
+	await db.commit()
+	await db.refresh(device)
+
+	return {
+		"message": "RFID device decommissioned successfully.",
+		"device": service.serialize_device(device),
 	}
 
 

@@ -4,8 +4,15 @@ import hashlib
 from decimal import Decimal
 from typing import Any
 
+from fastapi import HTTPException
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.admin.rfid_schemas import (
+    RFIDDeviceCreateRequest,
+    RFIDDeviceUpdateRequest,
+)
 from app.db import schema
 
 
@@ -41,6 +48,211 @@ class AdminRFIDService:
     @staticmethod
     def _available_balance(account: schema.RFIDCardAccount) -> Decimal:
         return Decimal(account.current_balance or 0) - Decimal(account.held_balance or 0)
+    
+    # ============================================================
+    # shared DB guards
+    # ============================================================
+
+    async def _get_vehicle_or_404(self, vehicle_id: str) -> schema.Vehicle:
+        stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id)
+        result = await self.db.execute(stmt)
+        vehicle = result.scalar_one_or_none()
+
+        if vehicle is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "vehicle_not_found",
+                    "message": "Vehicle not found.",
+                },
+            )
+
+        return vehicle
+
+    async def _get_device_or_404(self, device_id: str) -> schema.RFIDDevice:
+        stmt = select(schema.RFIDDevice).where(schema.RFIDDevice.id == device_id)
+        result = await self.db.execute(stmt)
+        device = result.scalar_one_or_none()
+
+        if device is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_device_not_found",
+                    "message": "RFID device not found.",
+                },
+            )
+
+        return device
+
+    async def _ensure_vehicle_has_no_running_trip(self, vehicle_id: str) -> None:
+        stmt = (
+            select(func.count(schema.ScheduledTrip.id))
+            .where(
+                schema.ScheduledTrip.vehicle_id == vehicle_id,
+                schema.ScheduledTrip.status == schema.ScheduledTripStatus.IN_PROGRESS,
+            )
+        )
+        result = await self.db.execute(stmt)
+        running_trip_count = int(result.scalar_one() or 0)
+
+        if running_trip_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "vehicle_has_running_trip",
+                    "message": "RFID device changes are not allowed while the vehicle has a running scheduled trip.",
+                },
+            )
+
+    async def _flush_or_conflict(self, *, conflict_message: str) -> None:
+        try:
+            await self.db.flush()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_device_conflict",
+                    "message": conflict_message,
+                },
+            ) from exc
+
+    # ============================================================
+    # RFID device admin operations
+    # ============================================================
+
+    async def create_device(
+        self,
+        payload: RFIDDeviceCreateRequest,
+    ) -> schema.RFIDDevice:
+        await self._get_vehicle_or_404(payload.vehicle_id)
+        await self._ensure_vehicle_has_no_running_trip(payload.vehicle_id)
+
+        device = schema.RFIDDevice(
+            serial_number=payload.serial_number,
+            vehicle_id=payload.vehicle_id,
+            is_active=payload.is_active,
+            notes=payload.notes,
+        )
+
+        self.db.add(device)
+        await self._flush_or_conflict(
+            conflict_message="An RFID device with this serial number already exists.",
+        )
+
+        return device
+
+    async def list_devices(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        vehicle_id: str | None = None,
+        is_active: bool | None = None,
+    ) -> tuple[list[schema.RFIDDevice], int]:
+        filters = []
+
+        if vehicle_id is not None:
+            filters.append(schema.RFIDDevice.vehicle_id == vehicle_id)
+
+        if is_active is not None:
+            filters.append(schema.RFIDDevice.is_active.is_(is_active))
+
+        count_stmt = select(func.count(schema.RFIDDevice.id))
+        list_stmt = select(schema.RFIDDevice)
+
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            list_stmt = list_stmt.where(*filters)
+
+        list_stmt = (
+            list_stmt
+            .order_by(schema.RFIDDevice.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
+
+    async def update_device(
+        self,
+        *,
+        device_id: str,
+        payload: RFIDDeviceUpdateRequest,
+    ) -> schema.RFIDDevice:
+        device = await self._get_device_or_404(device_id)
+
+        await self._ensure_vehicle_has_no_running_trip(device.vehicle_id)
+
+        if (
+            "vehicle_id" in payload.model_fields_set
+            and payload.vehicle_id is not None
+            and payload.vehicle_id != device.vehicle_id
+        ):
+            await self._get_vehicle_or_404(payload.vehicle_id)
+            await self._ensure_vehicle_has_no_running_trip(payload.vehicle_id)
+            device.vehicle_id = payload.vehicle_id
+
+        if (
+            "serial_number" in payload.model_fields_set
+            and payload.serial_number is not None
+        ):
+            device.serial_number = payload.serial_number
+
+        if "is_active" in payload.model_fields_set and payload.is_active is not None:
+            device.is_active = payload.is_active
+
+        if "notes" in payload.model_fields_set:
+            device.notes = payload.notes
+
+        self.db.add(device)
+        await self._flush_or_conflict(
+            conflict_message="An RFID device with this serial number already exists.",
+        )
+
+        return device
+
+    async def set_device_active(
+        self,
+        *,
+        device_id: str,
+        is_active: bool,
+    ) -> schema.RFIDDevice:
+        device = await self._get_device_or_404(device_id)
+
+        await self._ensure_vehicle_has_no_running_trip(device.vehicle_id)
+
+        if device.decommissioned_at is not None and is_active:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_device_decommissioned",
+                    "message": "A decommissioned RFID device cannot be activated.",
+                },
+            )
+
+        device.is_active = is_active
+        self.db.add(device)
+        await self.db.flush()
+
+        return device
+
+    async def decommission_device(self, device_id: str) -> schema.RFIDDevice:
+        device = await self._get_device_or_404(device_id)
+
+        await self._ensure_vehicle_has_no_running_trip(device.vehicle_id)
+
+        device.is_active = False
+        device.decommissioned_at = schema.utcnow()
+
+        self.db.add(device)
+        await self.db.flush()
+
+        return device
 
     # ============================================================
     # serializers
@@ -249,3 +461,4 @@ class AdminRFIDService:
             "created_at": transfer.created_at,
             "updated_at": transfer.updated_at,
         }
+    
