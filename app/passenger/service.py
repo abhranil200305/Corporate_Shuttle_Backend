@@ -664,8 +664,6 @@ class PassengerService:
                 "seat_count": trip.vehicle.seat_count,
                 "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
                 "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
-                "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
-                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": {
