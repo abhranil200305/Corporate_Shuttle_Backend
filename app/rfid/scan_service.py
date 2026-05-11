@@ -526,7 +526,10 @@ class RFIDScanService:
         self.db.add(scan_event)
         await self.db.flush()
 
-        if scan_accepted:
+        if (
+            scan_accepted
+            and scan_type == schema.RFIDScanType.BOARD
+        ):
             assert active_context is not None
             assert card is not None
             assert card_account is not None
