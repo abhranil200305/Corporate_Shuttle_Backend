@@ -43,7 +43,7 @@ class RFIDScanService:
             separators=(",", ":"),
             default=str,
         )
-    
+
     @staticmethod
     def _haversine_distance_meters(
         *,
@@ -100,7 +100,19 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
-    
+
+    async def _get_card_account_by_card_id(
+        self,
+        card_id: str,
+    ) -> schema.RFIDCardAccount | None:
+        stmt = (
+            select(schema.RFIDCardAccount)
+            .where(schema.RFIDCardAccount.card_id == card_id)
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
     async def _get_running_trip_for_vehicle(
         self,
         vehicle_id: str,
@@ -155,7 +167,7 @@ class RFIDScanService:
         stmt = select(schema.Stop).where(schema.Stop.id == stop_id).limit(1)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
-    
+
     async def _get_vehicle_or_none(self, vehicle_id: str) -> schema.Vehicle | None:
         stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id).limit(1)
         result = await self.db.execute(stmt)
@@ -200,7 +212,7 @@ class RFIDScanService:
             stop=stop,
             vehicle=vehicle,
         )
-    
+
     async def _get_open_rfid_ride_for_card_on_trip(
         self,
         *,
@@ -219,7 +231,7 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
-    
+
     @staticmethod
     def _get_rfid_reserved_seat_count(vehicle: schema.Vehicle) -> int:
         return max(int(vehicle.default_rfid_reserved_seat_count or 0), 0)
@@ -244,6 +256,7 @@ class RFIDScanService:
         if card is not None:
             passenger_user_id = card.assigned_passenger_user_id
 
+        card_account: schema.RFIDCardAccount | None = None
         active_context: ActiveTripStopContext | None = None
         open_ride: schema.RFIDTripRide | None = None
         scan_type = schema.RFIDScanType.BOARD
@@ -261,21 +274,37 @@ class RFIDScanService:
             rejection_reason = "rfid_card_not_found"
         elif card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
             rejection_reason = "rfid_card_decommissioned"
+        elif card.inventory_status == schema.RFIDCardInventoryStatus.LOST:
+            rejection_reason = "rfid_card_lost"
         elif card.authorization_status != schema.RFIDCardAuthorizationStatus.ALLOWED:
             rejection_reason = "rfid_card_blocked"
+        elif (
+            card.inventory_status != schema.RFIDCardInventoryStatus.ASSIGNED
+            or card.assigned_passenger_user_id is None
+        ):
+            rejection_reason = "rfid_card_not_assigned"
         else:
-            active_context = await self._get_active_trip_stop_context_for_device(device)
+            card_account = await self._get_card_account_by_card_id(card.id)
 
-            if active_context is None:
-                rejection_reason = "no_active_trip_or_stop"
+            if card_account is None:
+                rejection_reason = "rfid_card_account_not_found"
+            elif card_account.is_active is False:
+                rejection_reason = "rfid_card_account_inactive"
             else:
-                open_ride = await self._get_open_rfid_ride_for_card_on_trip(
-                    card_id=card.id,
-                    scheduled_trip_id=active_context.scheduled_trip.id,
+                active_context = await self._get_active_trip_stop_context_for_device(
+                    device
                 )
 
-                if open_ride is not None:
-                    scan_type = schema.RFIDScanType.DROP
+                if active_context is None:
+                    rejection_reason = "no_active_trip_or_stop"
+                else:
+                    open_ride = await self._get_open_rfid_ride_for_card_on_trip(
+                        card_id=card.id,
+                        scheduled_trip_id=active_context.scheduled_trip.id,
+                    )
+
+                    if open_ride is not None:
+                        scan_type = schema.RFIDScanType.DROP
 
             if active_context is not None and (
                 payload.scan_lat is None or payload.scan_lng is None
@@ -311,8 +340,10 @@ class RFIDScanService:
                     if reserved_seat_count <= 0:
                         rejection_reason = "rfid_seat_pool_not_configured"
                     else:
-                        open_rfid_ride_count = await self._count_open_rfid_rides_for_trip(
-                            active_context.scheduled_trip.id
+                        open_rfid_ride_count = (
+                            await self._count_open_rfid_rides_for_trip(
+                                active_context.scheduled_trip.id
+                            )
                         )
 
                         if open_rfid_ride_count >= reserved_seat_count:
