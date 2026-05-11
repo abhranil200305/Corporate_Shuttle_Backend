@@ -314,6 +314,11 @@ class RFIDRechargeMutationResponse(BaseModel):
     account: RFIDCardAccountResponse
 
 
+class RFIDRechargeListResponse(BaseModel):
+    items: list[RFIDRechargeResponse]
+    count: int
+
+
 class RFIDLedgerEntryResponse(BaseModel):
     id: str
     account_id: str

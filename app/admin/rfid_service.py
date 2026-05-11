@@ -816,6 +816,59 @@ class AdminRFIDService:
 
         return recharge, account
     
+    async def list_card_ledger_entries(
+        self,
+        *,
+        card_id: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[schema.RFIDLedgerEntry], int]:
+        await self._get_card_or_404(card_id)
+
+        filters = [schema.RFIDLedgerEntry.card_id == card_id]
+
+        count_stmt = select(func.count(schema.RFIDLedgerEntry.id)).where(*filters)
+
+        list_stmt = (
+            select(schema.RFIDLedgerEntry)
+            .where(*filters)
+            .order_by(schema.RFIDLedgerEntry.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
+
+    async def list_card_recharges(
+        self,
+        *,
+        card_id: str,
+        page: int,
+        page_size: int,
+    ) -> tuple[list[schema.RFIDRecharge], int]:
+        await self._get_card_or_404(card_id)
+
+        filters = [schema.RFIDRecharge.card_id == card_id]
+
+        count_stmt = select(func.count(schema.RFIDRecharge.id)).where(*filters)
+
+        list_stmt = (
+            select(schema.RFIDRecharge)
+            .where(*filters)
+            .order_by(schema.RFIDRecharge.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
+    
+
     # ============================================================
     # serializers
     # ============================================================

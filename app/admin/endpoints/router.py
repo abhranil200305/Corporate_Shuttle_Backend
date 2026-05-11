@@ -31,6 +31,8 @@ from app.admin.rfid_schemas import (
 	RFIDDeviceUpdateRequest,
 	RFIDRechargeCreateRequest,
 	RFIDRechargeMutationResponse,
+	RFIDLedgerEntryListResponse,
+	RFIDRechargeListResponse,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -1002,6 +1004,52 @@ async def create_manual_rfid_recharge(
 		"account": service.serialize_account(account),
 	}
 
+@router.get(
+	"/rfid/cards/{card_id}/ledger",
+	response_model=RFIDLedgerEntryListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_card_ledger_entries(
+	card_id: str,
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	entries, count = await service.list_card_ledger_entries(
+		card_id=card_id,
+		page=page,
+		page_size=page_size,
+	)
+
+	return {
+		"items": [service.serialize_ledger_entry(entry) for entry in entries],
+		"count": count,
+	}
+
+
+@router.get(
+	"/rfid/cards/{card_id}/recharges",
+	response_model=RFIDRechargeListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_card_recharges(
+	card_id: str,
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	recharges, count = await service.list_card_recharges(
+		card_id=card_id,
+		page=page,
+		page_size=page_size,
+	)
+
+	return {
+		"items": [service.serialize_recharge(recharge) for recharge in recharges],
+		"count": count,
+	}
 
 # -----------------------------
 # Admin:  driver vehical verification
