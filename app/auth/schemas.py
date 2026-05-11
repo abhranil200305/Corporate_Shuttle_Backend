@@ -28,16 +28,19 @@ class SignupRequest(BaseModel):
 
 class SendLoginOTPRequest(BaseModel):
     email: str = Field(..., max_length=255)
+    role: UserRole
 
 
 class VerifyLoginOTPRequest(BaseModel):
     email: str = Field(..., max_length=255)
     otp: str = Field(..., min_length=4, max_length=10)
+    role: UserRole
 
 
 class LoginRequest(BaseModel):
     email: str = Field(..., max_length=255)
     otp: str = Field(..., min_length=4, max_length=10)
+    role: UserRole
 
 
 class LogoutRequest(BaseModel):

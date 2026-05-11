@@ -240,7 +240,7 @@ class AuthService:
     # -----------------------------
     async def send_login_otp(self, payload: SendLoginOTPRequest) -> MessageResponse:
         email = self._validate_email(payload.email)
-        user = await self.repo.get_user_by_email(email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
         if user is None:
             raise UserNotFoundError()
         if not user.is_active:
@@ -269,7 +269,7 @@ class AuthService:
 
     async def verify_login_otp(self, payload: VerifyLoginOTPRequest) -> OTPVerifyResponse:
         email = self._validate_email(payload.email)
-        user = await self.repo.get_user_by_email(email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
         if user is None:
             raise UserNotFoundError()
         if not user.is_active:
@@ -280,7 +280,7 @@ class AuthService:
 
     async def login(self, payload: LoginRequest) -> AuthTokenResponse:
         email = self._validate_email(payload.email)
-        user = await self.repo.get_user_by_email(email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
         if user is None:
             raise UserNotFoundError()
         if not user.is_active:
