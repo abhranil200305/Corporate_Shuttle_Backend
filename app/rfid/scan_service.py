@@ -269,6 +269,13 @@ class RFIDScanService:
 
                 if not within_radius:
                     rejection_reason = "not_within_active_stop_radius"
+                elif (
+                    scan_type == schema.RFIDScanType.DROP
+                    and open_ride is not None
+                    and active_context.route_stop.sequence_no
+                    <= open_ride.pickup_sequence_no
+                ):
+                    rejection_reason = "drop_stop_must_be_after_board_stop"
 
         scan_event = schema.RFIDScanEvent(
             scan_type=scan_type,
