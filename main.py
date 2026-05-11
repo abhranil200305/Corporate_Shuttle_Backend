@@ -11,6 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 
 from app.admin.endpoints.router import router as admin_router
+from app.rfid.router import router as rfid_router
 from app.system_user import ensure_system_fine_register_user
 from app.auth import router as auth_router
 from app.db.database import AsyncSessionLocal, dispose_database_engine, ping_database
@@ -180,6 +181,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 app.include_router(auth_router)
 app.include_router(notifications_router)
 app.include_router(admin_router)
+app.include_router(rfid_router)
 app.include_router(driverprofile_router)
 app.include_router(driver_kyc.router)
 app.include_router(driverprofileshow_router)
