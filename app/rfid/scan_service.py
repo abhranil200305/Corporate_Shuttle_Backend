@@ -329,7 +329,7 @@ class RFIDScanService:
         result = await self.db.execute(stmt)
         return len(result.scalars().all())
 
-    async def record_scan_skeleton(self, payload: RFIDScanRequest) -> dict[str, Any]:
+    async def record_scan(self, payload: RFIDScanRequest) -> dict[str, Any]:
         device = await self._get_device_by_serial(payload.device_serial_number)
         card_uid_hash = self.hash_card_uid(payload.card_uid)
         card = await self._get_card_by_uid_hash(card_uid_hash)
