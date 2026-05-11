@@ -462,15 +462,26 @@ class RFIDScanService:
 
         if (
             rejection_reason == "scan_processing_not_enabled"
-            and scan_type == schema.RFIDScanType.BOARD
             and active_context is not None
             and card is not None
             and card_account is not None
-            and max_downstream_fare is not None
         ):
-            scan_accepted = True
-            scan_rejection_reason = None
-            response_message = "RFID board scan accepted."
+            if (
+                scan_type == schema.RFIDScanType.BOARD
+                and max_downstream_fare is not None
+            ):
+                scan_accepted = True
+                scan_rejection_reason = None
+                response_message = "RFID board scan accepted."
+            elif (
+                scan_type == schema.RFIDScanType.DROP
+                and open_ride is not None
+                and actual_drop_fare is not None
+            ):
+                scan_accepted = True
+                scan_rejection_reason = None
+                response_message = "RFID drop scan accepted."
+                
         scan_event = schema.RFIDScanEvent(
             id=schema.new_id(),
             scan_type=scan_type,
