@@ -207,6 +207,53 @@ class VehicleOwnershipType(str, enum.Enum):
     SELF = "self"
     RENTED = "rented"
 
+
+class RFIDRechargeStatus(str, enum.Enum):
+    CREATED = "created"
+    PAID = "paid"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    MANUALLY_RECORDED = "manually_recorded"
+    CREDITED = "credited"
+    REVERSED = "reversed"
+
+
+class RFIDRechargeSourceType(str, enum.Enum):
+    ADMIN_MANUAL = "admin_manual"
+    RAZORPAY_USER_RECHARGE = "razorpay_user_recharge"
+
+
+class RFIDFundingLotSourceType(str, enum.Enum):
+    RAZORPAY_PAYMENT = "razorpay_payment"
+    ADMIN_MANUAL_POOL = "admin_manual_pool"
+
+
+class RFIDFundingLotStatus(str, enum.Enum):
+    AVAILABLE = "available"
+    EXHAUSTED = "exhausted"
+    REVERSED = "reversed"
+
+
+class RFIDLedgerEntryType(str, enum.Enum):
+    RECHARGE_CREDIT = "recharge_credit"
+
+    FARE_HOLD = "fare_hold"
+    FARE_DEBIT = "fare_debit"
+    HOLD_RELEASE = "hold_release"
+
+    ADMIN_ADJUSTMENT_CREDIT = "admin_adjustment_credit"
+    ADMIN_ADJUSTMENT_DEBIT = "admin_adjustment_debit"
+
+    CARD_RETURN_SWEEP = "card_return_sweep"
+    CARD_DECOMMISSION_SWEEP = "card_decommission_sweep"
+
+    REFUND = "refund"
+    REVERSAL = "reversal"
+
+    FARE_REVERSAL_CREDIT = "fare_reversal_credit"
+    HOLD_REVERSAL = "hold_reversal"
+    FUNDING_REVERSAL = "funding_reversal"
+
 # ============================================================
 # auth / users
 # ============================================================
@@ -953,6 +1000,337 @@ class RouteFare(UUIDPKMixin, TimestampMixin, Base):
         ),
     )
 
+# ============================================================
+# RFID wallet / recharge / ledger
+# ============================================================
+
+
+class RFIDCardAccount(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_card_accounts"
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+        unique=True,
+    )
+
+    current_balance: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    held_balance: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    currency: Mapped[str] = mapped_column(
+        String(3),
+        nullable=False,
+        default="INR",
+        server_default=text("'INR'"),
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "current_balance >= 0",
+            name="ck_rfid_card_accounts_current_balance_nonnegative",
+        ),
+        CheckConstraint(
+            "held_balance >= 0",
+            name="ck_rfid_card_accounts_held_balance_nonnegative",
+        ),
+        CheckConstraint(
+            "held_balance <= current_balance",
+            name="ck_rfid_card_accounts_hold_not_above_balance",
+        ),
+        CheckConstraint(
+            "currency <> ''",
+            name="ck_rfid_card_accounts_currency_nonempty",
+        ),
+    )
+
+
+class RFIDRecharge(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_recharges"
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_card_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
+
+    passenger_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    status: Mapped[RFIDRechargeStatus] = mapped_column(
+        enum_type(RFIDRechargeStatus, "rfid_recharge_status"),
+        nullable=False,
+        default=RFIDRechargeStatus.CREATED,
+    )
+
+    source_type: Mapped[RFIDRechargeSourceType] = mapped_column(
+        enum_type(RFIDRechargeSourceType, "rfid_recharge_source_type"),
+        nullable=False,
+    )
+
+    razorpay_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    razorpay_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    razorpay_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    razorpay_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+
+    provider_payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    verified_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    credited_ledger_entry_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    credited_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_rfid_recharges_amount_positive",
+        ),
+        Index("ix_rfid_recharges_account_created", "account_id", "created_at"),
+        Index("ix_rfid_recharges_card_created", "card_id", "created_at"),
+        Index("ix_rfid_recharges_razorpay_order", "razorpay_order_id"),
+        Index("ix_rfid_recharges_razorpay_payment", "razorpay_payment_id"),
+    )
+
+
+class RFIDFundingLot(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_funding_lots"
+
+    recharge_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_recharges.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_card_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
+
+    source_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    remaining_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    razorpay_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    source_type: Mapped[RFIDFundingLotSourceType] = mapped_column(
+        enum_type(RFIDFundingLotSourceType, "rfid_funding_lot_source_type"),
+        nullable=False,
+    )
+
+    status: Mapped[RFIDFundingLotStatus] = mapped_column(
+        enum_type(RFIDFundingLotStatus, "rfid_funding_lot_status"),
+        nullable=False,
+        default=RFIDFundingLotStatus.AVAILABLE,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "source_amount > 0",
+            name="ck_rfid_funding_lots_source_amount_positive",
+        ),
+        CheckConstraint(
+            "remaining_amount >= 0",
+            name="ck_rfid_funding_lots_remaining_nonnegative",
+        ),
+        CheckConstraint(
+            "remaining_amount <= source_amount",
+            name="ck_rfid_funding_lots_remaining_not_above_source",
+        ),
+        Index("ix_rfid_funding_lots_account_status", "account_id", "status"),
+        Index("ix_rfid_funding_lots_card_status", "card_id", "status"),
+        Index("ix_rfid_funding_lots_recharge", "recharge_id"),
+    )
+
+
+class RFIDLedgerEntry(UUIDPKMixin, Base):
+    __tablename__ = "rfid_ledger_entries"
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_card_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        nullable=False,
+    )
+
+    passenger_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    entry_type: Mapped[RFIDLedgerEntryType] = mapped_column(
+        enum_type(RFIDLedgerEntryType, "rfid_ledger_entry_type"),
+        nullable=False,
+    )
+
+    amount_delta: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    held_delta: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    balance_after: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    held_balance_after: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    source_recharge_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_recharges.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    scheduled_trip_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rfid_ride_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    stop_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    razorpay_order_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    razorpay_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    reverses_ledger_entry_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    reversed_by_ledger_entry_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_ledger_entries.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "balance_after >= 0",
+            name="ck_rfid_ledger_entries_balance_after_nonnegative",
+        ),
+        CheckConstraint(
+            "held_balance_after >= 0",
+            name="ck_rfid_ledger_entries_held_after_nonnegative",
+        ),
+        CheckConstraint(
+            "held_balance_after <= balance_after",
+            name="ck_rfid_ledger_entries_hold_after_not_above_balance",
+        ),
+        Index("ix_rfid_ledger_entries_account_created", "account_id", "created_at"),
+        Index("ix_rfid_ledger_entries_card_created", "card_id", "created_at"),
+        Index("ix_rfid_ledger_entries_recharge", "source_recharge_id"),
+        Index("ix_rfid_ledger_entries_trip", "scheduled_trip_id"),
+        Index("ix_rfid_ledger_entries_ride", "rfid_ride_id"),
+        Index("ix_rfid_ledger_entries_razorpay_payment", "razorpay_payment_id"),
+    )
 
 class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "platform_settings"
