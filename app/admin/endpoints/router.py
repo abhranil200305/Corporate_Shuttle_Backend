@@ -17,6 +17,7 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDTripRideListResponse,
 	RFIDCardAssignRequest,
 	RFIDCardBulkRegisterRequest,
 	RFIDCardBulkRegisterResponse,
@@ -1158,6 +1159,31 @@ async def decommission_rfid_card(
 	return {
 		"message": "RFID card decommissioned successfully.",
 		"card": service.serialize_card(card),
+	}
+
+@router.get(
+	"/rfid/rides/payout-ready",
+	response_model=RFIDTripRideListResponse,
+	tags=["Admin RFID"],
+)
+async def list_payout_ready_rfid_rides(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	driver_user_id: str | None = Query(default=None, min_length=1, max_length=36),
+	scheduled_trip_id: str | None = Query(default=None, min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	rides, count = await service.list_payout_ready_rfid_rides(
+		page=page,
+		page_size=page_size,
+		driver_user_id=driver_user_id,
+		scheduled_trip_id=scheduled_trip_id,
+	)
+
+	return {
+		"items": [service.serialize_trip_ride(ride) for ride in rides],
+		"count": count,
 	}
 
 # -----------------------------
