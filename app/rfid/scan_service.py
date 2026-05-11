@@ -113,6 +113,26 @@ class RFIDScanService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_card_account_for_update_by_card_id(
+        self,
+        card_id: str,
+    ) -> schema.RFIDCardAccount | None:
+        stmt = (
+            select(schema.RFIDCardAccount)
+            .where(schema.RFIDCardAccount.card_id == card_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    @staticmethod
+    def _money(value: Decimal | int | str | None) -> Decimal:
+        return Decimal(value or 0).quantize(Decimal("0.01"))
+
+    def _available_balance(self, account: schema.RFIDCardAccount) -> Decimal:
+        return self._money(account.current_balance) - self._money(account.held_balance)
+
     async def _get_running_trip_for_vehicle(
         self,
         vehicle_id: str,
@@ -284,12 +304,14 @@ class RFIDScanService:
         ):
             rejection_reason = "rfid_card_not_assigned"
         else:
-            card_account = await self._get_card_account_by_card_id(card.id)
+            card_account = await self._get_card_account_for_update_by_card_id(card.id)
 
             if card_account is None:
                 rejection_reason = "rfid_card_account_not_found"
             elif card_account.is_active is False:
                 rejection_reason = "rfid_card_account_inactive"
+            elif self._available_balance(card_account) < Decimal("0.00"):
+                rejection_reason = "rfid_card_account_balance_invalid"
             else:
                 active_context = await self._get_active_trip_stop_context_for_device(
                     device
