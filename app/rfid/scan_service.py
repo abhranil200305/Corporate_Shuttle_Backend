@@ -7,7 +7,7 @@ from decimal import Decimal
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import schema
@@ -132,6 +132,40 @@ class RFIDScanService:
 
     def _available_balance(self, account: schema.RFIDCardAccount) -> Decimal:
         return self._money(account.current_balance) - self._money(account.held_balance)
+    
+    async def _get_max_downstream_fare_from_stop(
+        self,
+        *,
+        route_id: str,
+        pickup_stop_id: str,
+        pickup_sequence_no: int,
+    ) -> Decimal | None:
+        stmt = (
+            select(func.max(schema.RouteFare.amount))
+            .join(
+                schema.RouteStop,
+                (
+                    schema.RouteStop.route_id == schema.RouteFare.route_id
+                )
+                & (
+                    schema.RouteStop.stop_id == schema.RouteFare.dropoff_stop_id
+                ),
+            )
+            .where(
+                schema.RouteFare.route_id == route_id,
+                schema.RouteFare.pickup_stop_id == pickup_stop_id,
+                schema.RouteFare.is_active.is_(True),
+                schema.RouteStop.sequence_no > pickup_sequence_no,
+            )
+        )
+
+        result = await self.db.execute(stmt)
+        amount = result.scalar_one_or_none()
+
+        if amount is None:
+            return None
+
+        return self._money(amount)
 
     async def _get_running_trip_for_vehicle(
         self,
@@ -370,6 +404,21 @@ class RFIDScanService:
 
                         if open_rfid_ride_count >= reserved_seat_count:
                             rejection_reason = "rfid_seat_pool_full"
+                        elif card_account is not None:
+                            max_downstream_fare = (
+                                await self._get_max_downstream_fare_from_stop(
+                                    route_id=active_context.scheduled_trip.route_id,
+                                    pickup_stop_id=active_context.stop.id,
+                                    pickup_sequence_no=active_context.route_stop.sequence_no,
+                                )
+                            )
+
+                            if max_downstream_fare is None:
+                                rejection_reason = "rfid_downstream_fare_not_configured"
+                            elif self._available_balance(card_account) < max_downstream_fare:
+                                rejection_reason = (
+                                    "rfid_insufficient_balance_for_max_route_fare"
+                                )
 
         scan_event = schema.RFIDScanEvent(
             scan_type=scan_type,
