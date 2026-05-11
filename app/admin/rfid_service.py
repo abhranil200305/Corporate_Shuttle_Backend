@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from fastapi import HTTPException
@@ -16,6 +16,7 @@ from app.admin.rfid_schemas import (
     RFIDCardUnassignRequest,
     RFIDDeviceCreateRequest,
     RFIDDeviceUpdateRequest,
+    RFIDRechargeCreateRequest,
 )
 from app.db import schema
 
@@ -656,6 +657,155 @@ class AdminRFIDService:
         await self.db.flush()
 
         return card
+    
+    @staticmethod
+    def _normalize_money(value: Decimal) -> Decimal:
+        return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+    async def _get_card_account_for_update_or_404(
+        self,
+        card_id: str,
+    ) -> schema.RFIDCardAccount:
+        stmt = (
+            select(schema.RFIDCardAccount)
+            .where(schema.RFIDCardAccount.card_id == card_id)
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        account = result.scalar_one_or_none()
+
+        if account is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_card_account_not_found",
+                    "message": "RFID card account not found.",
+                },
+            )
+
+        return account
+
+    async def create_manual_recharge(
+        self,
+        *,
+        payload: RFIDRechargeCreateRequest,
+        admin_user_id: str,
+    ) -> tuple[schema.RFIDRecharge, schema.RFIDCardAccount]:
+        card = await self._get_card_or_404(payload.card_id)
+        account = await self._get_card_account_for_update_or_404(payload.card_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_decommissioned",
+                    "message": "A decommissioned RFID card cannot be recharged.",
+                },
+            )
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.LOST:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_lost",
+                    "message": "A lost RFID card cannot be recharged.",
+                },
+            )
+
+        if account.is_active is False:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_account_inactive",
+                    "message": "RFID card account is inactive.",
+                },
+            )
+
+        amount = self._normalize_money(payload.amount)
+
+        now = schema.utcnow()
+        balance_after = self._normalize_money(
+            Decimal(account.current_balance or 0) + amount
+        )
+        held_balance_after = self._normalize_money(
+            Decimal(account.held_balance or 0)
+        )
+
+        recharge = schema.RFIDRecharge(
+            id=schema.new_id(),
+            account_id=account.id,
+            card_id=card.id,
+            passenger_user_id=card.assigned_passenger_user_id,
+            amount=amount,
+            status=schema.RFIDRechargeStatus.CREDITED,
+            source_type=schema.RFIDRechargeSourceType.ADMIN_MANUAL,
+            razorpay_order_id=payload.razorpay_order_id,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            razorpay_status="admin_recorded",
+            razorpay_amount=amount,
+            created_by_admin_id=admin_user_id,
+            verified_by_admin_id=admin_user_id,
+            paid_at=now,
+            credited_at=now,
+        )
+
+        funding_lot = schema.RFIDFundingLot(
+            id=schema.new_id(),
+            recharge_id=recharge.id,
+            account_id=account.id,
+            card_id=card.id,
+            source_amount=amount,
+            remaining_amount=amount,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            source_type=(
+                schema.RFIDFundingLotSourceType.RAZORPAY_PAYMENT
+                if payload.razorpay_order_id or payload.razorpay_payment_id
+                else schema.RFIDFundingLotSourceType.ADMIN_MANUAL_POOL
+            ),
+            status=schema.RFIDFundingLotStatus.AVAILABLE,
+        )
+
+        ledger_entry = schema.RFIDLedgerEntry(
+            id=schema.new_id(),
+            account_id=account.id,
+            card_id=card.id,
+            passenger_user_id=card.assigned_passenger_user_id,
+            entry_type=schema.RFIDLedgerEntryType.RECHARGE_CREDIT,
+            amount_delta=amount,
+            held_delta=Decimal("0.00"),
+            balance_after=balance_after,
+            held_balance_after=held_balance_after,
+            source_recharge_id=recharge.id,
+            razorpay_order_id=payload.razorpay_order_id,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            created_by_admin_id=admin_user_id,
+            note=payload.note,
+            created_at=now,
+        )
+
+        recharge.credited_ledger_entry_id = ledger_entry.id
+
+        account.current_balance = balance_after
+        account.held_balance = held_balance_after
+
+        self.db.add(recharge)
+        self.db.add(funding_lot)
+        self.db.add(ledger_entry)
+        self.db.add(account)
+
+        try:
+            await self.db.flush()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_recharge_conflict",
+                    "message": "RFID recharge could not be recorded.",
+                },
+            ) from exc
+
+        return recharge, account
     
     # ============================================================
     # serializers

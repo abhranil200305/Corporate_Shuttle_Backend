@@ -29,6 +29,8 @@ from app.admin.rfid_schemas import (
 	RFIDDeviceListResponse,
 	RFIDDeviceMutationResponse,
 	RFIDDeviceUpdateRequest,
+	RFIDRechargeCreateRequest,
+	RFIDRechargeMutationResponse,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -967,6 +969,37 @@ async def unassign_rfid_card(
 	return {
 		"message": "RFID card unassigned successfully.",
 		"card": service.serialize_card(card),
+	}
+
+# -----------------------------
+# Admin: RFID Recharges
+# -----------------------------
+
+
+@router.post(
+	"/rfid/recharges/manual",
+	response_model=RFIDRechargeMutationResponse,
+	tags=["Admin RFID"],
+)
+async def create_manual_rfid_recharge(
+	payload: RFIDRechargeCreateRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	recharge, account = await service.create_manual_recharge(
+		payload=payload,
+		admin_user_id=current_user.id,
+	)
+
+	await db.commit()
+	await db.refresh(recharge)
+	await db.refresh(account)
+
+	return {
+		"message": "RFID recharge recorded successfully.",
+		"recharge": service.serialize_recharge(recharge),
+		"account": service.serialize_account(account),
 	}
 
 
