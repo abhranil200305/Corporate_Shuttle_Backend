@@ -579,6 +579,17 @@ class PassengerService:
         )
         result = await self.db.execute(stmt)
         return int(result.scalar_one() or 0)
+    
+    @staticmethod
+    def _get_app_bookable_capacity(trip: ScheduledTrip) -> int:
+        vehicle_capacity = (
+            int(trip.vehicle.seat_count or 0)
+            if trip.vehicle is not None
+            else 0
+        )
+        rfid_reserved_capacity = int(trip.rfid_reserved_seat_count or 0)
+
+        return max(vehicle_capacity - rfid_reserved_capacity, 0)
 
     def _serialize_stop_brief(self, stop: Stop) -> dict[str, Any]:
         return {
@@ -651,6 +662,10 @@ class PassengerService:
                 "vehicle_model": trip.vehicle.vehicle_model,
                 "color": trip.vehicle.color,
                 "seat_count": trip.vehicle.seat_count,
+                "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
+                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
+                "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
+                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": {
@@ -1729,7 +1744,7 @@ class PassengerService:
             dropoff_stop_id=payload.dropoff_stop_id,
         )
 
-        seat_capacity = trip.vehicle.seat_count if trip.vehicle is not None else 0
+        seat_capacity = self._get_app_bookable_capacity(trip)
 
         overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
@@ -2361,7 +2376,7 @@ class PassengerService:
             pickup_sequence_no=pickup_route_stop.sequence_no,
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
-        seat_count = trip.vehicle.seat_count if trip.vehicle is not None else 0
+        seat_count = self._get_app_bookable_capacity(trip)
         if overlapping_active_booking_count >= seat_count:
             raise HTTPException(
                 status_code=409,
@@ -3099,7 +3114,7 @@ class PassengerService:
             target_sequence_no=dropoff_route_stop.sequence_no,
         )
 
-        seat_capacity = trip.vehicle.seat_count if trip.vehicle is not None else 0
+        seat_capacity = self._get_app_bookable_capacity(trip)
 
         overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
@@ -3138,6 +3153,8 @@ class PassengerService:
                 "vehicle_model": trip.vehicle.vehicle_model,
                 "color": trip.vehicle.color,
                 "seat_count": trip.vehicle.seat_count,
+                "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
+                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": None if trip.driver is None else {
