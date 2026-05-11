@@ -175,6 +175,7 @@ async def create_trip(
         planned_start_at=planned_start_at,
         planned_end_at=planned_end_at,
         status=ScheduledTripStatus.SCHEDULED,
+        rfid_reserved_seat_count=vehicle.default_rfid_reserved_seat_count or 0,
     )
 
     session.add(trip)

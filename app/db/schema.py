@@ -726,6 +726,12 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
     vehicle_model: Mapped[str] = mapped_column(String(80), nullable=False)
     color: Mapped[str] = mapped_column(String(40), nullable=False)
     seat_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    default_rfid_reserved_seat_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     has_ac: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     rc_file_path: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -805,6 +811,14 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
             "vehicle_model <> ''", name="ck_vehicles_vehicle_model_nonempty"
         ),
         CheckConstraint("color <> ''", name="ck_vehicles_color_nonempty"),
+        CheckConstraint(
+            "default_rfid_reserved_seat_count >= 0",
+            name="ck_vehicles_default_rfid_reserved_nonnegative",
+        ),
+        CheckConstraint(
+            "default_rfid_reserved_seat_count <= seat_count",
+            name="ck_vehicles_default_rfid_reserved_not_above_seat_count",
+        ),
     )
 
 
@@ -1570,6 +1584,12 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         ForeignKey("vehicles.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    rfid_reserved_seat_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
     emergency_stop_request_status: Mapped[EmergencyStopRequestStatus | None] = mapped_column(
     enum_type(EmergencyStopRequestStatus, "emergency_stop_request_status"),
     nullable=True,
@@ -1683,6 +1703,10 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "planned_end_at > planned_start_at",
             name="ck_scheduled_trips_planned_window_valid",
+        ),
+        CheckConstraint(
+            "rfid_reserved_seat_count >= 0",
+            name="ck_scheduled_trips_rfid_reserved_nonnegative",
         ),
         Index("ix_scheduled_trips_driver_start", "driver_user_id", "planned_start_at"),
         Index("ix_scheduled_trips_vehicle_start", "vehicle_id", "planned_start_at"),
