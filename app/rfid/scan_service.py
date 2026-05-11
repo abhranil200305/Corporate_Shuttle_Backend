@@ -476,6 +476,9 @@ class RFIDScanService:
             raw_payload_json=self._raw_payload_to_json(payload.raw_payload),
         )
 
+        self.db.add(scan_event)
+        await self.db.flush()
+
         if scan_accepted:
             assert active_context is not None
             assert card is not None
@@ -516,6 +519,9 @@ class RFIDScanService:
                 transfer_status=schema.RFIDPayoutTransferStatus.WITHHELD,
             )
 
+            self.db.add(ride)
+            await self.db.flush()
+
             ledger_entry = schema.RFIDLedgerEntry(
                 id=schema.new_id(),
                 account_id=card_account.id,
@@ -536,9 +542,9 @@ class RFIDScanService:
             card_account.held_balance = held_balance_after
             scan_event.rfid_ride_id = ride.id
 
-            self.db.add(ride)
             self.db.add(ledger_entry)
             self.db.add(card_account)
+            self.db.add(scan_event)
 
         if device is not None:
             device.last_seen_at = schema.utcnow()
@@ -546,9 +552,8 @@ class RFIDScanService:
             device.last_seen_lng = payload.scan_lng
             self.db.add(device)
 
-        self.db.add(scan_event)
         await self.db.flush()
-
+        
         return {
             "accepted": scan_event.accepted,
             "scan_event_id": scan_event.id,
