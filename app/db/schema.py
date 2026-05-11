@@ -254,6 +254,17 @@ class RFIDLedgerEntryType(str, enum.Enum):
     HOLD_REVERSAL = "hold_reversal"
     FUNDING_REVERSAL = "funding_reversal"
 
+class RFIDCardInventoryStatus(str, enum.Enum):
+    INVENTORY = "inventory"
+    ASSIGNED = "assigned"
+    LOST = "lost"
+    DECOMMISSIONED = "decommissioned"
+
+
+class RFIDCardAuthorizationStatus(str, enum.Enum):
+    ALLOWED = "allowed"
+    BLOCKED = "blocked"
+
 # ============================================================
 # auth / users
 # ============================================================
@@ -1001,6 +1012,185 @@ class RouteFare(UUIDPKMixin, TimestampMixin, Base):
     )
 
 # ============================================================
+# RFID card / device inventory
+# ============================================================
+
+
+class RFIDCard(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_cards"
+
+    card_uid_hash: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+        unique=True,
+    )
+
+    card_uid_masked: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    inventory_status: Mapped[RFIDCardInventoryStatus] = mapped_column(
+        enum_type(RFIDCardInventoryStatus, "rfid_card_inventory_status"),
+        nullable=False,
+        default=RFIDCardInventoryStatus.INVENTORY,
+        server_default=text("'inventory'"),
+    )
+
+    authorization_status: Mapped[RFIDCardAuthorizationStatus] = mapped_column(
+        enum_type(RFIDCardAuthorizationStatus, "rfid_card_authorization_status"),
+        nullable=False,
+        default=RFIDCardAuthorizationStatus.ALLOWED,
+        server_default=text("'allowed'"),
+    )
+
+    assigned_passenger_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    assigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    returned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    decommissioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "card_uid_hash <> ''",
+            name="ck_rfid_cards_uid_hash_nonempty",
+        ),
+        Index("ix_rfid_cards_assigned_passenger", "assigned_passenger_user_id"),
+        Index("ix_rfid_cards_inventory_status", "inventory_status"),
+        Index("ix_rfid_cards_authorization_status", "authorization_status"),
+    )
+
+
+class RFIDCardAssignment(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_card_assignments"
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_cards.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    passenger_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    assigned_by_admin_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    assigned_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    unassigned_by_admin_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    unassigned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        Index("ix_rfid_card_assignments_card_assigned", "card_id", "assigned_at"),
+        Index(
+            "ix_rfid_card_assignments_passenger_assigned",
+            "passenger_user_id",
+            "assigned_at",
+        ),
+    )
+
+
+class RFIDDevice(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_devices"
+
+    serial_number: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+        unique=True,
+    )
+
+    vehicle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("vehicles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    decommissioned_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_seen_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    last_seen_lat: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+
+    last_seen_lng: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "serial_number <> ''",
+            name="ck_rfid_devices_serial_number_nonempty",
+        ),
+        CheckConstraint(
+            "last_seen_lat IS NULL OR (last_seen_lat >= -90 AND last_seen_lat <= 90)",
+            name="ck_rfid_devices_last_seen_lat_range",
+        ),
+        CheckConstraint(
+            "last_seen_lng IS NULL OR (last_seen_lng >= -180 AND last_seen_lng <= 180)",
+            name="ck_rfid_devices_last_seen_lng_range",
+        ),
+        Index("ix_rfid_devices_vehicle_id", "vehicle_id"),
+        Index("ix_rfid_devices_is_active", "is_active"),
+        Index("ix_rfid_devices_last_seen_at", "last_seen_at"),
+    )
+
+# ============================================================
 # RFID wallet / recharge / ledger
 # ============================================================
 
@@ -1010,6 +1200,7 @@ class RFIDCardAccount(UUIDPKMixin, TimestampMixin, Base):
 
     card_id: Mapped[str] = mapped_column(
         String(36),
+        ForeignKey("rfid_cards.id", ondelete="RESTRICT"),
         nullable=False,
         unique=True,
     )
