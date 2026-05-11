@@ -204,6 +204,7 @@ class RFIDScanService:
                 schema.ScheduledTrip.status == schema.ScheduledTripStatus.IN_PROGRESS,
             )
             .order_by(schema.ScheduledTrip.created_at.desc())
+            .with_for_update()
             .limit(1)
         )
         result = await self.db.execute(stmt)
