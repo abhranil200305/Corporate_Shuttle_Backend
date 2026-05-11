@@ -314,6 +314,7 @@ class RFIDScanService:
         active_context: ActiveTripStopContext | None = None
         open_ride: schema.RFIDTripRide | None = None
         scan_type = schema.RFIDScanType.BOARD
+        max_downstream_fare: Decimal | None = None
         distance_from_stop_meters: Decimal | None = None
         within_radius = False
         rejection_reason = "scan_processing_not_enabled"
@@ -419,8 +420,23 @@ class RFIDScanService:
                                 rejection_reason = (
                                     "rfid_insufficient_balance_for_max_route_fare"
                                 )
+        scan_accepted = False
+        scan_rejection_reason = rejection_reason
+        response_message = "RFID scan recorded. Boarding/deboarding is not enabled yet."
 
+        if (
+            rejection_reason == "scan_processing_not_enabled"
+            and scan_type == schema.RFIDScanType.BOARD
+            and active_context is not None
+            and card is not None
+            and card_account is not None
+            and max_downstream_fare is not None
+        ):
+            scan_accepted = True
+            scan_rejection_reason = None
+            response_message = "RFID board scan accepted."
         scan_event = schema.RFIDScanEvent(
+            id=schema.new_id(),
             scan_type=scan_type,
             device_id=None if device is None else device.id,
             device_serial_snapshot=payload.device_serial_number,
@@ -455,10 +471,74 @@ class RFIDScanService:
             scan_lng=payload.scan_lng,
             within_radius=within_radius,
             distance_from_stop_meters=distance_from_stop_meters,
-            accepted=False,
-            rejection_reason=rejection_reason,
+            accepted=scan_accepted,
+            rejection_reason=scan_rejection_reason,
             raw_payload_json=self._raw_payload_to_json(payload.raw_payload),
         )
+
+        if scan_accepted:
+            assert active_context is not None
+            assert card is not None
+            assert card_account is not None
+            assert max_downstream_fare is not None
+
+            now = schema.utcnow()
+
+            current_balance = self._money(card_account.current_balance)
+            held_balance_before = self._money(card_account.held_balance)
+            held_balance_after = self._money(held_balance_before + max_downstream_fare)
+
+            ride = schema.RFIDTripRide(
+                id=schema.new_id(),
+                card_id=card.id,
+                account_id=card_account.id,
+                passenger_user_id=card.assigned_passenger_user_id,
+                scheduled_trip_id=active_context.scheduled_trip.id,
+                route_id=active_context.scheduled_trip.route_id,
+                vehicle_id=active_context.scheduled_trip.vehicle_id,
+                driver_user_id=active_context.scheduled_trip.driver_user_id,
+                pickup_stop_id=active_context.stop.id,
+                pickup_sequence_no=active_context.route_stop.sequence_no,
+                board_rfid_scan_event_id=scan_event.id,
+                boarded_at=now,
+                board_lat=payload.scan_lat,
+                board_lng=payload.scan_lng,
+                status=schema.RFIDRideStatus.BOARDED,
+                hold_amount=max_downstream_fare,
+                fare_amount=Decimal("0.00"),
+                fare_reversed_amount=Decimal("0.00"),
+                commission_percent_snapshot=Decimal("0.00"),
+                commission_amount=Decimal("0.00"),
+                driver_payout_amount=Decimal("0.00"),
+                driver_payout_reversed_amount=Decimal("0.00"),
+                platform_amount=Decimal("0.00"),
+                platform_amount_reversed=Decimal("0.00"),
+                transfer_status=schema.RFIDPayoutTransferStatus.WITHHELD,
+            )
+
+            ledger_entry = schema.RFIDLedgerEntry(
+                id=schema.new_id(),
+                account_id=card_account.id,
+                card_id=card.id,
+                passenger_user_id=card.assigned_passenger_user_id,
+                entry_type=schema.RFIDLedgerEntryType.FARE_HOLD,
+                amount_delta=Decimal("0.00"),
+                held_delta=max_downstream_fare,
+                balance_after=current_balance,
+                held_balance_after=held_balance_after,
+                scheduled_trip_id=active_context.scheduled_trip.id,
+                rfid_ride_id=ride.id,
+                stop_id=active_context.stop.id,
+                note="RFID max downstream fare held on boarding.",
+                created_at=now,
+            )
+
+            card_account.held_balance = held_balance_after
+            scan_event.rfid_ride_id = ride.id
+
+            self.db.add(ride)
+            self.db.add(ledger_entry)
+            self.db.add(card_account)
 
         if device is not None:
             device.last_seen_at = schema.utcnow()
@@ -470,11 +550,11 @@ class RFIDScanService:
         await self.db.flush()
 
         return {
-            "accepted": False,
+            "accepted": scan_event.accepted,
             "scan_event_id": scan_event.id,
             "scan_type": scan_event.scan_type,
-            "rejection_reason": rejection_reason,
-            "message": "RFID scan recorded. Boarding/deboarding is not enabled yet.",
+            "rejection_reason": scan_event.rejection_reason,
+            "message": response_message,
             "device_id": scan_event.device_id,
             "card_id": scan_event.card_id,
             "passenger_user_id": scan_event.passenger_user_id,
