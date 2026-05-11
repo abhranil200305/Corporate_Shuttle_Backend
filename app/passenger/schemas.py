@@ -94,6 +94,8 @@ class VehicleBriefResponse(BaseModel):
     vehicle_model: str
     color: str
     seat_count: int
+    rfid_reserved_seat_count: int = 0
+    app_bookable_seat_count: int = 0
     has_ac: bool
 
 
