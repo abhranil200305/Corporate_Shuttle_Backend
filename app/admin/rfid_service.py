@@ -723,6 +723,15 @@ class AdminRFIDService:
 
         amount = self._normalize_money(payload.amount)
 
+        if amount <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "invalid_recharge_amount",
+                    "message": "Recharge amount must be at least 0.01 after rounding.",
+                },
+            )
+
         now = schema.utcnow()
         balance_after = self._normalize_money(
             Decimal(account.current_balance or 0) + amount
