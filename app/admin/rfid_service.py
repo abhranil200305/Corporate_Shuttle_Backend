@@ -10,6 +10,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.rfid_schemas import (
+    RFIDCardBulkRegisterRequest,
+    RFIDCardRegisterRequest,
     RFIDDeviceCreateRequest,
     RFIDDeviceUpdateRequest,
 )
@@ -253,6 +255,196 @@ class AdminRFIDService:
         await self.db.flush()
 
         return device
+    
+    # ============================================================
+    # RFID card admin operations
+    # ============================================================
+
+    async def register_card(
+        self,
+        payload: RFIDCardRegisterRequest,
+    ) -> schema.RFIDCard:
+        card_uid_hash = self.hash_card_uid(payload.card_uid)
+        card_uid_masked = self.mask_card_uid(payload.card_uid)
+
+        existing_stmt = (
+            select(schema.RFIDCard)
+            .where(schema.RFIDCard.card_uid_hash == card_uid_hash)
+            .limit(1)
+        )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_card = existing_result.scalar_one_or_none()
+
+        if existing_card is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_already_exists",
+                    "message": "An RFID card with this UID already exists.",
+                },
+            )
+
+        card = schema.RFIDCard(
+            id=schema.new_id(),
+            card_uid_hash=card_uid_hash,
+            card_uid_masked=card_uid_masked,
+            inventory_status=schema.RFIDCardInventoryStatus.INVENTORY,
+            authorization_status=schema.RFIDCardAuthorizationStatus.ALLOWED,
+            notes=payload.notes,
+        )
+
+        account = schema.RFIDCardAccount(
+            id=schema.new_id(),
+            card_id=card.id,
+            current_balance=Decimal("0.00"),
+            held_balance=Decimal("0.00"),
+            currency="INR",
+            is_active=True,
+        )
+
+        self.db.add(card)
+        self.db.add(account)
+
+        try:
+            await self.db.flush()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_conflict",
+                    "message": "An RFID card with this UID already exists.",
+                },
+            ) from exc
+
+        return card
+
+    async def bulk_register_cards(
+        self,
+        payload: RFIDCardBulkRegisterRequest,
+    ) -> tuple[list[dict[str, Any]], int, int]:
+        uid_rows: list[tuple[str, str, str]] = []
+
+        for card_uid in payload.card_uids:
+            uid_rows.append(
+                (
+                    card_uid,
+                    self.hash_card_uid(card_uid),
+                    self.mask_card_uid(card_uid),
+                )
+            )
+
+        hashes = [item[1] for item in uid_rows]
+
+        existing_stmt = select(schema.RFIDCard.card_uid_hash).where(
+            schema.RFIDCard.card_uid_hash.in_(hashes)
+        )
+        existing_result = await self.db.execute(existing_stmt)
+        existing_hashes = set(existing_result.scalars().all())
+
+        items: list[dict[str, Any]] = []
+        created_count = 0
+        skipped_count = 0
+
+        for card_uid, card_uid_hash, card_uid_masked in uid_rows:
+            if card_uid_hash in existing_hashes:
+                skipped_count += 1
+                items.append(
+                    {
+                        "card_uid_masked": card_uid_masked,
+                        "status": "skipped",
+                        "card": None,
+                        "error": "RFID card already exists.",
+                    }
+                )
+                continue
+
+            card = schema.RFIDCard(
+                id=schema.new_id(),
+                card_uid_hash=card_uid_hash,
+                card_uid_masked=card_uid_masked,
+                inventory_status=schema.RFIDCardInventoryStatus.INVENTORY,
+                authorization_status=schema.RFIDCardAuthorizationStatus.ALLOWED,
+                notes=payload.notes,
+            )
+
+            account = schema.RFIDCardAccount(
+                id=schema.new_id(),
+                card_id=card.id,
+                current_balance=Decimal("0.00"),
+                held_balance=Decimal("0.00"),
+                currency="INR",
+                is_active=True,
+            )
+
+            self.db.add(card)
+            self.db.add(account)
+
+            created_count += 1
+            items.append(
+                {
+                    "card_uid_masked": card_uid_masked,
+                    "status": "created",
+                    "card": self.serialize_card(card),
+                    "error": None,
+                }
+            )
+
+        try:
+            await self.db.flush()
+        except IntegrityError as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_bulk_conflict",
+                    "message": "One or more RFID cards already exist.",
+                },
+            ) from exc
+
+        return items, created_count, skipped_count
+
+    async def list_cards(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        inventory_status: schema.RFIDCardInventoryStatus | None = None,
+        authorization_status: schema.RFIDCardAuthorizationStatus | None = None,
+        assigned_passenger_user_id: str | None = None,
+    ) -> tuple[list[schema.RFIDCard], int]:
+        filters = []
+
+        if inventory_status is not None:
+            filters.append(schema.RFIDCard.inventory_status == inventory_status)
+
+        if authorization_status is not None:
+            filters.append(schema.RFIDCard.authorization_status == authorization_status)
+
+        if assigned_passenger_user_id is not None:
+            filters.append(
+                schema.RFIDCard.assigned_passenger_user_id
+                == assigned_passenger_user_id
+            )
+
+        count_stmt = select(func.count(schema.RFIDCard.id))
+        list_stmt = select(schema.RFIDCard)
+
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            list_stmt = list_stmt.where(*filters)
+
+        list_stmt = (
+            list_stmt
+            .order_by(schema.RFIDCard.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
 
     # ============================================================
     # serializers

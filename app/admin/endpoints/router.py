@@ -17,6 +17,11 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDCardBulkRegisterRequest,
+	RFIDCardBulkRegisterResponse,
+	RFIDCardListResponse,
+	RFIDCardMutationResponse,
+	RFIDCardRegisterRequest,
 	RFIDDeviceCreateRequest,
 	RFIDDeviceListResponse,
 	RFIDDeviceMutationResponse,
@@ -813,6 +818,85 @@ async def decommission_rfid_device(
 	return {
 		"message": "RFID device decommissioned successfully.",
 		"device": service.serialize_device(device),
+	}
+
+# -----------------------------
+# Admin: RFID Cards
+# -----------------------------
+
+
+@router.post(
+	"/rfid/cards",
+	response_model=RFIDCardMutationResponse,
+	tags=["Admin RFID"],
+)
+async def register_rfid_card(
+	payload: RFIDCardRegisterRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	card = await service.register_card(payload)
+
+	await db.commit()
+	await db.refresh(card)
+
+	return {
+		"message": "RFID card registered successfully.",
+		"card": service.serialize_card(card),
+	}
+
+
+@router.post(
+	"/rfid/cards/bulk",
+	response_model=RFIDCardBulkRegisterResponse,
+	tags=["Admin RFID"],
+)
+async def bulk_register_rfid_cards(
+	payload: RFIDCardBulkRegisterRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	items, created_count, skipped_count = await service.bulk_register_cards(payload)
+
+	await db.commit()
+
+	return {
+		"message": "RFID card bulk registration completed.",
+		"created_count": created_count,
+		"skipped_count": skipped_count,
+		"items": items,
+	}
+
+
+@router.get(
+	"/rfid/cards",
+	response_model=RFIDCardListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_cards(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	inventory_status: schema.RFIDCardInventoryStatus | None = Query(default=None),
+	authorization_status: schema.RFIDCardAuthorizationStatus | None = Query(default=None),
+	assigned_passenger_user_id: str | None = Query(
+		default=None,
+		min_length=1,
+		max_length=36,
+	),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	cards, count = await service.list_cards(
+		page=page,
+		page_size=page_size,
+		inventory_status=inventory_status,
+		authorization_status=authorization_status,
+		assigned_passenger_user_id=assigned_passenger_user_id,
+	)
+
+	return {
+		"items": [service.serialize_card(card) for card in cards],
+		"count": count,
 	}
 
 
