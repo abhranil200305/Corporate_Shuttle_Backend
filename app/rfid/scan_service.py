@@ -191,9 +191,34 @@ class RFIDScanService:
             card_id=None if card is None else card.id,
             card_uid_hash_snapshot=card_uid_hash,
             passenger_user_id=passenger_user_id,
+            scheduled_trip_id=None
+            if active_context is None
+            else active_context.scheduled_trip.id,
+            route_id=None if active_context is None else active_context.scheduled_trip.route_id,
             vehicle_id=None if device is None else device.vehicle_id,
+            driver_user_id=None
+            if active_context is None
+            else active_context.scheduled_trip.driver_user_id,
+            matched_stop_id=None if active_context is None else active_context.stop.id,
+            matched_route_stop_id=None
+            if active_context is None
+            else active_context.route_stop.id,
+            matched_sequence_no=None
+            if active_context is None
+            else active_context.route_stop.sequence_no,
+            active_trip_event_id=None
+            if active_context is None
+            else active_context.trip_event.id,
+            active_stop_arrival_time_snapshot=None
+            if active_context is None
+            else active_context.trip_event.arrival_time,
+            active_stop_departure_time_snapshot=None
+            if active_context is None
+            else active_context.trip_event.departure_time,
             scan_lat=payload.scan_lat,
             scan_lng=payload.scan_lng,
+            within_radius=False,
+            distance_from_stop_meters=None,
             accepted=False,
             rejection_reason=rejection_reason,
             raw_payload_json=self._raw_payload_to_json(payload.raw_payload),
