@@ -23,7 +23,7 @@ async def record_rfid_scan(
     db: AsyncSession = Depends(get_async_session),
 ):
     service = RFIDScanService(db)
-    response = await service.record_scan_skeleton(payload)
+    response = await service.record_scan(payload)
 
     await db.commit()
 
