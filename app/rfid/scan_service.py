@@ -20,6 +20,7 @@ class ActiveTripStopContext:
     trip_event: schema.TripEvent
     route_stop: schema.RouteStop
     stop: schema.Stop
+    vehicle: schema.Vehicle
 
 
 class RFIDScanService:
@@ -154,6 +155,11 @@ class RFIDScanService:
         stmt = select(schema.Stop).where(schema.Stop.id == stop_id).limit(1)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    async def _get_vehicle_or_none(self, vehicle_id: str) -> schema.Vehicle | None:
+        stmt = select(schema.Vehicle).where(schema.Vehicle.id == vehicle_id).limit(1)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _get_active_trip_stop_context_for_device(
         self,
@@ -182,11 +188,17 @@ class RFIDScanService:
         if stop is None:
             return None
 
+        vehicle = await self._get_vehicle_or_none(device.vehicle_id)
+
+        if vehicle is None:
+            return None
+
         return ActiveTripStopContext(
             scheduled_trip=scheduled_trip,
             trip_event=trip_event,
             route_stop=route_stop,
             stop=stop,
+            vehicle=vehicle,
         )
     
     async def _get_open_rfid_ride_for_card_on_trip(
@@ -207,6 +219,21 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    @staticmethod
+    def _get_rfid_reserved_seat_count(vehicle: schema.Vehicle) -> int:
+        return max(int(vehicle.default_rfid_reserved_seat_count or 0), 0)
+
+    async def _count_open_rfid_rides_for_trip(self, scheduled_trip_id: str) -> int:
+        stmt = (
+            select(schema.RFIDTripRide.id)
+            .where(
+                schema.RFIDTripRide.scheduled_trip_id == scheduled_trip_id,
+                schema.RFIDTripRide.status == schema.RFIDRideStatus.BOARDED,
+            )
+        )
+        result = await self.db.execute(stmt)
+        return len(result.scalars().all())
 
     async def record_scan_skeleton(self, payload: RFIDScanRequest) -> dict[str, Any]:
         device = await self._get_device_by_serial(payload.device_serial_number)
@@ -276,6 +303,20 @@ class RFIDScanService:
                     <= open_ride.pickup_sequence_no
                 ):
                     rejection_reason = "drop_stop_must_be_after_board_stop"
+                elif scan_type == schema.RFIDScanType.BOARD:
+                    reserved_seat_count = self._get_rfid_reserved_seat_count(
+                        active_context.vehicle
+                    )
+
+                    if reserved_seat_count <= 0:
+                        rejection_reason = "rfid_seat_pool_not_configured"
+                    else:
+                        open_rfid_ride_count = await self._count_open_rfid_rides_for_trip(
+                            active_context.scheduled_trip.id
+                        )
+
+                        if open_rfid_ride_count >= reserved_seat_count:
+                            rejection_reason = "rfid_seat_pool_full"
 
         scan_event = schema.RFIDScanEvent(
             scan_type=scan_type,
