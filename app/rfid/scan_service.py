@@ -163,6 +163,7 @@ class RFIDScanService:
         if card is not None:
             passenger_user_id = card.assigned_passenger_user_id
 
+        active_context: ActiveTripStopContext | None = None
         rejection_reason = "scan_processing_not_enabled"
 
         if device is None:
@@ -177,6 +178,11 @@ class RFIDScanService:
             rejection_reason = "rfid_card_decommissioned"
         elif card.authorization_status != schema.RFIDCardAuthorizationStatus.ALLOWED:
             rejection_reason = "rfid_card_blocked"
+        else:
+            active_context = await self._get_active_trip_stop_context_for_device(device)
+
+            if active_context is None:
+                rejection_reason = "no_active_trip_or_stop"
 
         scan_event = schema.RFIDScanEvent(
             scan_type=schema.RFIDScanType.BOARD,
