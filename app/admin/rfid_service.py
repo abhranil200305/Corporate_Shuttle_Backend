@@ -13,7 +13,9 @@ from app.admin.rfid_schemas import (
     RFIDCardAssignRequest,
     RFIDCardBlockRequest,
     RFIDCardBulkRegisterRequest,
+    RFIDCardDecommissionRequest,
     RFIDCardRegisterRequest,
+    RFIDCardReturnRequest,
     RFIDCardUnassignRequest,
     RFIDDeviceCreateRequest,
     RFIDDeviceUpdateRequest,
@@ -737,6 +739,218 @@ class AdminRFIDService:
         )
 
         self.db.add(card)
+        await self.db.flush()
+
+        return card
+    
+    async def _ensure_card_has_no_open_rfid_ride(self, card_id: str) -> None:
+        stmt = (
+            select(func.count(schema.RFIDTripRide.id))
+            .where(
+                schema.RFIDTripRide.card_id == card_id,
+                schema.RFIDTripRide.status == schema.RFIDRideStatus.BOARDED,
+            )
+        )
+        result = await self.db.execute(stmt)
+        open_ride_count = int(result.scalar_one() or 0)
+
+        if open_ride_count > 0:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_has_open_ride",
+                    "message": "RFID card has an open boarded ride. Complete or cancel the ride before returning/decommissioning the card.",
+                },
+            )
+
+    def _ensure_account_has_no_held_balance(
+        self,
+        account: schema.RFIDCardAccount,
+    ) -> None:
+        held_balance = self._normalize_money(Decimal(account.held_balance or 0))
+
+        if held_balance > Decimal("0.00"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_has_held_balance",
+                    "message": "RFID card has held balance. Release or settle holds before returning/decommissioning the card.",
+                },
+            )
+
+    async def _sweep_card_available_balance(
+        self,
+        *,
+        card: schema.RFIDCard,
+        account: schema.RFIDCardAccount,
+        entry_type: schema.RFIDLedgerEntryType,
+        admin_user_id: str,
+        note: str,
+    ) -> schema.RFIDLedgerEntry | None:
+        current_balance = self._normalize_money(
+            Decimal(account.current_balance or 0)
+        )
+        held_balance = self._normalize_money(
+            Decimal(account.held_balance or 0)
+        )
+        available_balance = self._normalize_money(current_balance - held_balance)
+
+        if available_balance < Decimal("0.00"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_account_balance_invalid",
+                    "message": "RFID account balance is invalid: held balance is greater than current balance.",
+                },
+            )
+
+        if available_balance <= Decimal("0.00"):
+            return None
+
+        balance_after = self._normalize_money(current_balance - available_balance)
+        held_balance_after = held_balance
+
+        ledger_entry = schema.RFIDLedgerEntry(
+            id=schema.new_id(),
+            account_id=account.id,
+            card_id=card.id,
+            passenger_user_id=card.assigned_passenger_user_id,
+            entry_type=entry_type,
+            amount_delta=-available_balance,
+            held_delta=Decimal("0.00"),
+            balance_after=balance_after,
+            held_balance_after=held_balance_after,
+            created_by_admin_id=admin_user_id,
+            note=note,
+            created_at=schema.utcnow(),
+        )
+
+        account.current_balance = balance_after
+        account.held_balance = held_balance_after
+
+        self.db.add(ledger_entry)
+        self.db.add(account)
+
+        return ledger_entry
+
+    async def return_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardReturnRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+        account = await self._get_card_account_for_update_or_404(card_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_decommissioned",
+                    "message": "A decommissioned RFID card cannot be returned.",
+                },
+            )
+
+        await self._ensure_card_has_no_open_rfid_ride(card.id)
+        self._ensure_account_has_no_held_balance(account)
+
+        now = schema.utcnow()
+        current_assignment = await self.get_current_card_assignment(card.id)
+
+        if current_assignment is not None:
+            current_assignment.unassigned_by_admin_id = admin_user_id
+            current_assignment.unassigned_at = now
+            current_assignment.reason = payload.reason or "RFID card returned."
+            self.db.add(current_assignment)
+
+        if payload.sweep_remaining_balance:
+            await self._sweep_card_available_balance(
+                card=card,
+                account=account,
+                entry_type=schema.RFIDLedgerEntryType.CARD_RETURN_SWEEP,
+                admin_user_id=admin_user_id,
+                note=payload.reason
+                or "RFID card returned; remaining available balance swept.",
+            )
+
+        card.assigned_passenger_user_id = None
+        card.assigned_at = None
+        card.returned_at = now
+        card.inventory_status = schema.RFIDCardInventoryStatus.INVENTORY
+        card.authorization_status = schema.RFIDCardAuthorizationStatus.ALLOWED
+        card.notes = self._append_card_admin_note(
+            existing_note=card.notes,
+            action="RFID card returned",
+            admin_user_id=admin_user_id,
+            reason=payload.reason,
+        )
+
+        account.is_active = True
+
+        self.db.add(card)
+        self.db.add(account)
+        await self.db.flush()
+
+        return card
+
+    async def decommission_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardDecommissionRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+        account = await self._get_card_account_for_update_or_404(card_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_already_decommissioned",
+                    "message": "RFID card is already decommissioned.",
+                },
+            )
+
+        await self._ensure_card_has_no_open_rfid_ride(card.id)
+        self._ensure_account_has_no_held_balance(account)
+
+        now = schema.utcnow()
+        current_assignment = await self.get_current_card_assignment(card.id)
+
+        if current_assignment is not None:
+            current_assignment.unassigned_by_admin_id = admin_user_id
+            current_assignment.unassigned_at = now
+            current_assignment.reason = payload.reason or "RFID card decommissioned."
+            self.db.add(current_assignment)
+
+        if payload.sweep_remaining_balance:
+            await self._sweep_card_available_balance(
+                card=card,
+                account=account,
+                entry_type=schema.RFIDLedgerEntryType.CARD_DECOMMISSION_SWEEP,
+                admin_user_id=admin_user_id,
+                note=payload.reason
+                or "RFID card decommissioned; remaining available balance swept.",
+            )
+
+        card.assigned_passenger_user_id = None
+        card.assigned_at = None
+        card.decommissioned_at = now
+        card.inventory_status = schema.RFIDCardInventoryStatus.DECOMMISSIONED
+        card.authorization_status = schema.RFIDCardAuthorizationStatus.BLOCKED
+        card.notes = self._append_card_admin_note(
+            existing_note=card.notes,
+            action="RFID card decommissioned",
+            admin_user_id=admin_user_id,
+            reason=payload.reason,
+        )
+
+        account.is_active = False
+
+        self.db.add(card)
+        self.db.add(account)
         await self.db.flush()
 
         return card

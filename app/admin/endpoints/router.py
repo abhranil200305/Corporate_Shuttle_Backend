@@ -34,6 +34,8 @@ from app.admin.rfid_schemas import (
 	RFIDLedgerEntryListResponse,
 	RFIDRechargeListResponse,
 	RFIDCardBlockRequest,
+	RFIDCardDecommissionRequest,
+	RFIDCardReturnRequest,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -1102,6 +1104,59 @@ async def unblock_rfid_card(
 
 	return {
 		"message": "RFID card unblocked successfully.",
+		"card": service.serialize_card(card),
+	}
+
+@router.post(
+	"/rfid/cards/{card_id}/return",
+	response_model=RFIDCardMutationResponse,
+	tags=["Admin RFID"],
+)
+async def return_rfid_card(
+	card_id: str,
+	payload: RFIDCardReturnRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	card = await service.return_card(
+		card_id=card_id,
+		payload=payload,
+		admin_user_id=current_user.id,
+	)
+
+	await db.commit()
+	await db.refresh(card)
+
+	return {
+		"message": "RFID card returned successfully.",
+		"card": service.serialize_card(card),
+	}
+
+
+@router.post(
+	"/rfid/cards/{card_id}/decommission",
+	response_model=RFIDCardMutationResponse,
+	tags=["Admin RFID"],
+)
+async def decommission_rfid_card(
+	card_id: str,
+	payload: RFIDCardDecommissionRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	card = await service.decommission_card(
+		card_id=card_id,
+		payload=payload,
+		admin_user_id=current_user.id,
+	)
+
+	await db.commit()
+	await db.refresh(card)
+
+	return {
+		"message": "RFID card decommissioned successfully.",
 		"card": service.serialize_card(card),
 	}
 
