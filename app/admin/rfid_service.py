@@ -342,14 +342,12 @@ class AdminRFIDService:
         existing_result = await self.db.execute(existing_stmt)
         existing_hashes = set(existing_result.scalars().all())
 
-        items: list[dict[str, Any]] = []
-        created_count = 0
-        skipped_count = 0
+        created_cards_by_hash: dict[str, schema.RFIDCard] = {}
+        skipped_items: list[dict[str, Any]] = []
 
         for card_uid, card_uid_hash, card_uid_masked in uid_rows:
             if card_uid_hash in existing_hashes:
-                skipped_count += 1
-                items.append(
+                skipped_items.append(
                     {
                         "card_uid_masked": card_uid_masked,
                         "status": "skipped",
@@ -379,16 +377,7 @@ class AdminRFIDService:
 
             self.db.add(card)
             self.db.add(account)
-
-            created_count += 1
-            items.append(
-                {
-                    "card_uid_masked": card_uid_masked,
-                    "status": "created",
-                    "card": self.serialize_card(card),
-                    "error": None,
-                }
-            )
+            created_cards_by_hash[card_uid_hash] = card
 
         try:
             await self.db.flush()
@@ -401,6 +390,35 @@ class AdminRFIDService:
                     "message": "One or more RFID cards already exist.",
                 },
             ) from exc
+
+        items: list[dict[str, Any]] = []
+        created_count = 0
+        skipped_count = 0
+
+        for _card_uid, card_uid_hash, card_uid_masked in uid_rows:
+            card = created_cards_by_hash.get(card_uid_hash)
+
+            if card is None:
+                skipped_count += 1
+                items.append(
+                    {
+                        "card_uid_masked": card_uid_masked,
+                        "status": "skipped",
+                        "card": None,
+                        "error": "RFID card already exists.",
+                    }
+                )
+                continue
+
+            created_count += 1
+            items.append(
+                {
+                    "card_uid_masked": card_uid_masked,
+                    "status": "created",
+                    "card": self.serialize_card(card),
+                    "error": None,
+                }
+            )
 
         return items, created_count, skipped_count
 
