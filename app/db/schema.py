@@ -265,6 +265,27 @@ class RFIDCardAuthorizationStatus(str, enum.Enum):
     ALLOWED = "allowed"
     BLOCKED = "blocked"
 
+
+class RFIDRideStatus(str, enum.Enum):
+    BOARDED = "boarded"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    SETTLEMENT_FAILED = "settlement_failed"
+
+
+class RFIDScanType(str, enum.Enum):
+    BOARD = "board"
+    DROP = "drop"
+
+
+class RFIDPayoutTransferStatus(str, enum.Enum):
+    READY = "ready"
+    CREATED = "created"
+    PROCESSED = "processed"
+    FAILED = "failed"
+    WITHHELD = "withheld"
+    REVERSED = "reversed"
+
 # ============================================================
 # auth / users
 # ============================================================
@@ -1202,6 +1223,614 @@ class RFIDDevice(UUIDPKMixin, TimestampMixin, Base):
         Index("ix_rfid_devices_vehicle_id", "vehicle_id"),
         Index("ix_rfid_devices_is_active", "is_active"),
         Index("ix_rfid_devices_last_seen_at", "last_seen_at"),
+    )
+
+
+class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_trip_rides"
+
+    card_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_cards.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_card_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    passenger_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    route_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("routes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    vehicle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("vehicles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    driver_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    pickup_stop_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    pickup_sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    board_rfid_scan_event_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    boarded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    board_lat: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+    board_lng: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+
+    dropoff_stop_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+    dropoff_sequence_no: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    drop_rfid_scan_event_id: Mapped[str | None] = mapped_column(
+        String(36),
+        nullable=True,
+    )
+
+    dropped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    drop_lat: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    drop_lng: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+
+    status: Mapped[RFIDRideStatus] = mapped_column(
+        enum_type(RFIDRideStatus, "rfid_ride_status"),
+        nullable=False,
+        default=RFIDRideStatus.BOARDED,
+        server_default=text("'boarded'"),
+    )
+
+    hold_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    fare_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    fare_reversed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    commission_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    commission_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    driver_payout_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    driver_payout_reversed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    platform_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    platform_amount_reversed: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    transfer_status: Mapped[TransferStatus] = mapped_column(
+        enum_type(TransferStatus, "transfer_status"),
+        nullable=False,
+        default=TransferStatus.NOT_READY,
+        server_default=text("'not_ready'"),
+    )
+
+    transfer_ready_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    transfer_processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "pickup_sequence_no >= 0",
+            name="ck_rfid_trip_rides_pickup_sequence_nonnegative",
+        ),
+        CheckConstraint(
+            "dropoff_sequence_no IS NULL OR dropoff_sequence_no > pickup_sequence_no",
+            name="ck_rfid_trip_rides_drop_after_pickup",
+        ),
+        CheckConstraint(
+            "board_lat >= -90 AND board_lat <= 90",
+            name="ck_rfid_trip_rides_board_lat_range",
+        ),
+        CheckConstraint(
+            "board_lng >= -180 AND board_lng <= 180",
+            name="ck_rfid_trip_rides_board_lng_range",
+        ),
+        CheckConstraint(
+            "drop_lat IS NULL OR (drop_lat >= -90 AND drop_lat <= 90)",
+            name="ck_rfid_trip_rides_drop_lat_range",
+        ),
+        CheckConstraint(
+            "drop_lng IS NULL OR (drop_lng >= -180 AND drop_lng <= 180)",
+            name="ck_rfid_trip_rides_drop_lng_range",
+        ),
+        CheckConstraint(
+            "hold_amount >= 0",
+            name="ck_rfid_trip_rides_hold_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "fare_amount >= 0",
+            name="ck_rfid_trip_rides_fare_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "fare_reversed_amount >= 0 AND fare_reversed_amount <= fare_amount",
+            name="ck_rfid_trip_rides_fare_reversal_valid",
+        ),
+        CheckConstraint(
+            "commission_percent_snapshot >= 0",
+            name="ck_rfid_trip_rides_commission_percent_nonnegative",
+        ),
+        CheckConstraint(
+            "commission_amount >= 0",
+            name="ck_rfid_trip_rides_commission_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "driver_payout_amount >= 0",
+            name="ck_rfid_trip_rides_driver_payout_nonnegative",
+        ),
+        CheckConstraint(
+            "driver_payout_reversed_amount >= 0 "
+            "AND driver_payout_reversed_amount <= driver_payout_amount",
+            name="ck_rfid_trip_rides_driver_payout_reversal_valid",
+        ),
+        CheckConstraint(
+            "platform_amount >= 0",
+            name="ck_rfid_trip_rides_platform_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "platform_amount_reversed >= 0 "
+            "AND platform_amount_reversed <= platform_amount",
+            name="ck_rfid_trip_rides_platform_reversal_valid",
+        ),
+        Index("ix_rfid_trip_rides_card_status", "card_id", "status"),
+        Index("ix_rfid_trip_rides_account_status", "account_id", "status"),
+        Index("ix_rfid_trip_rides_trip_status", "scheduled_trip_id", "status"),
+        Index("ix_rfid_trip_rides_driver_status", "driver_user_id", "status"),
+        Index("ix_rfid_trip_rides_vehicle_status", "vehicle_id", "status"),
+        Index("ix_rfid_trip_rides_boarded_at", "boarded_at"),
+        Index("ix_rfid_trip_rides_dropped_at", "dropped_at"),
+        Index("ix_rfid_trip_rides_transfer_status", "transfer_status"),
+    )
+
+
+class RFIDScanEvent(UUIDPKMixin, Base):
+    __tablename__ = "rfid_scan_events"
+
+    scan_type: Mapped[RFIDScanType] = mapped_column(
+        enum_type(RFIDScanType, "rfid_scan_type"),
+        nullable=False,
+    )
+
+    device_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_devices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    device_serial_snapshot: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
+
+    card_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_cards.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    card_uid_hash_snapshot: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    passenger_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rfid_ride_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_trip_rides.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    scheduled_trip_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    route_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("routes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    vehicle_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("vehicles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    driver_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    matched_stop_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    matched_route_stop_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("route_stops.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    matched_sequence_no: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    active_trip_event_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("trip_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    active_stop_arrival_time_snapshot: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    active_stop_departure_time_snapshot: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    scan_lat: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+
+    scan_lng: Mapped[Decimal | None] = mapped_column(
+        Numeric(9, 6),
+        nullable=True,
+    )
+
+    within_radius: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
+    distance_from_stop_meters: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+    )
+
+    accepted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+
+    rejection_reason: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    raw_payload_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "device_serial_snapshot <> ''",
+            name="ck_rfid_scan_events_device_serial_snapshot_nonempty",
+        ),
+        CheckConstraint(
+            "card_uid_hash_snapshot <> ''",
+            name="ck_rfid_scan_events_card_uid_hash_snapshot_nonempty",
+        ),
+        CheckConstraint(
+            "matched_sequence_no IS NULL OR matched_sequence_no >= 0",
+            name="ck_rfid_scan_events_matched_sequence_nonnegative",
+        ),
+        CheckConstraint(
+            "scan_lat IS NULL OR (scan_lat >= -90 AND scan_lat <= 90)",
+            name="ck_rfid_scan_events_scan_lat_range",
+        ),
+        CheckConstraint(
+            "scan_lng IS NULL OR (scan_lng >= -180 AND scan_lng <= 180)",
+            name="ck_rfid_scan_events_scan_lng_range",
+        ),
+        CheckConstraint(
+            "distance_from_stop_meters IS NULL OR distance_from_stop_meters >= 0",
+            name="ck_rfid_scan_events_distance_nonnegative",
+        ),
+        Index("ix_rfid_scan_events_device_created", "device_id", "created_at"),
+        Index("ix_rfid_scan_events_card_created", "card_id", "created_at"),
+        Index("ix_rfid_scan_events_ride_created", "rfid_ride_id", "created_at"),
+        Index("ix_rfid_scan_events_trip_created", "scheduled_trip_id", "created_at"),
+        Index("ix_rfid_scan_events_vehicle_created", "vehicle_id", "created_at"),
+        Index("ix_rfid_scan_events_accepted_created", "accepted", "created_at"),
+        Index("ix_rfid_scan_events_scan_type_created", "scan_type", "created_at"),
+    )
+
+
+class RFIDRideFundingAllocation(UUIDPKMixin, Base):
+    __tablename__ = "rfid_ride_funding_allocations"
+
+    rfid_ride_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_trip_rides.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    funding_lot_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_funding_lots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    recharge_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_recharges.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_rfid_ride_funding_allocations_amount_positive",
+        ),
+        Index(
+            "ix_rfid_ride_funding_allocations_ride",
+            "rfid_ride_id",
+        ),
+        Index(
+            "ix_rfid_ride_funding_allocations_funding_lot",
+            "funding_lot_id",
+        ),
+        Index(
+            "ix_rfid_ride_funding_allocations_recharge",
+            "recharge_id",
+        ),
+        Index(
+            "ix_rfid_ride_funding_allocations_razorpay_payment",
+            "razorpay_payment_id",
+        ),
+    )
+
+
+class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_payout_transfers"
+
+    rfid_ride_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_trip_rides.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    driver_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    route_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("routes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    vehicle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("vehicles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    source_recharge_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_recharges.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    source_funding_allocation_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("rfid_ride_funding_allocations.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    source_razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+
+    linked_account_id: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    status: Mapped[RFIDPayoutTransferStatus] = mapped_column(
+        enum_type(RFIDPayoutTransferStatus, "rfid_payout_transfer_status"),
+        nullable=False,
+        default=RFIDPayoutTransferStatus.READY,
+        server_default=text("'ready'"),
+    )
+
+    razorpay_transfer_id: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    provider_response_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    failure_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    reversed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_rfid_payout_transfers_amount_positive",
+        ),
+        Index("ix_rfid_payout_transfers_ride", "rfid_ride_id"),
+        Index("ix_rfid_payout_transfers_driver_status", "driver_user_id", "status"),
+        Index("ix_rfid_payout_transfers_trip_status", "scheduled_trip_id", "status"),
+        Index("ix_rfid_payout_transfers_status_created", "status", "created_at"),
+        Index(
+            "ix_rfid_payout_transfers_source_recharge",
+            "source_recharge_id",
+        ),
+        Index(
+            "ix_rfid_payout_transfers_source_funding_allocation",
+            "source_funding_allocation_id",
+        ),
+        Index(
+            "ix_rfid_payout_transfers_source_razorpay_payment",
+            "source_razorpay_payment_id",
+        ),
+        Index(
+            "ix_rfid_payout_transfers_razorpay_transfer",
+            "razorpay_transfer_id",
+        ),
     )
 
 # ============================================================
