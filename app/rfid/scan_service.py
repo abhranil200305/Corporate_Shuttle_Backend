@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
@@ -9,6 +10,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import schema
 from app.rfid.scan_schemas import RFIDScanRequest
+
+
+@dataclass(frozen=True)
+class ActiveTripStopContext:
+    scheduled_trip: schema.ScheduledTrip
+    trip_event: schema.TripEvent
+    route_stop: schema.RouteStop
+    stop: schema.Stop
 
 
 class RFIDScanService:
@@ -55,6 +64,95 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    async def _get_running_trip_for_vehicle(
+        self,
+        vehicle_id: str,
+    ) -> schema.ScheduledTrip | None:
+        stmt = (
+            select(schema.ScheduledTrip)
+            .where(
+                schema.ScheduledTrip.vehicle_id == vehicle_id,
+                schema.ScheduledTrip.status == schema.ScheduledTripStatus.IN_PROGRESS,
+            )
+            .order_by(schema.ScheduledTrip.created_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _get_active_trip_event(
+        self,
+        scheduled_trip_id: str,
+    ) -> schema.TripEvent | None:
+        stmt = (
+            select(schema.TripEvent)
+            .where(
+                schema.TripEvent.scheduled_trip_id == scheduled_trip_id,
+                schema.TripEvent.arrival_time.is_not(None),
+                schema.TripEvent.departure_time.is_(None),
+            )
+            .order_by(schema.TripEvent.arrival_time.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _get_route_stop_for_trip_event(
+        self,
+        *,
+        route_id: str,
+        stop_id: str,
+    ) -> schema.RouteStop | None:
+        stmt = (
+            select(schema.RouteStop)
+            .where(
+                schema.RouteStop.route_id == route_id,
+                schema.RouteStop.stop_id == stop_id,
+            )
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _get_stop_or_none(self, stop_id: str) -> schema.Stop | None:
+        stmt = select(schema.Stop).where(schema.Stop.id == stop_id).limit(1)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _get_active_trip_stop_context_for_device(
+        self,
+        device: schema.RFIDDevice,
+    ) -> ActiveTripStopContext | None:
+        scheduled_trip = await self._get_running_trip_for_vehicle(device.vehicle_id)
+
+        if scheduled_trip is None:
+            return None
+
+        trip_event = await self._get_active_trip_event(scheduled_trip.id)
+
+        if trip_event is None:
+            return None
+
+        route_stop = await self._get_route_stop_for_trip_event(
+            route_id=scheduled_trip.route_id,
+            stop_id=trip_event.stop_id,
+        )
+
+        if route_stop is None:
+            return None
+
+        stop = await self._get_stop_or_none(trip_event.stop_id)
+
+        if stop is None:
+            return None
+
+        return ActiveTripStopContext(
+            scheduled_trip=scheduled_trip,
+            trip_event=trip_event,
+            route_stop=route_stop,
+            stop=stop,
+        )
 
     async def record_scan_skeleton(self, payload: RFIDScanRequest) -> dict[str, Any]:
         device = await self._get_device_by_serial(payload.device_serial_number)
