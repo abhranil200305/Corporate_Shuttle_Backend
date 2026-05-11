@@ -308,6 +308,7 @@ class RFIDScanService:
                 schema.RFIDTripRide.status == schema.RFIDRideStatus.BOARDED,
             )
             .order_by(schema.RFIDTripRide.boarded_at.desc())
+            .with_for_update()
             .limit(1)
         )
         result = await self.db.execute(stmt)
