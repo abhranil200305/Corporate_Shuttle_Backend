@@ -166,6 +166,32 @@ class RFIDScanService:
             return None
 
         return self._money(amount)
+    
+    async def _get_fare_for_stop_pair(
+        self,
+        *,
+        route_id: str,
+        pickup_stop_id: str,
+        dropoff_stop_id: str,
+    ) -> Decimal | None:
+        stmt = (
+            select(schema.RouteFare.amount)
+            .where(
+                schema.RouteFare.route_id == route_id,
+                schema.RouteFare.pickup_stop_id == pickup_stop_id,
+                schema.RouteFare.dropoff_stop_id == dropoff_stop_id,
+                schema.RouteFare.is_active.is_(True),
+            )
+            .limit(1)
+        )
+
+        result = await self.db.execute(stmt)
+        amount = result.scalar_one_or_none()
+
+        if amount is None:
+            return None
+
+        return self._money(amount)
 
     async def _get_running_trip_for_vehicle(
         self,
@@ -315,6 +341,7 @@ class RFIDScanService:
         open_ride: schema.RFIDTripRide | None = None
         scan_type = schema.RFIDScanType.BOARD
         max_downstream_fare: Decimal | None = None
+        actual_drop_fare: Decimal | None = None
         distance_from_stop_meters: Decimal | None = None
         within_radius = False
         rejection_reason = "scan_processing_not_enabled"
@@ -389,6 +416,15 @@ class RFIDScanService:
                     <= open_ride.pickup_sequence_no
                 ):
                     rejection_reason = "drop_stop_must_be_after_board_stop"
+                elif scan_type == schema.RFIDScanType.DROP and open_ride is not None:
+                    actual_drop_fare = await self._get_fare_for_stop_pair(
+                        route_id=active_context.scheduled_trip.route_id,
+                        pickup_stop_id=open_ride.pickup_stop_id,
+                        dropoff_stop_id=active_context.stop.id,
+                    )
+
+                    if actual_drop_fare is None:
+                        rejection_reason = "rfid_actual_drop_fare_not_configured"
                 elif scan_type == schema.RFIDScanType.BOARD:
                     reserved_seat_count = self._get_rfid_reserved_seat_count(
                         active_context.vehicle
