@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from decimal import Decimal
+from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
 from sqlalchemy import select
@@ -40,6 +42,39 @@ class RFIDScanService:
             separators=(",", ":"),
             default=str,
         )
+    
+    @staticmethod
+    def _haversine_distance_meters(
+        *,
+        lat1: Decimal,
+        lng1: Decimal,
+        lat2: Decimal,
+        lng2: Decimal,
+    ) -> Decimal:
+        earth_radius_meters = 6_371_000
+
+        lat1_rad, lng1_rad, lat2_rad, lng2_rad = map(
+            radians,
+            [
+                float(lat1),
+                float(lng1),
+                float(lat2),
+                float(lng2),
+            ],
+        )
+
+        delta_lat = lat2_rad - lat1_rad
+        delta_lng = lng2_rad - lng1_rad
+
+        haversine_value = (
+            sin(delta_lat / 2) ** 2
+            + cos(lat1_rad) * cos(lat2_rad) * sin(delta_lng / 2) ** 2
+        )
+
+        central_angle = 2 * asin(sqrt(haversine_value))
+        distance = earth_radius_meters * central_angle
+
+        return Decimal(str(round(distance, 2)))
 
     async def _get_device_by_serial(
         self,
@@ -164,8 +199,9 @@ class RFIDScanService:
             passenger_user_id = card.assigned_passenger_user_id
 
         active_context: ActiveTripStopContext | None = None
+        distance_from_stop_meters: Decimal | None = None
+        within_radius = False
         rejection_reason = "scan_processing_not_enabled"
-
         if device is None:
             rejection_reason = "rfid_device_not_found"
         elif device.decommissioned_at is not None:
@@ -183,6 +219,23 @@ class RFIDScanService:
 
             if active_context is None:
                 rejection_reason = "no_active_trip_or_stop"
+            elif payload.scan_lat is None or payload.scan_lng is None:
+                rejection_reason = "scan_location_required"
+            else:
+                distance_from_stop_meters = self._haversine_distance_meters(
+                    lat1=payload.scan_lat,
+                    lng1=payload.scan_lng,
+                    lat2=active_context.stop.lat,
+                    lng2=active_context.stop.lng,
+                )
+
+                within_radius = (
+                    distance_from_stop_meters
+                    <= Decimal(active_context.stop.radius_meters or 0)
+                )
+
+                if not within_radius:
+                    rejection_reason = "not_within_active_stop_radius"
 
         scan_event = schema.RFIDScanEvent(
             scan_type=schema.RFIDScanType.BOARD,
@@ -217,8 +270,8 @@ class RFIDScanService:
             else active_context.trip_event.departure_time,
             scan_lat=payload.scan_lat,
             scan_lng=payload.scan_lng,
-            within_radius=False,
-            distance_from_stop_meters=None,
+            within_radius=within_radius,
+            distance_from_stop_meters=distance_from_stop_meters,
             accepted=False,
             rejection_reason=rejection_reason,
             raw_payload_json=self._raw_payload_to_json(payload.raw_payload),
