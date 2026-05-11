@@ -10,8 +10,10 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.admin.rfid_schemas import (
+    RFIDCardAssignRequest,
     RFIDCardBulkRegisterRequest,
     RFIDCardRegisterRequest,
+    RFIDCardUnassignRequest,
     RFIDDeviceCreateRequest,
     RFIDDeviceUpdateRequest,
 )
@@ -464,6 +466,197 @@ class AdminRFIDService:
 
         return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
 
+    async def _get_card_or_404(self, card_id: str) -> schema.RFIDCard:
+        stmt = select(schema.RFIDCard).where(schema.RFIDCard.id == card_id)
+        result = await self.db.execute(stmt)
+        card = result.scalar_one_or_none()
+
+        if card is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_card_not_found",
+                    "message": "RFID card not found.",
+                },
+            )
+
+        return card
+
+    async def _get_card_account_or_404(
+        self,
+        card_id: str,
+    ) -> schema.RFIDCardAccount:
+        stmt = select(schema.RFIDCardAccount).where(
+            schema.RFIDCardAccount.card_id == card_id
+        )
+        result = await self.db.execute(stmt)
+        account = result.scalar_one_or_none()
+
+        if account is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_card_account_not_found",
+                    "message": "RFID card account not found.",
+                },
+            )
+
+        return account
+
+    async def _get_passenger_or_404(self, passenger_user_id: str) -> schema.User:
+        stmt = select(schema.User).where(
+            schema.User.id == passenger_user_id,
+            schema.User.role == schema.UserRole.PASSENGER,
+        )
+        result = await self.db.execute(stmt)
+        passenger = result.scalar_one_or_none()
+
+        if passenger is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "passenger_not_found",
+                    "message": "Passenger user not found.",
+                },
+            )
+
+        return passenger
+
+    async def get_current_card_assignment(
+        self,
+        card_id: str,
+    ) -> schema.RFIDCardAssignment | None:
+        stmt = (
+            select(schema.RFIDCardAssignment)
+            .where(
+                schema.RFIDCardAssignment.card_id == card_id,
+                schema.RFIDCardAssignment.unassigned_at.is_(None),
+            )
+            .order_by(schema.RFIDCardAssignment.assigned_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def get_card_detail(self, card_id: str) -> dict[str, Any]:
+        card = await self._get_card_or_404(card_id)
+        account = await self._get_card_account_or_404(card_id)
+        current_assignment = await self.get_current_card_assignment(card_id)
+
+        return {
+            "card": self.serialize_card(card),
+            "account": self.serialize_account(account),
+            "current_assignment": None
+            if current_assignment is None
+            else self.serialize_assignment(current_assignment),
+        }
+
+    async def assign_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardAssignRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+        await self._get_card_account_or_404(card_id)
+        await self._get_passenger_or_404(payload.passenger_user_id)
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.DECOMMISSIONED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_decommissioned",
+                    "message": "A decommissioned RFID card cannot be assigned.",
+                },
+            )
+
+        if card.inventory_status == schema.RFIDCardInventoryStatus.LOST:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_lost",
+                    "message": "A lost RFID card cannot be assigned.",
+                },
+            )
+
+        if card.authorization_status != schema.RFIDCardAuthorizationStatus.ALLOWED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_blocked",
+                    "message": "A blocked RFID card cannot be assigned.",
+                },
+            )
+
+        current_assignment = await self.get_current_card_assignment(card.id)
+
+        if current_assignment is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_already_assigned",
+                    "message": "RFID card is already assigned. Unassign it before assigning again.",
+                },
+            )
+
+        now = schema.utcnow()
+
+        assignment = schema.RFIDCardAssignment(
+            card_id=card.id,
+            passenger_user_id=payload.passenger_user_id,
+            assigned_by_admin_id=admin_user_id,
+            assigned_at=now,
+            reason=payload.reason,
+        )
+
+        card.assigned_passenger_user_id = payload.passenger_user_id
+        card.assigned_at = now
+        card.inventory_status = schema.RFIDCardInventoryStatus.ASSIGNED
+
+        self.db.add(assignment)
+        self.db.add(card)
+        await self.db.flush()
+
+        return card
+
+    async def unassign_card(
+        self,
+        *,
+        card_id: str,
+        payload: RFIDCardUnassignRequest,
+        admin_user_id: str,
+    ) -> schema.RFIDCard:
+        card = await self._get_card_or_404(card_id)
+        current_assignment = await self.get_current_card_assignment(card.id)
+
+        if current_assignment is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_assigned",
+                    "message": "RFID card is not currently assigned.",
+                },
+            )
+
+        now = schema.utcnow()
+
+        current_assignment.unassigned_by_admin_id = admin_user_id
+        current_assignment.unassigned_at = now
+
+        if payload.reason is not None:
+            current_assignment.reason = payload.reason
+
+        card.assigned_passenger_user_id = None
+        card.assigned_at = None
+        card.inventory_status = schema.RFIDCardInventoryStatus.INVENTORY
+
+        self.db.add(current_assignment)
+        self.db.add(card)
+        await self.db.flush()
+
+        return card
+    
     # ============================================================
     # serializers
     # ============================================================

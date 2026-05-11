@@ -17,11 +17,14 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDCardAssignRequest,
 	RFIDCardBulkRegisterRequest,
 	RFIDCardBulkRegisterResponse,
+	RFIDCardDetailResponse,
 	RFIDCardListResponse,
 	RFIDCardMutationResponse,
 	RFIDCardRegisterRequest,
+	RFIDCardUnassignRequest,
 	RFIDDeviceCreateRequest,
 	RFIDDeviceListResponse,
 	RFIDDeviceMutationResponse,
@@ -897,6 +900,73 @@ async def list_rfid_cards(
 	return {
 		"items": [service.serialize_card(card) for card in cards],
 		"count": count,
+	}
+
+
+@router.get(
+	"/rfid/cards/{card_id}",
+	response_model=RFIDCardDetailResponse,
+	tags=["Admin RFID"],
+)
+async def get_rfid_card_detail(
+	card_id: str,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	return await service.get_card_detail(card_id)
+
+
+@router.post(
+	"/rfid/cards/{card_id}/assign",
+	response_model=RFIDCardMutationResponse,
+	tags=["Admin RFID"],
+)
+async def assign_rfid_card(
+	card_id: str,
+	payload: RFIDCardAssignRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	card = await service.assign_card(
+		card_id=card_id,
+		payload=payload,
+		admin_user_id=current_user.id,
+	)
+
+	await db.commit()
+	await db.refresh(card)
+
+	return {
+		"message": "RFID card assigned successfully.",
+		"card": service.serialize_card(card),
+	}
+
+
+@router.post(
+	"/rfid/cards/{card_id}/unassign",
+	response_model=RFIDCardMutationResponse,
+	tags=["Admin RFID"],
+)
+async def unassign_rfid_card(
+	card_id: str,
+	payload: RFIDCardUnassignRequest,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	card = await service.unassign_card(
+		card_id=card_id,
+		payload=payload,
+		admin_user_id=current_user.id,
+	)
+
+	await db.commit()
+	await db.refresh(card)
+
+	return {
+		"message": "RFID card unassigned successfully.",
+		"card": service.serialize_card(card),
 	}
 
 
