@@ -188,6 +188,25 @@ class RFIDScanService:
             route_stop=route_stop,
             stop=stop,
         )
+    
+    async def _get_open_rfid_ride_for_card_on_trip(
+        self,
+        *,
+        card_id: str,
+        scheduled_trip_id: str,
+    ) -> schema.RFIDTripRide | None:
+        stmt = (
+            select(schema.RFIDTripRide)
+            .where(
+                schema.RFIDTripRide.card_id == card_id,
+                schema.RFIDTripRide.scheduled_trip_id == scheduled_trip_id,
+                schema.RFIDTripRide.status == schema.RFIDRideStatus.BOARDED,
+            )
+            .order_by(schema.RFIDTripRide.boarded_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def record_scan_skeleton(self, payload: RFIDScanRequest) -> dict[str, Any]:
         device = await self._get_device_by_serial(payload.device_serial_number)
@@ -199,9 +218,12 @@ class RFIDScanService:
             passenger_user_id = card.assigned_passenger_user_id
 
         active_context: ActiveTripStopContext | None = None
+        open_ride: schema.RFIDTripRide | None = None
+        scan_type = schema.RFIDScanType.BOARD
         distance_from_stop_meters: Decimal | None = None
         within_radius = False
         rejection_reason = "scan_processing_not_enabled"
+
         if device is None:
             rejection_reason = "rfid_device_not_found"
         elif device.decommissioned_at is not None:
@@ -219,9 +241,20 @@ class RFIDScanService:
 
             if active_context is None:
                 rejection_reason = "no_active_trip_or_stop"
-            elif payload.scan_lat is None or payload.scan_lng is None:
-                rejection_reason = "scan_location_required"
             else:
+                open_ride = await self._get_open_rfid_ride_for_card_on_trip(
+                    card_id=card.id,
+                    scheduled_trip_id=active_context.scheduled_trip.id,
+                )
+
+                if open_ride is not None:
+                    scan_type = schema.RFIDScanType.DROP
+
+            if active_context is not None and (
+                payload.scan_lat is None or payload.scan_lng is None
+            ):
+                rejection_reason = "scan_location_required"
+            elif active_context is not None:
                 distance_from_stop_meters = self._haversine_distance_meters(
                     lat1=payload.scan_lat,
                     lng1=payload.scan_lng,
@@ -238,7 +271,7 @@ class RFIDScanService:
                     rejection_reason = "not_within_active_stop_radius"
 
         scan_event = schema.RFIDScanEvent(
-            scan_type=schema.RFIDScanType.BOARD,
+            scan_type=scan_type,
             device_id=None if device is None else device.id,
             device_serial_snapshot=payload.device_serial_number,
             card_id=None if card is None else card.id,
