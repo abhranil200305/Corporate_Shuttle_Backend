@@ -34,6 +34,7 @@ from app.db.schema import (
     RFIDPayoutTransferStatus,
     RFIDTripRide,
 )
+from app.db import schema
 
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
