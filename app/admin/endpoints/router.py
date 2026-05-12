@@ -17,6 +17,7 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDPayoutTransferRefreshWithheldRequest,
 	RFIDPayoutTransferBulkTriggerRequest,
 	RFIDTripRideListResponse,
 	RFIDPayoutTransferListResponse,
@@ -1253,6 +1254,25 @@ async def trigger_ready_rfid_payout_transfers(
 		scheduled_trip_id=payload.scheduled_trip_id,
 		limit=payload.limit,
 	)
+
+	return result
+
+@router.post(
+	"/rfid/payout-transfers/refresh-withheld",
+	tags=["Admin RFID"],
+)
+async def refresh_withheld_rfid_payout_transfers(
+	payload: RFIDPayoutTransferRefreshWithheldRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = RoutePayoutService(db)
+	result = await service.refresh_withheld_rfid_payout_transfers(
+		driver_user_id=payload.driver_user_id,
+		scheduled_trip_id=payload.scheduled_trip_id,
+		limit=payload.limit,
+	)
+
+	await db.commit()
 
 	return result
 
