@@ -52,7 +52,7 @@ from app.driver.trips.current_trip_passengers import router as driver_trip_passe
 from app.driver.trips.trip_bookings import router as trip_bookings_router
 from app.driver.trips.stop_passengers import router as stop_passengers_router
 
-
+from app.driver.rfid.rf_scan_details import router as driver_rfid_router
 
 import logging
 
@@ -203,6 +203,7 @@ app.include_router(driver_trip_router)
 app.include_router(fines_router)
 app.include_router(stop_passengers_router)
 app.include_router(drop_events_router)
+app.include_router(driver_rfid_router)
 app.include_router(
     trip_details.router,
     prefix="/driver/trips",
