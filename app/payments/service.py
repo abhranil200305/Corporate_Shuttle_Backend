@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.schema import (
+    RFIDPayoutTransferReversal,
+    RFIDPayoutTransferReversalStatus,
     BookingPayment,
     BookingPaymentStatus,
     BookingStatus,
@@ -686,6 +688,39 @@ class RoutePayoutService:
         return await self._razorpay_request(
             method="POST",
             path=f"/payments/{razorpay_payment_id}/transfers",
+            json_payload=payload,
+        )
+    
+    async def _create_rfid_transfer_reversal(
+        self,
+        *,
+        razorpay_transfer_id: str,
+        amount_subunits: int,
+        reversal: RFIDPayoutTransferReversal,
+    ) -> dict[str, Any]:
+        if amount_subunits < 100:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_transfer_reversal_amount_too_small",
+                    "message": "RFID transfer reversal amount must be at least 100 subunits.",
+                },
+            )
+
+        payload = {
+            "amount": amount_subunits,
+            "notes": {
+                "rfid_payout_transfer_reversal_id": reversal.id,
+                "rfid_payout_transfer_id": reversal.rfid_payout_transfer_id,
+                "rfid_ride_id": reversal.rfid_ride_id,
+                "scheduled_trip_id": reversal.scheduled_trip_id,
+                "driver_user_id": reversal.driver_user_id,
+            },
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"/transfers/{razorpay_transfer_id}/reversals",
             json_payload=payload,
         )
 
