@@ -1418,8 +1418,7 @@ class AdminRFIDService:
         list_result = await self.db.execute(list_stmt)
 
         transfers = list(list_result.scalars().all())
-        await self._attach_payout_transfer_reversal_counts(transfers)
-
+        await self._attach_payout_transfer_reversal_summary(transfers)
         return (
             transfers,
             int(count_result.scalar_one() or 0),
@@ -1484,6 +1483,16 @@ class AdminRFIDService:
             "reversed_amount": transfer.reversed_amount,
             "payable_amount": AdminRFIDService._normalize_money(
                 Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
+            ),
+            "provider_reversed_amount": AdminRFIDService._normalize_money(
+                Decimal(
+                    getattr(
+                        transfer,
+                        "_rfid_provider_reversed_amount",
+                        Decimal("0.00"),
+                    )
+                    or 0
+                )
             ),
             "has_reversals": int(
                 getattr(transfer, "_rfid_reversal_count", 0) or 0
@@ -2144,7 +2153,7 @@ class AdminRFIDService:
             int(count_result.scalar_one() or 0),
         )
     
-    async def _attach_payout_transfer_reversal_counts(
+    async def _attach_payout_transfer_reversal_summary(
         self,
         transfers: list[schema.RFIDPayoutTransfer],
     ) -> None:
@@ -2157,26 +2166,47 @@ class AdminRFIDService:
             select(
                 schema.RFIDPayoutTransferReversal.rfid_payout_transfer_id,
                 func.count(schema.RFIDPayoutTransferReversal.id),
+                func.coalesce(
+                    func.sum(
+                        schema.RFIDPayoutTransferReversal.amount,
+                    ),
+                    Decimal("0.00"),
+                ),
             )
             .where(
                 schema.RFIDPayoutTransferReversal.rfid_payout_transfer_id.in_(
                     transfer_ids
-                )
+                ),
+                schema.RFIDPayoutTransferReversal.status
+                == schema.RFIDPayoutTransferReversalStatus.PROCESSED,
             )
             .group_by(schema.RFIDPayoutTransferReversal.rfid_payout_transfer_id)
         )
 
         result = await self.db.execute(stmt)
-        counts_by_transfer_id = {
-            transfer_id: int(count or 0)
-            for transfer_id, count in result.all()
+
+        summary_by_transfer_id = {
+            transfer_id: {
+                "count": int(count or 0),
+                "provider_reversed_amount": self._normalize_money(
+                    Decimal(provider_reversed_amount or 0)
+                ),
+            }
+            for transfer_id, count, provider_reversed_amount in result.all()
         }
 
         for transfer in transfers:
-            transfer._rfid_reversal_count = counts_by_transfer_id.get(
+            summary = summary_by_transfer_id.get(
                 transfer.id,
-                0,
+                {
+                    "count": 0,
+                    "provider_reversed_amount": Decimal("0.00"),
+                },
             )
+            transfer._rfid_reversal_count = summary["count"]
+            transfer._rfid_provider_reversed_amount = summary[
+                "provider_reversed_amount"
+            ]
     
     @staticmethod
     def _provider_reversed_amount_available_for_fare_reversal(
@@ -2254,8 +2284,7 @@ class AdminRFIDService:
         list_result = await self.db.execute(list_stmt)
 
         transfers = list(list_result.scalars().all())
-        await self._attach_payout_transfer_reversal_counts(transfers)
-
+        await self._attach_payout_transfer_reversal_summary(transfers)
         return (
             transfers,
             int(count_result.scalar_one() or 0),

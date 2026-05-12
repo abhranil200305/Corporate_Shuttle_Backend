@@ -444,6 +444,7 @@ class RFIDPayoutTransferResponse(BaseModel):
     amount: Decimal
     reversed_amount: Decimal
     payable_amount: Decimal
+    provider_reversed_amount: Decimal = Decimal("0.00")
     has_reversals: bool = False
     reversal_count: int = 0
     status: str
