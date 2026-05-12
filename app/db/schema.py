@@ -286,7 +286,7 @@ class RFIDPayoutTransferStatus(str, enum.Enum):
     WITHHELD = "withheld"
     REVERSED = "reversed"
 
-class RFIDPayoutTransferReversalStatus(str, Enum):
+class RFIDPayoutTransferReversalStatus(str, enum.Enum):
     CREATED = "created"
     PROCESSED = "processed"
     FAILED = "failed"
