@@ -878,8 +878,30 @@ class RoutePayoutService:
                 "failure_reason": transfer.failure_reason,
             }
 
-        amount_subunits = self._to_subunits(transfer.amount)
+        payable_amount = self._quantize_money(
+            Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
+        )
 
+        if payable_amount <= Decimal("0.00"):
+            transfer.status = RFIDPayoutTransferStatus.REVERSED
+            transfer.reversed_at = transfer.reversed_at or utcnow()
+            transfer.failure_reason = None
+
+            self.db.add(transfer)
+            await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer has no remaining payable amount.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "status": transfer.status,
+                "amount": transfer.amount,
+                "reversed_amount": transfer.reversed_amount,
+                "payable_amount": payable_amount,
+            }
+
+        amount_subunits = self._to_subunits(payable_amount)
         try:
             provider_response = await self._create_rfid_transfer_from_payment(
                 razorpay_payment_id=transfer.source_razorpay_payment_id,
@@ -942,6 +964,8 @@ class RoutePayoutService:
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "status": transfer.status,
             "amount": transfer.amount,
+            "reversed_amount": transfer.reversed_amount,
+            "payable_amount": payable_amount,
             "linked_account_id": transfer.linked_account_id,
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "processed_at": transfer.processed_at,

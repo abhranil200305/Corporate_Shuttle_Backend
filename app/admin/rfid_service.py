@@ -1478,6 +1478,10 @@ class AdminRFIDService:
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "linked_account_id": transfer.linked_account_id,
             "amount": transfer.amount,
+            "reversed_amount": transfer.reversed_amount,
+            "payable_amount": AdminRFIDService._normalize_money(
+                Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
+            ),
             "status": transfer.status,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "failure_reason": transfer.failure_reason,
