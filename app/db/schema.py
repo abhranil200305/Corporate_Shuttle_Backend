@@ -1876,6 +1876,13 @@ class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    reversed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
     status: Mapped[RFIDPayoutTransferStatus] = mapped_column(
         enum_type(RFIDPayoutTransferStatus, "rfid_payout_transfer_status"),
         nullable=False,
