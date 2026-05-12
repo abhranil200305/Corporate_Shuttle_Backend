@@ -1491,6 +1491,105 @@ class AdminRFIDService:
             "updated_at": transfer.updated_at,
         }
 
+    async def _get_rfid_ride_for_update_or_404(
+        self,
+        rfid_ride_id: str,
+    ) -> schema.RFIDTripRide:
+        stmt = (
+            select(schema.RFIDTripRide)
+            .where(schema.RFIDTripRide.id == rfid_ride_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        ride = result.scalar_one_or_none()
+
+        if ride is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_ride_not_found",
+                    "message": "RFID ride not found.",
+                },
+            )
+
+        return ride
+
+    async def _get_rfid_payout_transfers_for_ride_for_update(
+        self,
+        rfid_ride_id: str,
+    ) -> list[schema.RFIDPayoutTransfer]:
+        stmt = (
+            select(schema.RFIDPayoutTransfer)
+            .where(schema.RFIDPayoutTransfer.rfid_ride_id == rfid_ride_id)
+            .order_by(schema.RFIDPayoutTransfer.created_at.asc())
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    def _remaining_payout_transfer_amount(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> Decimal:
+        return AdminRFIDService._normalize_money(
+            Decimal(transfer.amount or 0)
+            - Decimal(transfer.reversed_amount or 0)
+        )
+
+    async def _refresh_rfid_ride_transfer_status_from_rows(
+        self,
+        ride: schema.RFIDTripRide,
+        transfers: list[schema.RFIDPayoutTransfer],
+    ) -> None:
+        if not transfers:
+            return
+
+        statuses = [transfer.status for transfer in transfers]
+        now = schema.utcnow()
+
+        if all(
+            status == schema.RFIDPayoutTransferStatus.REVERSED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.REVERSED
+            ride.transfer_ready_at = None
+
+        elif all(
+            status == schema.RFIDPayoutTransferStatus.PROCESSED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.PROCESSED
+            ride.transfer_processed_at = ride.transfer_processed_at or now
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.FAILED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.FAILED
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.CREATED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.CREATED
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.READY
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.WITHHELD
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+            ride.transfer_ready_at = None
+
+        self.db.add(ride)
+
     async def list_payout_ready_rfid_transfers(
         self,
         *,
