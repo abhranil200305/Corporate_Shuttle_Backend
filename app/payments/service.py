@@ -13,6 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.db.schema import (
+    RFIDPayoutTransferReversal,
+    RFIDPayoutTransferReversalStatus,
     BookingPayment,
     BookingPaymentStatus,
     BookingStatus,
@@ -32,6 +34,7 @@ from app.db.schema import (
     RFIDPayoutTransferStatus,
     RFIDTripRide,
 )
+from app.db import schema
 
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -688,6 +691,287 @@ class RoutePayoutService:
             path=f"/payments/{razorpay_payment_id}/transfers",
             json_payload=payload,
         )
+    
+    async def _create_rfid_transfer_reversal(
+        self,
+        *,
+        razorpay_transfer_id: str,
+        amount_subunits: int,
+        reversal: RFIDPayoutTransferReversal,
+    ) -> dict[str, Any]:
+        if amount_subunits < 100:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_transfer_reversal_amount_too_small",
+                    "message": "RFID transfer reversal amount must be at least 100 subunits.",
+                },
+            )
+
+        payload = {
+            "amount": amount_subunits,
+            "notes": {
+                "rfid_payout_transfer_reversal_id": reversal.id,
+                "rfid_payout_transfer_id": reversal.rfid_payout_transfer_id,
+                "rfid_ride_id": reversal.rfid_ride_id,
+                "scheduled_trip_id": reversal.scheduled_trip_id,
+                "driver_user_id": reversal.driver_user_id,
+            },
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"/transfers/{razorpay_transfer_id}/reversals",
+            json_payload=payload,
+        )
+
+    async def reverse_rfid_payout_transfer(
+        self,
+        *,
+        transfer_id: str,
+        amount: Decimal,
+        reason: str,
+        admin_user_id: str,
+        admin_note: str | None = None,
+    ) -> dict[str, Any]:
+        reversal_amount = self._quantize_money(amount)
+
+        if reversal_amount <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "non_positive_rfid_transfer_reversal_amount",
+                    "message": "RFID transfer reversal amount must be greater than zero.",
+                },
+            )
+
+        transfer = await self._get_rfid_payout_transfer_for_update(transfer_id)
+
+        if transfer.status not in {
+            RFIDPayoutTransferStatus.CREATED,
+            RFIDPayoutTransferStatus.PROCESSED,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_payout_transfer_not_provider_reversible",
+                    "message": "Only CREATED or PROCESSED RFID payout transfers can be reversed through Razorpay.",
+                    "transfer_status": transfer.status.value,
+                },
+            )
+
+        if not transfer.razorpay_transfer_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_payout_transfer_missing_razorpay_transfer_id",
+                    "message": "RFID payout transfer has no Razorpay transfer id.",
+                    "transfer_id": transfer.id,
+                },
+            )
+
+        transfer_amount = self._quantize_money(Decimal(transfer.amount or 0))
+        transfer_reversed_amount = self._quantize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        remaining_reversible_amount = self._quantize_money(
+            transfer_amount - transfer_reversed_amount
+        )
+
+        if reversal_amount > remaining_reversible_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_transfer_reversal_exceeds_remaining_amount",
+                    "message": "Cannot reverse more than the remaining unreversed payout transfer amount.",
+                    "transfer_id": transfer.id,
+                    "transfer_amount": str(transfer_amount),
+                    "already_reversed_amount": str(transfer_reversed_amount),
+                    "remaining_reversible_amount": str(remaining_reversible_amount),
+                    "requested_reversal_amount": str(reversal_amount),
+                },
+            )
+
+        now = utcnow()
+
+        reversal = RFIDPayoutTransferReversal(
+            id=schema.new_id(),
+            rfid_payout_transfer_id=transfer.id,
+            rfid_ride_id=transfer.rfid_ride_id,
+            driver_user_id=transfer.driver_user_id,
+            scheduled_trip_id=transfer.scheduled_trip_id,
+            route_id=transfer.route_id,
+            vehicle_id=transfer.vehicle_id,
+            amount=reversal_amount,
+            status=RFIDPayoutTransferReversalStatus.CREATED,
+            requested_by_admin_id=admin_user_id,
+            reason=reason,
+            admin_note=admin_note,
+        )
+
+        self.db.add(reversal)
+        await self.db.flush()
+
+        amount_subunits = self._to_subunits(reversal_amount)
+
+        try:
+            provider_response = await self._create_rfid_transfer_reversal(
+                razorpay_transfer_id=transfer.razorpay_transfer_id,
+                amount_subunits=amount_subunits,
+                reversal=reversal,
+            )
+        except HTTPException as exc:
+            reversal.status = RFIDPayoutTransferReversalStatus.FAILED
+            reversal.failure_reason = "razorpay_rfid_transfer_reversal_failed"
+            reversal.provider_response_json = json.dumps(
+                exc.detail,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            self.db.add(reversal)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer reversal failed at Razorpay.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "reversal_id": reversal.id,
+                "status": reversal.status,
+                "failure_reason": reversal.failure_reason,
+                "provider_error": exc.detail,
+            }
+
+        provider_reversal_id = provider_response.get("id")
+        provider_amount_subunits = provider_response.get("amount")
+
+        if not provider_reversal_id:
+            reversal.status = RFIDPayoutTransferReversalStatus.FAILED
+            reversal.failure_reason = "razorpay_reversal_id_missing"
+            reversal.provider_response_json = json.dumps(
+                provider_response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            self.db.add(reversal)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer reversal response did not contain a Razorpay reversal id.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "reversal_id": reversal.id,
+                "status": reversal.status,
+                "failure_reason": reversal.failure_reason,
+                "provider_response": provider_response,
+            }
+
+        provider_reversed_amount = reversal_amount
+
+        if provider_amount_subunits is not None:
+            provider_reversed_amount = self._from_subunits(
+                int(provider_amount_subunits)
+            )
+
+        if provider_reversed_amount <= Decimal("0.00"):
+            reversal.status = RFIDPayoutTransferReversalStatus.FAILED
+            reversal.failure_reason = "razorpay_reversal_amount_invalid"
+            reversal.razorpay_reversal_id = provider_reversal_id
+            reversal.provider_response_json = json.dumps(
+                provider_response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            self.db.add(reversal)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer reversal response contained an invalid amount.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "reversal_id": reversal.id,
+                "razorpay_reversal_id": provider_reversal_id,
+                "status": reversal.status,
+                "failure_reason": reversal.failure_reason,
+                "provider_response": provider_response,
+            }
+
+        if provider_reversed_amount > remaining_reversible_amount:
+            reversal.status = RFIDPayoutTransferReversalStatus.FAILED
+            reversal.failure_reason = "razorpay_reversal_amount_exceeds_local_remaining"
+            reversal.razorpay_reversal_id = provider_reversal_id
+            reversal.provider_response_json = json.dumps(
+                provider_response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            self.db.add(reversal)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer reversal amount exceeded local remaining amount.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "reversal_id": reversal.id,
+                "razorpay_reversal_id": provider_reversal_id,
+                "status": reversal.status,
+                "failure_reason": reversal.failure_reason,
+                "provider_reversed_amount": provider_reversed_amount,
+                "remaining_reversible_amount": remaining_reversible_amount,
+                "provider_response": provider_response,
+            }
+
+        reversal.status = RFIDPayoutTransferReversalStatus.PROCESSED
+        reversal.razorpay_reversal_id = provider_reversal_id
+        reversal.provider_response_json = json.dumps(
+            provider_response,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+        reversal.failure_reason = None
+        reversal.processed_at = now
+
+        transfer.reversed_amount = self._quantize_money(
+            transfer_reversed_amount + provider_reversed_amount
+        )
+
+        if transfer.reversed_amount >= transfer_amount:
+            transfer.reversed_amount = transfer_amount
+            transfer.status = RFIDPayoutTransferStatus.REVERSED
+            transfer.reversed_at = transfer.reversed_at or now
+            transfer.failure_reason = None
+        else:
+            transfer.status = RFIDPayoutTransferStatus.PROCESSED
+            transfer.failure_reason = None
+
+        self.db.add(reversal)
+        self.db.add(transfer)
+
+        await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
+        await self.db.flush()
+
+        return {
+            "message": "RFID payout transfer reversed successfully.",
+            "transfer_id": transfer.id,
+            "rfid_ride_id": transfer.rfid_ride_id,
+            "reversal_id": reversal.id,
+            "razorpay_transfer_id": transfer.razorpay_transfer_id,
+            "razorpay_reversal_id": reversal.razorpay_reversal_id,
+            "reversal_amount": provider_reversed_amount,
+            "transfer_amount": transfer.amount,
+            "transfer_reversed_amount": transfer.reversed_amount,
+            "transfer_status": transfer.status,
+            "reversal_status": reversal.status,
+            "provider_response": provider_response,
+        }
 
     @staticmethod
     def _extract_first_provider_transfer(
@@ -721,8 +1005,11 @@ class RoutePayoutService:
         if normalized == "failed":
             return RFIDPayoutTransferStatus.FAILED
 
-        if normalized in {"reversed", "partially_reversed"}:
+        if normalized == "reversed":
             return RFIDPayoutTransferStatus.REVERSED
+
+        if normalized == "partially_reversed":
+            return RFIDPayoutTransferStatus.PROCESSED
 
         return RFIDPayoutTransferStatus.CREATED
     
@@ -878,8 +1165,30 @@ class RoutePayoutService:
                 "failure_reason": transfer.failure_reason,
             }
 
-        amount_subunits = self._to_subunits(transfer.amount)
+        payable_amount = self._quantize_money(
+            Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
+        )
 
+        if payable_amount <= Decimal("0.00"):
+            transfer.status = RFIDPayoutTransferStatus.REVERSED
+            transfer.reversed_at = transfer.reversed_at or utcnow()
+            transfer.failure_reason = None
+
+            self.db.add(transfer)
+            await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
+            await self.db.flush()
+
+            return {
+                "message": "RFID payout transfer has no remaining payable amount.",
+                "transfer_id": transfer.id,
+                "rfid_ride_id": transfer.rfid_ride_id,
+                "status": transfer.status,
+                "amount": transfer.amount,
+                "reversed_amount": transfer.reversed_amount,
+                "payable_amount": payable_amount,
+            }
+
+        amount_subunits = self._to_subunits(payable_amount)
         try:
             provider_response = await self._create_rfid_transfer_from_payment(
                 razorpay_payment_id=transfer.source_razorpay_payment_id,
@@ -942,6 +1251,8 @@ class RoutePayoutService:
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "status": transfer.status,
             "amount": transfer.amount,
+            "reversed_amount": transfer.reversed_amount,
+            "payable_amount": payable_amount,
             "linked_account_id": transfer.linked_account_id,
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "processed_at": transfer.processed_at,

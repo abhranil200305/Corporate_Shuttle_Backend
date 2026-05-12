@@ -286,6 +286,11 @@ class RFIDPayoutTransferStatus(str, enum.Enum):
     WITHHELD = "withheld"
     REVERSED = "reversed"
 
+class RFIDPayoutTransferReversalStatus(str, enum.Enum):
+    CREATED = "created"
+    PROCESSED = "processed"
+    FAILED = "failed"
+
 # ============================================================
 # auth / users
 # ============================================================
@@ -1947,6 +1952,120 @@ class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
         Index(
             "ix_rfid_payout_transfers_razorpay_transfer",
             "razorpay_transfer_id",
+        ),
+    )
+
+class RFIDPayoutTransferReversal(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_payout_transfer_reversals"
+
+    rfid_payout_transfer_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_payout_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    rfid_ride_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_trip_rides.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    driver_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    route_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("routes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    vehicle_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("vehicles.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    status: Mapped[RFIDPayoutTransferReversalStatus] = mapped_column(
+        enum_type(
+            RFIDPayoutTransferReversalStatus,
+            "rfid_payout_transfer_reversal_status",
+        ),
+        nullable=False,
+        default=RFIDPayoutTransferReversalStatus.CREATED,
+        server_default=text("'created'"),
+    )
+
+    razorpay_reversal_id: Mapped[str | None] = mapped_column(
+        String(120),
+        nullable=True,
+    )
+
+    provider_response_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    failure_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    requested_by_admin_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    reason: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
+
+    admin_note: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_rfid_payout_transfer_reversals_amount_positive",
+        ),
+        Index(
+            "ix_rfid_payout_transfer_reversals_transfer",
+            "rfid_payout_transfer_id",
+        ),
+        Index(
+            "ix_rfid_payout_transfer_reversals_ride",
+            "rfid_ride_id",
+        ),
+        Index(
+            "ix_rfid_payout_transfer_reversals_status_created",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_rfid_payout_transfer_reversals_razorpay",
+            "razorpay_reversal_id",
         ),
     )
 

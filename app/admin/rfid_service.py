@@ -1478,6 +1478,10 @@ class AdminRFIDService:
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "linked_account_id": transfer.linked_account_id,
             "amount": transfer.amount,
+            "reversed_amount": transfer.reversed_amount,
+            "payable_amount": AdminRFIDService._normalize_money(
+                Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
+            ),
             "status": transfer.status,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "failure_reason": transfer.failure_reason,
@@ -1485,6 +1489,605 @@ class AdminRFIDService:
             "reversed_at": transfer.reversed_at,
             "created_at": transfer.created_at,
             "updated_at": transfer.updated_at,
+        }
+
+    async def _get_rfid_ride_for_update_or_404(
+        self,
+        rfid_ride_id: str,
+    ) -> schema.RFIDTripRide:
+        stmt = (
+            select(schema.RFIDTripRide)
+            .where(schema.RFIDTripRide.id == rfid_ride_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        ride = result.scalar_one_or_none()
+
+        if ride is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_ride_not_found",
+                    "message": "RFID ride not found.",
+                },
+            )
+
+        return ride
+
+    async def _get_rfid_payout_transfers_for_ride_for_update(
+        self,
+        rfid_ride_id: str,
+    ) -> list[schema.RFIDPayoutTransfer]:
+        stmt = (
+            select(schema.RFIDPayoutTransfer)
+            .where(schema.RFIDPayoutTransfer.rfid_ride_id == rfid_ride_id)
+            .order_by(schema.RFIDPayoutTransfer.created_at.asc())
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    def _remaining_payout_transfer_amount(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> Decimal:
+        return AdminRFIDService._normalize_money(
+            Decimal(transfer.amount or 0)
+            - Decimal(transfer.reversed_amount or 0)
+        )
+
+    @staticmethod
+    def _is_rfid_payout_transfer_locally_reversible(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> bool:
+        return transfer.status in {
+            schema.RFIDPayoutTransferStatus.READY,
+            schema.RFIDPayoutTransferStatus.WITHHELD,
+            schema.RFIDPayoutTransferStatus.FAILED,
+        }
+
+    @staticmethod
+    def _remaining_funding_allocation_amount(
+        allocation: schema.RFIDRechargeFundingAllocation,
+    ) -> Decimal:
+        return AdminRFIDService._normalize_money(
+            Decimal(allocation.amount or 0)
+            - Decimal(allocation.reversed_amount or 0)
+        )
+
+    async def _get_rfid_funding_allocation_for_update_or_404(
+        self,
+        allocation_id: str,
+    ) -> schema.RFIDRechargeFundingAllocation:
+        stmt = (
+            select(schema.RFIDRechargeFundingAllocation)
+            .where(schema.RFIDRechargeFundingAllocation.id == allocation_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        allocation = result.scalar_one_or_none()
+
+        if allocation is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_funding_allocation_not_found",
+                    "message": "RFID funding allocation not found.",
+                },
+            )
+
+        return allocation
+
+    async def _get_rfid_funding_lot_for_update_or_404(
+        self,
+        funding_lot_id: str,
+    ) -> schema.RFIDFundingLot:
+        stmt = (
+            select(schema.RFIDFundingLot)
+            .where(schema.RFIDFundingLot.id == funding_lot_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        funding_lot = result.scalar_one_or_none()
+
+        if funding_lot is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_funding_lot_not_found",
+                    "message": "RFID funding lot not found.",
+                },
+            )
+
+        return funding_lot
+
+    async def _restore_rfid_funding_allocation_amount(
+        self,
+        *,
+        allocation: schema.RFIDRechargeFundingAllocation,
+        amount: Decimal,
+    ) -> schema.RFIDFundingLot:
+        amount_to_restore = self._normalize_money(amount)
+
+        if amount_to_restore <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "non_positive_funding_restore_amount",
+                    "message": "Funding restore amount must be greater than zero.",
+                },
+            )
+
+        remaining_allocation_amount = self._remaining_funding_allocation_amount(
+            allocation
+        )
+
+        if amount_to_restore > remaining_allocation_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_restore_exceeds_allocation",
+                    "message": "Cannot restore more than the unreversed funding allocation amount.",
+                    "allocation_id": allocation.id,
+                    "amount_to_restore": str(amount_to_restore),
+                    "remaining_allocation_amount": str(remaining_allocation_amount),
+                },
+            )
+
+        funding_lot = await self._get_rfid_funding_lot_for_update_or_404(
+            allocation.funding_lot_id
+        )
+
+        lot_remaining_before = self._normalize_money(
+            Decimal(funding_lot.remaining_amount or 0)
+        )
+        lot_source_amount = self._normalize_money(
+            Decimal(funding_lot.source_amount or 0)
+        )
+        lot_remaining_after = self._normalize_money(
+            lot_remaining_before + amount_to_restore
+        )
+
+        if lot_remaining_after > lot_source_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_lot_restore_exceeds_source",
+                    "message": "Cannot restore funding lot above its original source amount.",
+                    "funding_lot_id": funding_lot.id,
+                    "amount_to_restore": str(amount_to_restore),
+                    "lot_remaining_before": str(lot_remaining_before),
+                    "lot_source_amount": str(lot_source_amount),
+                },
+            )
+
+        allocation.reversed_amount = self._normalize_money(
+            Decimal(allocation.reversed_amount or 0) + amount_to_restore
+        )
+        allocation.reversed_at = schema.utcnow()
+
+        funding_lot.remaining_amount = lot_remaining_after
+
+        if lot_remaining_after > Decimal("0.00"):
+            funding_lot.status = schema.RFIDFundingLotStatus.AVAILABLE
+
+        self.db.add(allocation)
+        self.db.add(funding_lot)
+
+        return funding_lot
+
+    async def _refresh_rfid_ride_transfer_status_from_rows(
+        self,
+        ride: schema.RFIDTripRide,
+        transfers: list[schema.RFIDPayoutTransfer],
+    ) -> None:
+        if not transfers:
+            return
+
+        statuses = [transfer.status for transfer in transfers]
+        now = schema.utcnow()
+
+        if all(
+            status == schema.RFIDPayoutTransferStatus.REVERSED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.REVERSED
+            ride.transfer_ready_at = None
+
+        elif all(
+            status == schema.RFIDPayoutTransferStatus.PROCESSED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.PROCESSED
+            ride.transfer_processed_at = ride.transfer_processed_at or now
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.FAILED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.FAILED
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.CREATED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.CREATED
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.READY
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.WITHHELD
+            for status in statuses
+        ):
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+            ride.transfer_ready_at = None
+
+        self.db.add(ride)
+
+    async def reverse_rfid_ride_deduction(
+        self,
+        *,
+        rfid_ride_id: str,
+        amount: Decimal,
+        reason: str,
+        admin_user_id: str,
+        admin_note: str | None = None,
+    ) -> dict[str, Any]:
+        reversal_amount = self._normalize_money(amount)
+
+        if reversal_amount <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "non_positive_rfid_reversal_amount",
+                    "message": "RFID deduction reversal amount must be greater than zero.",
+                },
+            )
+
+        ride = await self._get_rfid_ride_for_update_or_404(rfid_ride_id)
+
+        if ride.status != schema.RFIDRideStatus.COMPLETED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_ride_not_completed",
+                    "message": "Only completed RFID rides can have fare deductions reversed.",
+                    "ride_status": ride.status.value,
+                },
+            )
+
+        fare_amount = self._normalize_money(Decimal(ride.fare_amount or 0))
+        already_reversed_amount = self._normalize_money(
+            Decimal(ride.fare_reversed_amount or 0)
+        )
+        remaining_reversible_fare = self._normalize_money(
+            fare_amount - already_reversed_amount
+        )
+
+        if reversal_amount > remaining_reversible_fare:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_reversal_exceeds_remaining_fare",
+                    "message": "Cannot reverse more than the remaining unreversed RFID fare amount.",
+                    "fare_amount": str(fare_amount),
+                    "already_reversed_amount": str(already_reversed_amount),
+                    "remaining_reversible_fare": str(remaining_reversible_fare),
+                    "requested_reversal_amount": str(reversal_amount),
+                },
+            )
+
+        account = await self._get_card_account_for_update_or_404(ride.card_id)
+        transfers = await self._get_rfid_payout_transfers_for_ride_for_update(
+            ride.id
+        )
+
+        if not transfers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_payout_transfers_not_found",
+                    "message": "RFID payout transfer rows were not found for this ride, so reversal cannot safely preserve payout lineage.",
+                    "rfid_ride_id": ride.id,
+                },
+            )
+
+        reversal_sources: list[dict[str, Any]] = []
+        blocked_provider_transfers: list[dict[str, Any]] = []
+        total_available_for_fare_reversal = Decimal("0.00")
+
+        for transfer in transfers:
+            if transfer.source_funding_allocation_id is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "rfid_transfer_missing_funding_allocation",
+                        "message": "RFID payout transfer is missing its funding allocation link.",
+                        "transfer_id": transfer.id,
+                    },
+                )
+
+            allocation = await self._get_rfid_funding_allocation_for_update_or_404(
+                transfer.source_funding_allocation_id
+            )
+
+            remaining_allocation_amount = self._remaining_funding_allocation_amount(
+                allocation
+            )
+
+            if remaining_allocation_amount <= Decimal("0.00"):
+                continue
+
+            remaining_transfer_amount = self._remaining_payout_transfer_amount(
+                transfer
+            )
+
+            if self._is_rfid_payout_transfer_locally_reversible(transfer):
+                if remaining_transfer_amount <= Decimal("0.00"):
+                    continue
+
+                available_amount = self._normalize_money(
+                    min(remaining_transfer_amount, remaining_allocation_amount)
+                )
+
+                if available_amount > Decimal("0.00"):
+                    reversal_sources.append(
+                        {
+                            "mode": "local",
+                            "transfer": transfer,
+                            "allocation": allocation,
+                            "available_amount": available_amount,
+                        }
+                    )
+                    total_available_for_fare_reversal = self._normalize_money(
+                        total_available_for_fare_reversal + available_amount
+                    )
+
+                continue
+
+            if self._is_rfid_payout_transfer_provider_side_state(transfer):
+                available_amount = (
+                    self._provider_reversed_amount_available_for_fare_reversal(
+                        transfer=transfer,
+                        allocation=allocation,
+                    )
+                )
+
+                if available_amount > Decimal("0.00"):
+                    reversal_sources.append(
+                        {
+                            "mode": "provider_reversed",
+                            "transfer": transfer,
+                            "allocation": allocation,
+                            "available_amount": available_amount,
+                        }
+                    )
+                    total_available_for_fare_reversal = self._normalize_money(
+                        total_available_for_fare_reversal + available_amount
+                    )
+                else:
+                    blocked_provider_transfers.append(
+                        {
+                            "transfer_id": transfer.id,
+                            "status": transfer.status.value,
+                            "remaining_payable_amount": str(
+                                remaining_transfer_amount
+                            ),
+                            "transfer_reversed_amount": str(
+                                self._normalize_money(
+                                    Decimal(transfer.reversed_amount or 0)
+                                )
+                            ),
+                            "allocation_reversed_amount": str(
+                                self._normalize_money(
+                                    Decimal(allocation.reversed_amount or 0)
+                                )
+                            ),
+                            "razorpay_transfer_id": transfer.razorpay_transfer_id,
+                        }
+                    )
+
+        if reversal_amount > total_available_for_fare_reversal:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_reversal_exceeds_available_reversal_sources",
+                    "message": "Cannot reverse this fare amount yet. Reverse provider-side payout transfers first, or choose an amount covered by local/provider-reversed sources.",
+                    "requested_reversal_amount": str(reversal_amount),
+                    "available_for_fare_reversal": str(
+                        total_available_for_fare_reversal
+                    ),
+                    "blocked_provider_transfers": blocked_provider_transfers,
+                },
+            )
+
+        remaining_to_reverse = reversal_amount
+        transfer_reversal_items: list[dict[str, Any]] = []
+        now = schema.utcnow()
+
+        for source in reversal_sources:
+            if remaining_to_reverse <= Decimal("0.00"):
+                break
+
+            source_available_amount = self._normalize_money(
+                source["available_amount"]
+            )
+
+            amount_from_source = self._normalize_money(
+                min(source_available_amount, remaining_to_reverse)
+            )
+
+            if amount_from_source <= Decimal("0.00"):
+                continue
+
+            mode = source["mode"]
+            transfer = source["transfer"]
+            allocation = source["allocation"]
+
+            old_transfer_status = transfer.status
+
+            await self._restore_rfid_funding_allocation_amount(
+                allocation=allocation,
+                amount=amount_from_source,
+            )
+
+            if mode == "local":
+                transfer.reversed_amount = self._normalize_money(
+                    Decimal(transfer.reversed_amount or 0) + amount_from_source
+                )
+
+            remaining_after_transfer_reversal = (
+                self._remaining_payout_transfer_amount(transfer)
+            )
+
+            if remaining_after_transfer_reversal <= Decimal("0.00"):
+                transfer.reversed_amount = self._normalize_money(
+                    Decimal(transfer.amount or 0)
+                )
+                transfer.status = schema.RFIDPayoutTransferStatus.REVERSED
+                transfer.reversed_at = transfer.reversed_at or now
+                transfer.failure_reason = None
+
+            self.db.add(transfer)
+
+            transfer_reversal_items.append(
+                {
+                    "transfer_id": transfer.id,
+                    "mode": mode,
+                    "old_status": old_transfer_status,
+                    "new_status": transfer.status,
+                    "reversed_amount": amount_from_source,
+                    "remaining_payable_amount": remaining_after_transfer_reversal,
+                    "funding_allocation_id": allocation.id,
+                    "funding_lot_id": allocation.funding_lot_id,
+                }
+            )
+
+            remaining_to_reverse = self._normalize_money(
+                remaining_to_reverse - amount_from_source
+            )
+
+        if remaining_to_reverse > Decimal("0.00"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_reversal_incomplete",
+                    "message": "RFID reversal could not be fully allocated across available reversal sources.",
+                    "remaining_to_reverse": str(remaining_to_reverse),
+                },
+            )
+
+        current_balance_before = self._normalize_money(
+            Decimal(account.current_balance or 0)
+        )
+        held_balance = self._normalize_money(Decimal(account.held_balance or 0))
+        current_balance_after = self._normalize_money(
+            current_balance_before + reversal_amount
+        )
+
+        account.current_balance = current_balance_after
+
+        ride.fare_reversed_amount = self._normalize_money(
+            already_reversed_amount + reversal_amount
+        )
+        ride.driver_payout_reversed_amount = self._normalize_money(
+            Decimal(ride.driver_payout_reversed_amount or 0) + reversal_amount
+        )
+
+        ledger_note_parts = [
+            f"RFID fare deduction reversed by admin. Reason: {reason}"
+        ]
+
+        if admin_note:
+            ledger_note_parts.append(f"Admin note: {admin_note}")
+
+        ledger_entry = schema.RFIDLedgerEntry(
+            id=schema.new_id(),
+            account_id=account.id,
+            card_id=ride.card_id,
+            passenger_user_id=ride.passenger_user_id,
+            entry_type=schema.RFIDLedgerEntryType.FARE_REVERSAL_CREDIT,
+            amount_delta=reversal_amount,
+            held_delta=Decimal("0.00"),
+            balance_after=current_balance_after,
+            held_balance_after=held_balance,
+            scheduled_trip_id=ride.scheduled_trip_id,
+            rfid_ride_id=ride.id,
+            stop_id=ride.dropoff_stop_id,
+            created_by_admin_id=admin_user_id,
+            note=" | ".join(ledger_note_parts),
+            created_at=now,
+        )
+
+        await self._refresh_rfid_ride_transfer_status_from_rows(ride, transfers)
+
+        self.db.add(account)
+        self.db.add(ride)
+        self.db.add(ledger_entry)
+        await self.db.flush()
+
+        return {
+            "message": "RFID fare deduction reversed successfully.",
+            "rfid_ride_id": ride.id,
+            "card_id": ride.card_id,
+            "account_id": account.id,
+            "passenger_user_id": ride.passenger_user_id,
+            "reversal_amount": reversal_amount,
+            "fare_amount": fare_amount,
+            "fare_reversed_amount": ride.fare_reversed_amount,
+            "balance_before": current_balance_before,
+            "balance_after": current_balance_after,
+            "ledger_entry_id": ledger_entry.id,
+            "transfer_reversals": transfer_reversal_items,
+            "ride_transfer_status": ride.transfer_status,
+        }
+    
+    @staticmethod
+    def _provider_reversed_amount_available_for_fare_reversal(
+        *,
+        transfer: schema.RFIDPayoutTransfer,
+        allocation: schema.RFIDRechargeFundingAllocation,
+    ) -> Decimal:
+        transfer_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        allocation_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(allocation.reversed_amount or 0)
+        )
+        allocation_remaining_amount = AdminRFIDService._remaining_funding_allocation_amount(
+            allocation
+        )
+
+        provider_reversed_not_restored = AdminRFIDService._normalize_money(
+            transfer_reversed_amount - allocation_reversed_amount
+        )
+
+        if provider_reversed_not_restored <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if allocation_remaining_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        return AdminRFIDService._normalize_money(
+            min(provider_reversed_not_restored, allocation_remaining_amount)
+        )
+
+    @staticmethod
+    def _is_rfid_payout_transfer_provider_side_state(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> bool:
+        return transfer.status in {
+            schema.RFIDPayoutTransferStatus.CREATED,
+            schema.RFIDPayoutTransferStatus.PROCESSED,
+            schema.RFIDPayoutTransferStatus.REVERSED,
         }
 
     async def list_payout_ready_rfid_transfers(

@@ -442,6 +442,8 @@ class RFIDPayoutTransferResponse(BaseModel):
     source_razorpay_payment_id: str | None
     linked_account_id: str | None
     amount: Decimal
+    reversed_amount: Decimal
+    payable_amount: Decimal
     status: str
     razorpay_transfer_id: str | None
     failure_reason: str | None
@@ -507,6 +509,45 @@ class RFIDPayoutTransferReconcileCreatedRequest(BaseModel):
     @classmethod
     def validate_optional_ids(cls, value: str | None) -> str | None:
         return _clean_optional_text(value)
+    
+class RFIDPayoutTransferReversalRequest(BaseModel):
+    amount: Decimal = Field(..., gt=Decimal("0.00"))
+    reason: str = Field(..., min_length=1, max_length=120)
+    admin_note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        return _clean_required_text(value)
+
+    @field_validator("admin_note")
+    @classmethod
+    def validate_admin_note(cls, value: str | None) -> str | None:
+        return _clean_optional_text(value)
+    
+class RFIDPayoutTransferReversalResponse(BaseModel):
+    id: str
+    rfid_payout_transfer_id: str
+    rfid_ride_id: str
+    driver_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    vehicle_id: str
+    amount: Decimal
+    status: str
+    razorpay_reversal_id: str | None
+    failure_reason: str | None
+    requested_by_admin_id: str
+    reason: str
+    admin_note: str | None
+    processed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RFIDPayoutTransferReversalListResponse(BaseModel):
+    items: list[RFIDPayoutTransferReversalResponse]
+    count: int
 
 # ============================================================
 # manual reversal request

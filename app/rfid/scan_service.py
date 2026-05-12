@@ -361,6 +361,90 @@ class RFIDScanService:
             transfers.append(transfer)
 
         return transfers
+    
+    @staticmethod
+    def serialize_payout_transfer_reversal(
+        reversal: schema.RFIDPayoutTransferReversal,
+    ) -> dict[str, Any]:
+        return {
+            "id": reversal.id,
+            "rfid_payout_transfer_id": reversal.rfid_payout_transfer_id,
+            "rfid_ride_id": reversal.rfid_ride_id,
+            "driver_user_id": reversal.driver_user_id,
+            "scheduled_trip_id": reversal.scheduled_trip_id,
+            "route_id": reversal.route_id,
+            "vehicle_id": reversal.vehicle_id,
+            "amount": reversal.amount,
+            "status": reversal.status,
+            "razorpay_reversal_id": reversal.razorpay_reversal_id,
+            "failure_reason": reversal.failure_reason,
+            "requested_by_admin_id": reversal.requested_by_admin_id,
+            "reason": reversal.reason,
+            "admin_note": reversal.admin_note,
+            "processed_at": reversal.processed_at,
+            "created_at": reversal.created_at,
+            "updated_at": reversal.updated_at,
+        }
+
+    async def list_rfid_payout_transfer_reversals(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        status: schema.RFIDPayoutTransferReversalStatus | None = None,
+        rfid_payout_transfer_id: str | None = None,
+        rfid_ride_id: str | None = None,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+    ) -> tuple[list[schema.RFIDPayoutTransferReversal], int]:
+        filters = []
+
+        if status is not None:
+            filters.append(schema.RFIDPayoutTransferReversal.status == status)
+
+        if rfid_payout_transfer_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransferReversal.rfid_payout_transfer_id
+                == rfid_payout_transfer_id
+            )
+
+        if rfid_ride_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransferReversal.rfid_ride_id == rfid_ride_id
+            )
+
+        if driver_user_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransferReversal.driver_user_id == driver_user_id
+            )
+
+        if scheduled_trip_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransferReversal.scheduled_trip_id
+                == scheduled_trip_id
+            )
+
+        count_stmt = select(func.count(schema.RFIDPayoutTransferReversal.id))
+        list_stmt = select(schema.RFIDPayoutTransferReversal)
+
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            list_stmt = list_stmt.where(*filters)
+
+        list_stmt = (
+            list_stmt
+            .order_by(schema.RFIDPayoutTransferReversal.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return (
+            list(list_result.scalars().all()),
+            int(count_result.scalar_one() or 0),
+        )
 
     async def _get_running_trip_for_vehicle(
         self,
