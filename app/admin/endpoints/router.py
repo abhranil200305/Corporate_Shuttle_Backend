@@ -17,6 +17,8 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDRideDeductionReversalRequest,
+	RFIDGenericMutationResponse,
 	RFIDPayoutTransferReconcileCreatedRequest,
 	RFIDPayoutTransferRefreshWithheldRequest,
 	RFIDPayoutTransferBulkTriggerRequest,
@@ -1295,6 +1297,33 @@ async def reconcile_created_rfid_payout_transfers(
 	await db.commit()
 
 	return result
+
+@router.post(
+	"/rfid/rides/{rfid_ride_id}/reverse-deduction",
+	response_model=RFIDGenericMutationResponse,
+	tags=["Admin RFID"],
+)
+async def reverse_rfid_ride_deduction(
+	rfid_ride_id: str = Path(..., min_length=1, max_length=36),
+	payload: RFIDRideDeductionReversalRequest = Body(...),
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
+):
+	service = AdminRFIDService(db)
+	result = await service.reverse_rfid_ride_deduction(
+		rfid_ride_id=rfid_ride_id,
+		amount=payload.amount,
+		reason=payload.reason,
+		admin_user_id=current_admin.id,
+		admin_note=payload.admin_note,
+	)
+
+	await db.commit()
+
+	return {
+		"message": result["message"],
+		"data": result,
+	}
 
 # -----------------------------
 # Admin:  driver vehical verification
