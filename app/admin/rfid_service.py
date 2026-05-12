@@ -2502,6 +2502,173 @@ class AdminRFIDService:
             "payout_transfer_count": len(payout_transfers),
             "payout_transfer_reversal_count": len(payout_transfer_reversals),
         }
+    
+    async def get_rfid_payout_operations_summary(
+        self,
+        *,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+    ) -> dict[str, Any]:
+        transfer_filters = []
+        reversal_filters = []
+
+        if driver_user_id is not None:
+            transfer_filters.append(
+                schema.RFIDPayoutTransfer.driver_user_id == driver_user_id
+            )
+            reversal_filters.append(
+                schema.RFIDPayoutTransferReversal.driver_user_id == driver_user_id
+            )
+
+        if scheduled_trip_id is not None:
+            transfer_filters.append(
+                schema.RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id
+            )
+            reversal_filters.append(
+                schema.RFIDPayoutTransferReversal.scheduled_trip_id
+                == scheduled_trip_id
+            )
+
+        transfer_stmt = select(
+            schema.RFIDPayoutTransfer.status,
+            func.count(schema.RFIDPayoutTransfer.id),
+            func.coalesce(
+                func.sum(schema.RFIDPayoutTransfer.amount),
+                Decimal("0.00"),
+            ),
+            func.coalesce(
+                func.sum(schema.RFIDPayoutTransfer.reversed_amount),
+                Decimal("0.00"),
+            ),
+        )
+
+        if transfer_filters:
+            transfer_stmt = transfer_stmt.where(*transfer_filters)
+
+        transfer_stmt = transfer_stmt.group_by(schema.RFIDPayoutTransfer.status)
+
+        transfer_result = await self.db.execute(transfer_stmt)
+
+        payout_transfer_counts_by_status: dict[str, int] = {}
+        payout_transfer_amount_by_status: dict[str, Decimal] = {}
+        payout_transfer_reversed_amount_by_status: dict[str, Decimal] = {}
+        payout_transfer_payable_amount_by_status: dict[str, Decimal] = {}
+
+        for status, count, amount, reversed_amount in transfer_result.all():
+            status_key = status.value
+            normalized_amount = self._normalize_money(Decimal(amount or 0))
+            normalized_reversed_amount = self._normalize_money(
+                Decimal(reversed_amount or 0)
+            )
+            payable_amount = self._normalize_money(
+                normalized_amount - normalized_reversed_amount
+            )
+
+            payout_transfer_counts_by_status[status_key] = int(count or 0)
+            payout_transfer_amount_by_status[status_key] = normalized_amount
+            payout_transfer_reversed_amount_by_status[
+                status_key
+            ] = normalized_reversed_amount
+            payout_transfer_payable_amount_by_status[status_key] = payable_amount
+
+        for status in schema.RFIDPayoutTransferStatus:
+            payout_transfer_counts_by_status.setdefault(status.value, 0)
+            payout_transfer_amount_by_status.setdefault(
+                status.value,
+                Decimal("0.00"),
+            )
+            payout_transfer_reversed_amount_by_status.setdefault(
+                status.value,
+                Decimal("0.00"),
+            )
+            payout_transfer_payable_amount_by_status.setdefault(
+                status.value,
+                Decimal("0.00"),
+            )
+
+        reversal_stmt = select(
+            schema.RFIDPayoutTransferReversal.status,
+            func.count(schema.RFIDPayoutTransferReversal.id),
+            func.coalesce(
+                func.sum(schema.RFIDPayoutTransferReversal.amount),
+                Decimal("0.00"),
+            ),
+        )
+
+        if reversal_filters:
+            reversal_stmt = reversal_stmt.where(*reversal_filters)
+
+        reversal_stmt = reversal_stmt.group_by(
+            schema.RFIDPayoutTransferReversal.status
+        )
+
+        reversal_result = await self.db.execute(reversal_stmt)
+
+        provider_reversal_counts_by_status: dict[str, int] = {}
+        provider_reversal_amount_by_status: dict[str, Decimal] = {}
+
+        for status, count, amount in reversal_result.all():
+            status_key = status.value
+            provider_reversal_counts_by_status[status_key] = int(count or 0)
+            provider_reversal_amount_by_status[status_key] = self._normalize_money(
+                Decimal(amount or 0)
+            )
+
+        for status in schema.RFIDPayoutTransferReversalStatus:
+            provider_reversal_counts_by_status.setdefault(status.value, 0)
+            provider_reversal_amount_by_status.setdefault(
+                status.value,
+                Decimal("0.00"),
+            )
+
+        return {
+            "payout_transfer_total": sum(
+                payout_transfer_counts_by_status.values()
+            ),
+            "payout_transfer_counts_by_status": payout_transfer_counts_by_status,
+            "payout_transfer_amount_by_status": payout_transfer_amount_by_status,
+            "payout_transfer_reversed_amount_by_status": (
+                payout_transfer_reversed_amount_by_status
+            ),
+            "payout_transfer_payable_amount_by_status": (
+                payout_transfer_payable_amount_by_status
+            ),
+            "provider_reversal_total": sum(
+                provider_reversal_counts_by_status.values()
+            ),
+            "provider_reversal_counts_by_status": (
+                provider_reversal_counts_by_status
+            ),
+            "provider_reversal_amount_by_status": (
+                provider_reversal_amount_by_status
+            ),
+            "ready_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.READY.value
+            ],
+            "created_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.CREATED.value
+            ],
+            "processed_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.PROCESSED.value
+            ],
+            "failed_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.FAILED.value
+            ],
+            "withheld_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.WITHHELD.value
+            ],
+            "reversed_transfer_count": payout_transfer_counts_by_status[
+                schema.RFIDPayoutTransferStatus.REVERSED.value
+            ],
+            "failed_provider_reversal_count": provider_reversal_counts_by_status[
+                schema.RFIDPayoutTransferReversalStatus.FAILED.value
+            ],
+            "processed_provider_reversal_count": (
+                provider_reversal_counts_by_status[
+                    schema.RFIDPayoutTransferReversalStatus.PROCESSED.value
+                ]
+            ),
+        }
 
     async def list_payout_ready_rfid_rides(
         self,
