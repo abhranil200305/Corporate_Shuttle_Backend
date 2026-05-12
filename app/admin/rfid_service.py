@@ -2423,6 +2423,85 @@ class AdminRFIDService:
             ],
             "reversal_count": len(reversals),
         }
+    
+    async def get_rfid_ride_money_detail(
+        self,
+        rfid_ride_id: str,
+    ) -> dict[str, Any]:
+        ride_stmt = (
+            select(schema.RFIDTripRide)
+            .where(schema.RFIDTripRide.id == rfid_ride_id)
+            .limit(1)
+        )
+        ride_result = await self.db.execute(ride_stmt)
+        ride = ride_result.scalar_one_or_none()
+
+        if ride is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_ride_not_found",
+                    "message": "RFID ride not found.",
+                },
+            )
+
+        ledger_stmt = (
+            select(schema.RFIDLedgerEntry)
+            .where(schema.RFIDLedgerEntry.rfid_ride_id == ride.id)
+            .order_by(schema.RFIDLedgerEntry.created_at.asc())
+        )
+        ledger_result = await self.db.execute(ledger_stmt)
+        ledger_entries = list(ledger_result.scalars().all())
+
+        allocation_stmt = (
+            select(schema.RFIDRechargeFundingAllocation)
+            .where(schema.RFIDRechargeFundingAllocation.rfid_ride_id == ride.id)
+            .order_by(schema.RFIDRechargeFundingAllocation.created_at.asc())
+        )
+        allocation_result = await self.db.execute(allocation_stmt)
+        funding_allocations = list(allocation_result.scalars().all())
+
+        transfer_stmt = (
+            select(schema.RFIDPayoutTransfer)
+            .where(schema.RFIDPayoutTransfer.rfid_ride_id == ride.id)
+            .order_by(schema.RFIDPayoutTransfer.created_at.asc())
+        )
+        transfer_result = await self.db.execute(transfer_stmt)
+        payout_transfers = list(transfer_result.scalars().all())
+
+        await self._attach_payout_transfer_reversal_summary(payout_transfers)
+
+        reversal_stmt = (
+            select(schema.RFIDPayoutTransferReversal)
+            .where(schema.RFIDPayoutTransferReversal.rfid_ride_id == ride.id)
+            .order_by(schema.RFIDPayoutTransferReversal.created_at.asc())
+        )
+        reversal_result = await self.db.execute(reversal_stmt)
+        payout_transfer_reversals = list(reversal_result.scalars().all())
+
+        return {
+            "ride": self.serialize_trip_ride(ride),
+            "ledger_entries": [
+                self.serialize_ledger_entry(ledger_entry)
+                for ledger_entry in ledger_entries
+            ],
+            "funding_allocations": [
+                self.serialize_recharge_funding_allocation(allocation)
+                for allocation in funding_allocations
+            ],
+            "payout_transfers": [
+                self.serialize_payout_transfer(transfer)
+                for transfer in payout_transfers
+            ],
+            "payout_transfer_reversals": [
+                self.serialize_payout_transfer_reversal(reversal)
+                for reversal in payout_transfer_reversals
+            ],
+            "ledger_entry_count": len(ledger_entries),
+            "funding_allocation_count": len(funding_allocations),
+            "payout_transfer_count": len(payout_transfers),
+            "payout_transfer_reversal_count": len(payout_transfer_reversals),
+        }
 
     async def list_payout_ready_rfid_rides(
         self,
