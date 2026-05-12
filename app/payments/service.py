@@ -928,6 +928,7 @@ class RoutePayoutService:
                 "provider_response": provider_response,
             }
 
+        reversal.amount = provider_reversed_amount
         reversal.status = RFIDPayoutTransferReversalStatus.PROCESSED
         reversal.razorpay_reversal_id = provider_reversal_id
         reversal.provider_response_json = json.dumps(

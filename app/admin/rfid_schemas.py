@@ -444,6 +444,9 @@ class RFIDPayoutTransferResponse(BaseModel):
     amount: Decimal
     reversed_amount: Decimal
     payable_amount: Decimal
+    provider_reversed_amount: Decimal = Decimal("0.00")
+    has_reversals: bool = False
+    reversal_count: int = 0
     status: str
     razorpay_transfer_id: str | None
     failure_reason: str | None
@@ -548,6 +551,49 @@ class RFIDPayoutTransferReversalResponse(BaseModel):
 class RFIDPayoutTransferReversalListResponse(BaseModel):
     items: list[RFIDPayoutTransferReversalResponse]
     count: int
+
+class RFIDRechargeFundingAllocationResponse(BaseModel):
+    id: str
+    funding_lot_id: str
+    recharge_id: str | None
+    account_id: str
+    card_id: str
+    passenger_user_id: str | None
+    rfid_ride_id: str | None
+    scheduled_trip_id: str | None
+    route_id: str | None
+    vehicle_id: str | None
+    driver_user_id: str | None
+    source_razorpay_payment_id: str | None
+    amount: Decimal
+    reversed_amount: Decimal
+    allocated_at: datetime
+    reversed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RFIDFundingLotResponse(BaseModel):
+    id: str
+    recharge_id: str | None
+    account_id: str
+    card_id: str
+    source_amount: Decimal
+    remaining_amount: Decimal
+    razorpay_payment_id: str | None
+    source_type: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class RFIDPayoutTransferDetailResponse(BaseModel):
+    transfer: RFIDPayoutTransferResponse
+    funding_allocation: RFIDRechargeFundingAllocationResponse | None
+    funding_lot: RFIDFundingLotResponse | None
+    source_recharge: RFIDRechargeResponse | None
+    reversals: list[RFIDPayoutTransferReversalResponse]
+    reversal_count: int
 
 # ============================================================
 # manual reversal request

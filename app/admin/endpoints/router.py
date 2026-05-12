@@ -17,6 +17,8 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDPayoutTransferDetailResponse,
+	RFIDPayoutTransferReversalListResponse,
 	RFIDPayoutTransferReversalRequest,
 	RFIDRideDeductionReversalRequest,
 	RFIDGenericMutationResponse,
@@ -1352,6 +1354,52 @@ async def reverse_rfid_payout_transfer(
 		"message": result["message"],
 		"data": result,
 	}
+
+@router.get(
+	"/rfid/payout-transfer-reversals",
+	response_model=RFIDPayoutTransferReversalListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_payout_transfer_reversals(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	status: schema.RFIDPayoutTransferReversalStatus | None = Query(default=None),
+	rfid_payout_transfer_id: str | None = Query(default=None, min_length=1, max_length=36),
+	rfid_ride_id: str | None = Query(default=None, min_length=1, max_length=36),
+	driver_user_id: str | None = Query(default=None, min_length=1, max_length=36),
+	scheduled_trip_id: str | None = Query(default=None, min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	reversals, count = await service.list_rfid_payout_transfer_reversals(
+		page=page,
+		page_size=page_size,
+		status=status,
+		rfid_payout_transfer_id=rfid_payout_transfer_id,
+		rfid_ride_id=rfid_ride_id,
+		driver_user_id=driver_user_id,
+		scheduled_trip_id=scheduled_trip_id,
+	)
+
+	return {
+		"items": [
+			service.serialize_payout_transfer_reversal(reversal)
+			for reversal in reversals
+		],
+		"count": count,
+	}
+
+@router.get(
+	"/rfid/payout-transfers/{transfer_id}",
+	response_model=RFIDPayoutTransferDetailResponse,
+	tags=["Admin RFID"],
+)
+async def get_rfid_payout_transfer_detail(
+	transfer_id: str = Path(..., min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	return await service.get_rfid_payout_transfer_detail(transfer_id)
 
 # -----------------------------
 # Admin:  driver vehical verification
