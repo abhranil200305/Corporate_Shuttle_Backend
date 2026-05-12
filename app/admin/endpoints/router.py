@@ -1413,6 +1413,7 @@ async def get_rfid_ride_money_detail(
 ):
 	service = AdminRFIDService(db)
 	return await service.get_rfid_ride_money_detail(rfid_ride_id)
+
 # -----------------------------
 # Admin:  driver vehical verification
 # -----------------------------
