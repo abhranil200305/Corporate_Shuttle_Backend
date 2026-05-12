@@ -298,6 +298,69 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    async def _create_rfid_payout_transfers_for_allocations(
+        self,
+        *,
+        allocations: list[schema.RFIDRechargeFundingAllocation],
+        ride: schema.RFIDTripRide,
+    ) -> list[schema.RFIDPayoutTransfer]:
+        if not allocations:
+            return []
+
+        payout_details = await self._get_driver_payout_details(ride.driver_user_id)
+
+        linked_account_id: str | None = None
+        linked_account_is_usable = False
+
+        if payout_details is not None:
+            linked_account_id = payout_details.razorpay_linked_account_id
+            linked_account_is_usable = (
+                bool(linked_account_id)
+                and payout_details.linked_account_status
+                == schema.LinkedAccountStatus.ACTIVE
+                and payout_details.route_product_status
+                == schema.RouteProductStatus.ACTIVATED
+                and payout_details.is_payout_eligible is True
+            )
+
+        transfers: list[schema.RFIDPayoutTransfer] = []
+
+        for allocation in allocations:
+            has_source_payment = bool(allocation.source_razorpay_payment_id)
+
+            transfer_status = (
+                schema.RFIDPayoutTransferStatus.READY
+                if has_source_payment and linked_account_is_usable
+                else schema.RFIDPayoutTransferStatus.WITHHELD
+            )
+
+            failure_reason = None
+            if not has_source_payment:
+                failure_reason = "rfid_funding_source_not_razorpay_payment"
+            elif not linked_account_is_usable:
+                failure_reason = "driver_linked_account_not_ready"
+
+            transfer = schema.RFIDPayoutTransfer(
+                id=schema.new_id(),
+                rfid_ride_id=ride.id,
+                driver_user_id=ride.driver_user_id,
+                scheduled_trip_id=ride.scheduled_trip_id,
+                route_id=ride.route_id,
+                vehicle_id=ride.vehicle_id,
+                source_recharge_id=allocation.recharge_id,
+                source_funding_allocation_id=allocation.id,
+                source_razorpay_payment_id=allocation.source_razorpay_payment_id,
+                linked_account_id=linked_account_id if linked_account_is_usable else None,
+                amount=allocation.amount,
+                status=transfer_status,
+                failure_reason=failure_reason,
+            )
+
+            self.db.add(transfer)
+            transfers.append(transfer)
+
+        return transfers
 
     async def _get_running_trip_for_vehicle(
         self,
