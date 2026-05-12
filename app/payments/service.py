@@ -725,6 +725,27 @@ class RoutePayoutService:
             return RFIDPayoutTransferStatus.REVERSED
 
         return RFIDPayoutTransferStatus.CREATED
+    
+    @staticmethod
+    def _get_ready_driver_linked_account_or_reason(
+        payout_details: DriverPayoutDetails | None,
+    ) -> tuple[str | None, str | None]:
+        if payout_details is None:
+            return None, "driver_payout_details_not_found"
+
+        if not payout_details.razorpay_linked_account_id:
+            return None, "driver_linked_account_missing"
+
+        if payout_details.linked_account_status != LinkedAccountStatus.ACTIVE:
+            return None, "driver_linked_account_not_active"
+
+        if payout_details.route_product_status != RouteProductStatus.ACTIVATED:
+            return None, "driver_route_product_not_activated"
+
+        if payout_details.is_payout_eligible is not True:
+            return None, "driver_not_payout_eligible"
+
+        return payout_details.razorpay_linked_account_id, None
 
     async def _get_rfid_payout_transfer_for_update(
         self,
@@ -779,15 +800,22 @@ class RoutePayoutService:
 
         if all(status == RFIDPayoutTransferStatus.PROCESSED for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.PROCESSED
-            ride.transfer_processed_at = now
+            ride.transfer_processed_at = ride.transfer_processed_at or now
+
         elif any(status == RFIDPayoutTransferStatus.FAILED for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.FAILED
+
         elif any(status == RFIDPayoutTransferStatus.CREATED for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.CREATED
+
         elif any(status == RFIDPayoutTransferStatus.READY for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
         elif any(status == RFIDPayoutTransferStatus.WITHHELD for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.WITHHELD
+            ride.transfer_ready_at = None
+
         elif all(status == RFIDPayoutTransferStatus.REVERSED for status in statuses):
             ride.transfer_status = RFIDPayoutTransferStatus.REVERSED
 
@@ -935,6 +963,8 @@ class RoutePayoutService:
             RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.READY,
         ]
 
+        requested_count = 0
+
         if transfer_ids:
             cleaned_transfer_ids = [
                 str(transfer_id).strip()
@@ -951,6 +981,7 @@ class RoutePayoutService:
                     },
                 )
 
+            requested_count = len(cleaned_transfer_ids)
             filters.append(RFIDPayoutTransfer.id.in_(cleaned_transfer_ids))
 
         if driver_user_id is not None:
@@ -973,6 +1004,8 @@ class RoutePayoutService:
         for selected_transfer_id in selected_transfer_ids:
             try:
                 item = await self.trigger_rfid_payout_transfer(selected_transfer_id)
+                await self.db.commit()
+
                 items.append(
                     {
                         "transfer_id": selected_transfer_id,
@@ -981,7 +1014,10 @@ class RoutePayoutService:
                         "error": None,
                     }
                 )
+
             except HTTPException as exc:
+                await self.db.rollback()
+
                 items.append(
                     {
                         "transfer_id": selected_transfer_id,
@@ -996,12 +1032,345 @@ class RoutePayoutService:
 
         return {
             "message": "RFID payout transfer bulk trigger completed.",
-            "requested_count": 0 if transfer_ids is None else len(transfer_ids),
+            "requested_count": requested_count,
             "selected_count": len(selected_transfer_ids),
             "successful_count": successful_count,
             "failed_count": failed_count,
             "items": items,
         }
+    
+    async def refresh_withheld_rfid_payout_transfers(
+        self,
+        *,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        normalized_limit = max(1, min(int(limit), 100))
+
+        filters = [
+            RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.WITHHELD,
+        ]
+
+        if driver_user_id is not None:
+            filters.append(RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id)
+
+        stmt = (
+            select(RFIDPayoutTransfer)
+            .where(*filters)
+            .order_by(RFIDPayoutTransfer.created_at.asc())
+            .limit(normalized_limit)
+            .with_for_update()
+        )
+
+        result = await self.db.execute(stmt)
+        transfers = list(result.scalars().all())
+
+        payout_details_by_driver: dict[str, DriverPayoutDetails | None] = {}
+        impacted_ride_ids: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        ready_count = 0
+        still_withheld_count = 0
+
+        for transfer in transfers:
+            old_status = transfer.status
+            old_failure_reason = transfer.failure_reason
+
+            if not transfer.source_razorpay_payment_id:
+                transfer.status = RFIDPayoutTransferStatus.WITHHELD
+                transfer.failure_reason = "rfid_source_razorpay_payment_missing"
+                still_withheld_count += 1
+
+                self.db.add(transfer)
+                impacted_ride_ids.add(transfer.rfid_ride_id)
+
+                items.append(
+                    {
+                        "transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "old_status": old_status,
+                        "new_status": transfer.status,
+                        "old_failure_reason": old_failure_reason,
+                        "new_failure_reason": transfer.failure_reason,
+                        "linked_account_id": transfer.linked_account_id,
+                    }
+                )
+                continue
+
+            if transfer.driver_user_id not in payout_details_by_driver:
+                payout_details_by_driver[transfer.driver_user_id] = (
+                    await self._get_driver_payout_details(transfer.driver_user_id)
+                )
+
+            linked_account_id, failure_reason = (
+                self._get_ready_driver_linked_account_or_reason(
+                    payout_details_by_driver[transfer.driver_user_id]
+                )
+            )
+
+            if failure_reason is None:
+                transfer.status = RFIDPayoutTransferStatus.READY
+                transfer.linked_account_id = linked_account_id
+                transfer.failure_reason = None
+                ready_count += 1
+            else:
+                transfer.status = RFIDPayoutTransferStatus.WITHHELD
+                transfer.linked_account_id = None
+                transfer.failure_reason = failure_reason
+                still_withheld_count += 1
+
+            self.db.add(transfer)
+            impacted_ride_ids.add(transfer.rfid_ride_id)
+
+            items.append(
+                {
+                    "transfer_id": transfer.id,
+                    "rfid_ride_id": transfer.rfid_ride_id,
+                    "old_status": old_status,
+                    "new_status": transfer.status,
+                    "old_failure_reason": old_failure_reason,
+                    "new_failure_reason": transfer.failure_reason,
+                    "linked_account_id": transfer.linked_account_id,
+                }
+            )
+
+        for rfid_ride_id in impacted_ride_ids:
+            await self._refresh_rfid_ride_transfer_status(rfid_ride_id)
+
+        await self.db.flush()
+
+        return {
+            "message": "Withheld RFID payout transfers refreshed.",
+            "selected_count": len(transfers),
+            "ready_count": ready_count,
+            "still_withheld_count": still_withheld_count,
+            "items": items,
+        }
+    
+    async def reconcile_created_rfid_payout_transfers(
+        self,
+        *,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        normalized_limit = max(1, min(int(limit), 100))
+
+        filters = [
+            RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.CREATED,
+        ]
+
+        if driver_user_id is not None:
+            filters.append(RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id)
+
+        stmt = (
+            select(
+                RFIDPayoutTransfer.id,
+                RFIDPayoutTransfer.razorpay_transfer_id,
+            )
+            .where(*filters)
+            .order_by(RFIDPayoutTransfer.created_at.asc())
+            .limit(normalized_limit)
+        )
+
+        result = await self.db.execute(stmt)
+        transfer_refs = list(result.all())
+
+        items: list[dict[str, Any]] = []
+        impacted_ride_ids: set[str] = set()
+
+        processed_count = 0
+        failed_count = 0
+        reversed_count = 0
+        still_created_count = 0
+        skipped_count = 0
+        provider_error_count = 0
+
+        for transfer_id, razorpay_transfer_id in transfer_refs:
+            if not razorpay_transfer_id:
+                transfer = await self._get_rfid_payout_transfer_for_update(
+                    transfer_id
+                )
+
+                if transfer.status != RFIDPayoutTransferStatus.CREATED:
+                    skipped_count += 1
+                    items.append(
+                        {
+                            "transfer_id": transfer.id,
+                            "rfid_ride_id": transfer.rfid_ride_id,
+                            "old_status": transfer.status,
+                            "new_status": transfer.status,
+                            "provider_status": None,
+                            "error": "transfer_no_longer_created",
+                        }
+                    )
+                    continue
+
+                old_status = transfer.status
+
+                transfer.status = RFIDPayoutTransferStatus.FAILED
+                transfer.failure_reason = (
+                    "razorpay_transfer_id_missing_for_reconciliation"
+                )
+
+                self.db.add(transfer)
+                impacted_ride_ids.add(transfer.rfid_ride_id)
+                failed_count += 1
+
+                items.append(
+                    {
+                        "transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "old_status": old_status,
+                        "new_status": transfer.status,
+                        "provider_status": None,
+                        "error": transfer.failure_reason,
+                    }
+                )
+                continue
+
+            try:
+                provider_response = await self._fetch_razorpay_transfer(
+                    razorpay_transfer_id
+                )
+            except HTTPException as exc:
+                transfer = await self._get_rfid_payout_transfer_for_update(
+                    transfer_id
+                )
+
+                if transfer.status != RFIDPayoutTransferStatus.CREATED:
+                    skipped_count += 1
+                    items.append(
+                        {
+                            "transfer_id": transfer.id,
+                            "rfid_ride_id": transfer.rfid_ride_id,
+                            "old_status": transfer.status,
+                            "new_status": transfer.status,
+                            "provider_status": None,
+                            "error": "transfer_no_longer_created",
+                        }
+                    )
+                    continue
+
+                transfer.failure_reason = (
+                    "razorpay_rfid_transfer_reconcile_request_failed"
+                )
+                transfer.provider_response_json = json.dumps(
+                    exc.detail,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                )
+
+                self.db.add(transfer)
+                provider_error_count += 1
+
+                items.append(
+                    {
+                        "transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "old_status": transfer.status,
+                        "new_status": transfer.status,
+                        "provider_status": None,
+                        "error": exc.detail,
+                    }
+                )
+                continue
+
+            provider_status = provider_response.get("status")
+            mapped_status = self._map_provider_rfid_transfer_status(
+                provider_status
+            )
+
+            transfer = await self._get_rfid_payout_transfer_for_update(
+                transfer_id
+            )
+
+            if transfer.status != RFIDPayoutTransferStatus.CREATED:
+                skipped_count += 1
+                items.append(
+                    {
+                        "transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "old_status": transfer.status,
+                        "new_status": transfer.status,
+                        "provider_status": provider_status,
+                        "error": "transfer_no_longer_created",
+                    }
+                )
+                continue
+
+            old_status = transfer.status
+            transfer.status = mapped_status
+            transfer.provider_response_json = json.dumps(
+                provider_response,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            if mapped_status == RFIDPayoutTransferStatus.PROCESSED:
+                transfer.processed_at = utcnow()
+                transfer.failure_reason = None
+                processed_count += 1
+            elif mapped_status == RFIDPayoutTransferStatus.FAILED:
+                transfer.failure_reason = "razorpay_rfid_transfer_failed"
+                failed_count += 1
+            elif mapped_status == RFIDPayoutTransferStatus.REVERSED:
+                transfer.reversed_at = utcnow()
+                transfer.failure_reason = None
+                reversed_count += 1
+            else:
+                transfer.failure_reason = None
+                still_created_count += 1
+
+            self.db.add(transfer)
+            impacted_ride_ids.add(transfer.rfid_ride_id)
+
+            items.append(
+                {
+                    "transfer_id": transfer.id,
+                    "rfid_ride_id": transfer.rfid_ride_id,
+                    "old_status": old_status,
+                    "new_status": transfer.status,
+                    "provider_status": provider_status,
+                    "razorpay_transfer_id": transfer.razorpay_transfer_id,
+                    "error": transfer.failure_reason,
+                }
+            )
+
+        for rfid_ride_id in impacted_ride_ids:
+            await self._refresh_rfid_ride_transfer_status(rfid_ride_id)
+
+        await self.db.flush()
+
+        return {
+            "message": "Created RFID payout transfers reconciled.",
+            "selected_count": len(transfer_refs),
+            "processed_count": processed_count,
+            "failed_count": failed_count,
+            "reversed_count": reversed_count,
+            "still_created_count": still_created_count,
+            "provider_error_count": provider_error_count,
+            "skipped_count": skipped_count,
+            "items": items,
+        }
+    
+    async def _fetch_razorpay_transfer(
+        self,
+        razorpay_transfer_id: str,
+    ) -> dict[str, Any]:
+        return await self._razorpay_request(
+            method="GET",
+            path=f"/transfers/{razorpay_transfer_id}",
+        )
 
     async def _fetch_razorpay_payment(
         self,

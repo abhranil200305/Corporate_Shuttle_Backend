@@ -1876,6 +1876,13 @@ class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    reversed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
     status: Mapped[RFIDPayoutTransferStatus] = mapped_column(
         enum_type(RFIDPayoutTransferStatus, "rfid_payout_transfer_status"),
         nullable=False,
@@ -1912,6 +1919,14 @@ class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "amount > 0",
             name="ck_rfid_payout_transfers_amount_positive",
+        ),
+        CheckConstraint(
+            "reversed_amount >= 0",
+            name="ck_rfid_payout_transfers_reversed_nonnegative",
+        ),
+        CheckConstraint(
+            "reversed_amount <= amount",
+            name="ck_rfid_payout_transfers_reversed_not_above_amount",
         ),
         Index("ix_rfid_payout_transfers_ride", "rfid_ride_id"),
         Index("ix_rfid_payout_transfers_driver_status", "driver_user_id", "status"),
