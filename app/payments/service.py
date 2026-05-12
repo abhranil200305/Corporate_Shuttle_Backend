@@ -725,6 +725,27 @@ class RoutePayoutService:
             return RFIDPayoutTransferStatus.REVERSED
 
         return RFIDPayoutTransferStatus.CREATED
+    
+    @staticmethod
+    def _get_ready_driver_linked_account_or_reason(
+        payout_details: DriverPayoutDetails | None,
+    ) -> tuple[str | None, str | None]:
+        if payout_details is None:
+            return None, "driver_payout_details_not_found"
+
+        if not payout_details.razorpay_linked_account_id:
+            return None, "driver_linked_account_missing"
+
+        if payout_details.linked_account_status != LinkedAccountStatus.ACTIVE:
+            return None, "driver_linked_account_not_active"
+
+        if payout_details.route_product_status != RouteProductStatus.ACTIVATED:
+            return None, "driver_route_product_not_activated"
+
+        if payout_details.is_payout_eligible is not True:
+            return None, "driver_not_payout_eligible"
+
+        return payout_details.razorpay_linked_account_id, None
 
     async def _get_rfid_payout_transfer_for_update(
         self,
@@ -1008,6 +1029,118 @@ class RoutePayoutService:
             "selected_count": len(selected_transfer_ids),
             "successful_count": successful_count,
             "failed_count": failed_count,
+            "items": items,
+        }
+    
+    async def refresh_withheld_rfid_payout_transfers(
+        self,
+        *,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        normalized_limit = max(1, min(int(limit), 100))
+
+        filters = [
+            RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.WITHHELD,
+        ]
+
+        if driver_user_id is not None:
+            filters.append(RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id)
+
+        stmt = (
+            select(RFIDPayoutTransfer)
+            .where(*filters)
+            .order_by(RFIDPayoutTransfer.created_at.asc())
+            .limit(normalized_limit)
+            .with_for_update()
+        )
+
+        result = await self.db.execute(stmt)
+        transfers = list(result.scalars().all())
+
+        payout_details_by_driver: dict[str, DriverPayoutDetails | None] = {}
+        impacted_ride_ids: set[str] = set()
+        items: list[dict[str, Any]] = []
+
+        ready_count = 0
+        still_withheld_count = 0
+
+        for transfer in transfers:
+            old_status = transfer.status
+            old_failure_reason = transfer.failure_reason
+
+            if not transfer.source_razorpay_payment_id:
+                transfer.status = RFIDPayoutTransferStatus.WITHHELD
+                transfer.failure_reason = "rfid_source_razorpay_payment_missing"
+                still_withheld_count += 1
+
+                self.db.add(transfer)
+                impacted_ride_ids.add(transfer.rfid_ride_id)
+
+                items.append(
+                    {
+                        "transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "old_status": old_status,
+                        "new_status": transfer.status,
+                        "old_failure_reason": old_failure_reason,
+                        "new_failure_reason": transfer.failure_reason,
+                        "linked_account_id": transfer.linked_account_id,
+                    }
+                )
+                continue
+
+            if transfer.driver_user_id not in payout_details_by_driver:
+                payout_details_by_driver[transfer.driver_user_id] = (
+                    await self._get_driver_payout_details(transfer.driver_user_id)
+                )
+
+            linked_account_id, failure_reason = (
+                self._get_ready_driver_linked_account_or_reason(
+                    payout_details_by_driver[transfer.driver_user_id]
+                )
+            )
+
+            if failure_reason is None:
+                transfer.status = RFIDPayoutTransferStatus.READY
+                transfer.linked_account_id = linked_account_id
+                transfer.failure_reason = None
+                ready_count += 1
+            else:
+                transfer.status = RFIDPayoutTransferStatus.WITHHELD
+                transfer.linked_account_id = None
+                transfer.failure_reason = failure_reason
+                still_withheld_count += 1
+
+            self.db.add(transfer)
+            impacted_ride_ids.add(transfer.rfid_ride_id)
+
+            items.append(
+                {
+                    "transfer_id": transfer.id,
+                    "rfid_ride_id": transfer.rfid_ride_id,
+                    "old_status": old_status,
+                    "new_status": transfer.status,
+                    "old_failure_reason": old_failure_reason,
+                    "new_failure_reason": transfer.failure_reason,
+                    "linked_account_id": transfer.linked_account_id,
+                }
+            )
+
+        for rfid_ride_id in impacted_ride_ids:
+            await self._refresh_rfid_ride_transfer_status(rfid_ride_id)
+
+        await self.db.flush()
+
+        return {
+            "message": "Withheld RFID payout transfers refreshed.",
+            "selected_count": len(transfers),
+            "ready_count": ready_count,
+            "still_withheld_count": still_withheld_count,
             "items": items,
         }
 
