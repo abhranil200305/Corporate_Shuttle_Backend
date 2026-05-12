@@ -205,7 +205,7 @@ class RFIDScanService:
         vehicle_id: str,
         driver_user_id: str,
         fare_amount: Decimal,
-    ) -> list[schema.RFIDRechargeFundingAllocation]:
+    ) -> list[schema.RFIDRechargeFundingAllocation] | None:
         remaining_to_allocate = self._money(fare_amount)
 
         if remaining_to_allocate <= Decimal("0.00"):
@@ -226,6 +226,16 @@ class RFIDScanService:
         result = await self.db.execute(stmt)
         funding_lots = list(result.scalars().all())
 
+        total_available = self._money(
+            sum(
+                self._money(funding_lot.remaining_amount)
+                for funding_lot in funding_lots
+            )
+        )
+
+        if total_available < remaining_to_allocate:
+            return None
+
         allocations: list[schema.RFIDRechargeFundingAllocation] = []
 
         for funding_lot in funding_lots:
@@ -233,8 +243,9 @@ class RFIDScanService:
                 break
 
             lot_remaining_before = self._money(funding_lot.remaining_amount)
-            allocation_amount = min(lot_remaining_before, remaining_to_allocate)
-            allocation_amount = self._money(allocation_amount)
+            allocation_amount = self._money(
+                min(lot_remaining_before, remaining_to_allocate)
+            )
 
             if allocation_amount <= Decimal("0.00"):
                 continue
@@ -272,11 +283,6 @@ class RFIDScanService:
 
             remaining_to_allocate = self._money(
                 remaining_to_allocate - allocation_amount
-            )
-
-        if remaining_to_allocate > Decimal("0.00"):
-            raise RuntimeError(
-                "RFID funding lots are insufficient for settled fare allocation."
             )
 
         return allocations
