@@ -442,6 +442,8 @@ class RFIDPayoutTransferResponse(BaseModel):
     source_razorpay_payment_id: str | None
     linked_account_id: str | None
     amount: Decimal
+    reversed_amount: Decimal
+    payable_amount: Decimal
     status: str
     razorpay_transfer_id: str | None
     failure_reason: str | None
