@@ -728,7 +728,28 @@ class RFIDScanService:
                     scan_event.rejection_reason = "rfid_card_held_balance_invalid_at_drop"
                     response_message = "RFID drop scan rejected."
                 else:
-                    debit_entry = schema.RFIDLedgerEntry(
+                    funding_allocations = (
+                        await self._allocate_rfid_fare_from_funding_lots(
+                            account_id=card_account.id,
+                            card_id=card.id,
+                            passenger_user_id=card.assigned_passenger_user_id,
+                            rfid_ride_id=open_ride.id,
+                            scheduled_trip_id=active_context.scheduled_trip.id,
+                            route_id=active_context.scheduled_trip.route_id,
+                            vehicle_id=active_context.scheduled_trip.vehicle_id,
+                            driver_user_id=active_context.scheduled_trip.driver_user_id,
+                            fare_amount=fare_amount,
+                        )
+                    )
+
+                    if funding_allocations is None:
+                        scan_event.accepted = False
+                        scan_event.rejection_reason = (
+                            "rfid_funding_lots_insufficient_for_fare"
+                        )
+                        response_message = "RFID drop scan rejected."
+                    else:
+                        debit_entry = schema.RFIDLedgerEntry(
                         id=schema.new_id(),
                         account_id=card_account.id,
                         card_id=card.id,
