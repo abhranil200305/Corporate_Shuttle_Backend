@@ -488,6 +488,16 @@ class RFIDPayoutTransferBulkTriggerRequest(BaseModel):
         return _clean_optional_text(value)
 
 
+class RFIDPayoutTransferRefreshWithheldRequest(BaseModel):
+    driver_user_id: str | None = Field(default=None, min_length=1, max_length=36)
+    scheduled_trip_id: str | None = Field(default=None, min_length=1, max_length=36)
+    limit: int = Field(default=100, ge=1, le=100)
+
+    @field_validator("driver_user_id", "scheduled_trip_id")
+    @classmethod
+    def validate_optional_ids(cls, value: str | None) -> str | None:
+        return _clean_optional_text(value)
+
 # ============================================================
 # manual reversal request
 # ============================================================
