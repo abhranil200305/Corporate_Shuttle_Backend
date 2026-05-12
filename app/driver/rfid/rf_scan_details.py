@@ -1,0 +1,202 @@
+# app/driver/rfid/rf_scan_details.py
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.auth.dependencies import get_current_active_user, get_db
+from app.db import schema
+
+
+router = APIRouter(
+    prefix="/driver/rfid",
+    tags=["Driver RFID"],
+)
+
+
+@router.get("/scan-details")
+async def get_driver_rfid_scan_details(
+    scheduled_trip_id: str = Query(...),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    current_user: schema.User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+
+    # ============================================================
+    # role validation
+    # ============================================================
+
+    if current_user.role != schema.UserRole.DRIVER:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "driver_access_required",
+                "message": "Only drivers can access RFID scan details.",
+            },
+        )
+
+    # ============================================================
+    # verify scheduled trip ownership
+    # ============================================================
+
+    trip_stmt = select(schema.ScheduledTrip).where(
+        schema.ScheduledTrip.id == scheduled_trip_id,
+        schema.ScheduledTrip.driver_user_id == current_user.id,
+    )
+
+    trip_result = await db.execute(trip_stmt)
+    scheduled_trip = trip_result.scalar_one_or_none()
+
+    if scheduled_trip is None:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "scheduled_trip_not_found",
+                "message": "Scheduled trip not found for this driver.",
+            },
+        )
+
+    # ============================================================
+    # aliases
+    # ============================================================
+
+    pickup_stop = schema.Stop.__table__.alias("pickup_stop")
+    dropoff_stop = schema.Stop.__table__.alias("dropoff_stop")
+
+    # ============================================================
+    # total count
+    # ============================================================
+
+    count_stmt = (
+        select(schema.RFIDScanEvent.id)
+        .where(
+            schema.RFIDScanEvent.scheduled_trip_id == scheduled_trip_id,
+            schema.RFIDScanEvent.driver_user_id == current_user.id,
+            schema.RFIDScanEvent.accepted.is_(True),
+        )
+    )
+
+    count_result = await db.execute(count_stmt)
+    total_count = len(count_result.scalars().all())
+
+    # ============================================================
+    # main query
+    # ============================================================
+
+    stmt = (
+        select(
+            schema.RFIDScanEvent.id.label("scan_event_id"),
+            schema.RFIDScanEvent.scan_type,
+            schema.RFIDScanEvent.created_at,
+            schema.RFIDScanEvent.accepted,
+            schema.RFIDScanEvent.rejection_reason,
+
+            schema.PassengerProfile.full_name.label("passenger_name"),
+
+            pickup_stop.c.name.label("board_stop_name"),
+            dropoff_stop.c.name.label("drop_stop_name"),
+
+            schema.Route.name.label("route_name"),
+
+            schema.RFIDScanEvent.scan_lat,
+            schema.RFIDScanEvent.scan_lng,
+
+            schema.RFIDScanEvent.distance_from_stop_meters,
+            schema.RFIDScanEvent.within_radius,
+        )
+        .join(
+            schema.PassengerProfile,
+            schema.PassengerProfile.user_id
+            == schema.RFIDScanEvent.passenger_user_id,
+        )
+        .outerjoin(
+            schema.TripBooking,
+            (
+                (schema.TripBooking.passenger_user_id
+                 == schema.RFIDScanEvent.passenger_user_id)
+                &
+                (schema.TripBooking.scheduled_trip_id
+                 == schema.RFIDScanEvent.scheduled_trip_id)
+            ),
+        )
+        .outerjoin(
+            pickup_stop,
+            pickup_stop.c.id == schema.TripBooking.pickup_stop_id,
+        )
+        .outerjoin(
+            dropoff_stop,
+            dropoff_stop.c.id == schema.TripBooking.dropoff_stop_id,
+        )
+        .outerjoin(
+            schema.Route,
+            schema.Route.id == schema.RFIDScanEvent.route_id,
+        )
+        .where(
+            schema.RFIDScanEvent.scheduled_trip_id == scheduled_trip_id,
+            schema.RFIDScanEvent.driver_user_id == current_user.id,
+            schema.RFIDScanEvent.accepted.is_(True),
+        )
+        .order_by(desc(schema.RFIDScanEvent.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
+
+    result = await db.execute(stmt)
+    rows = result.all()
+
+    # ============================================================
+    # response build
+    # ============================================================
+
+    items: list[dict[str, Any]] = []
+
+    for row in rows:
+        items.append(
+            {
+                "scan_event_id": row.scan_event_id,
+                "scan_type": row.scan_type.value
+                if row.scan_type
+                else None,
+                "passenger_name": row.passenger_name,
+                "board_stop_name": row.board_stop_name,
+                "drop_stop_name": row.drop_stop_name,
+                "route_name": row.route_name,
+                "accepted": row.accepted,
+                "rejection_reason": row.rejection_reason,
+                "scan_lat": (
+                    float(row.scan_lat)
+                    if row.scan_lat is not None
+                    else None
+                ),
+                "scan_lng": (
+                    float(row.scan_lng)
+                    if row.scan_lng is not None
+                    else None
+                ),
+                "distance_from_stop_meters": (
+                    float(row.distance_from_stop_meters)
+                    if row.distance_from_stop_meters is not None
+                    else None
+                ),
+                "within_radius": row.within_radius,
+                "scanned_at": (
+                    row.created_at.isoformat()
+                    if isinstance(row.created_at, datetime)
+                    else None
+                ),
+            }
+        )
+
+    return {
+        "scheduled_trip_id": scheduled_trip_id,
+        "page": page,
+        "page_size": page_size,
+        "count": total_count,
+        "items": items,
+    }

@@ -71,91 +71,135 @@ def is_within_radius(stop: Stop, lat: float, lng: float, radius=150) -> bool:
 @router.post("/create")
 async def create_trip(
     route_name: str = Form(...),
+
     planned_start_at: datetime = Form(...),
     planned_end_at: datetime = Form(...),
+    rfid_reserved_seat_count: int | None = Form(None),
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    # ---------------------------------------------------
+    # ROLE CHECK
+    # ---------------------------------------------------
     if current_user.role != UserRole.DRIVER:
-        raise HTTPException(403, "Only drivers allowed")
+        raise HTTPException(
+            status_code=403,
+            detail="Only drivers allowed"
+        )
 
     now = now_utc()
+
     planned_start_at = to_utc(planned_start_at)
     planned_end_at = to_utc(planned_end_at)
 
+    # ---------------------------------------------------
+    # TIME VALIDATION
+    # ---------------------------------------------------
     if planned_start_at < now:
-        raise HTTPException(400, "Cannot schedule in past")
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot schedule in past"
+        )
+
     if planned_start_at > now + timedelta(hours=24):
-        raise HTTPException(400, "Only allowed within 24 hours")
+        raise HTTPException(
+            status_code=400,
+            detail="Only allowed within 24 hours"
+        )
+
     if planned_end_at <= planned_start_at:
-        raise HTTPException(400, "End must be after start")
+        raise HTTPException(
+            status_code=400,
+            detail="End must be after start"
+        )
 
     # ---------------------------------------------------
-    # 1. Get vehicle (REMOVE is_active filter ❗)
+    # 1. GET VEHICLE
     # ---------------------------------------------------
     result = await session.execute(
         select(Vehicle).where(
             Vehicle.driver_user_id == current_user.id
         )
     )
+
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(400, "No vehicle found")
+        raise HTTPException(
+            status_code=400,
+            detail="No vehicle found"
+        )
 
     # ---------------------------------------------------
-    # 🔥 NEW VALIDATION: vehicle must be active
+    # VEHICLE ACTIVE CHECK
     # ---------------------------------------------------
     if not vehicle.is_active:
         raise HTTPException(
             status_code=400,
-            detail="Vehicle is inactive. Contact admin and raise a support ticket"
+            detail=(
+                "Vehicle is inactive. "
+                "Contact admin and raise a support ticket"
+            )
         )
 
     # ---------------------------------------------------
-    # 2. Get route
+    # 2. GET ROUTE
     # ---------------------------------------------------
     result = await session.execute(
         select(Route).where(
             func.lower(Route.name) == route_name.lower(),
-            Route.is_active == True
+            Route.is_active.is_(True)
         )
     )
+
     route = result.scalar_one_or_none()
 
     if not route:
-        raise HTTPException(404, "Route not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Route not found"
+        )
 
     # ---------------------------------------------------
-    # 🔥 3. AC / NON-AC VALIDATION
+    # 3. AC / NON-AC VALIDATION
     # ---------------------------------------------------
     if route.has_ac != vehicle.has_ac:
         raise HTTPException(
             status_code=400,
-            detail="Vehicle type does not match route type (AC / NON-AC mismatch)"
+            detail=(
+                "Vehicle type does not match "
+                "route type (AC / NON-AC mismatch)"
+            )
         )
 
     # ---------------------------------------------------
-    # 4. Validate stops
+    # 4. VALIDATE ROUTE STOPS
     # ---------------------------------------------------
     result = await session.execute(
         select(RouteStop)
         .where(RouteStop.route_id == route.id)
         .order_by(RouteStop.sequence_no)
     )
+
     stops = result.scalars().all()
 
     if len(stops) < 2:
-        raise HTTPException(400, "Route must have at least 2 stops")
+        raise HTTPException(
+            status_code=400,
+            detail="Route must have at least 2 stops"
+        )
 
     # ---------------------------------------------------
-    # 5. Check previous trip
+    # 5. CHECK PREVIOUS TRIP
     # ---------------------------------------------------
     result = await session.execute(
         select(ScheduledTrip)
-        .where(ScheduledTrip.driver_user_id == current_user.id)
+        .where(
+            ScheduledTrip.driver_user_id == current_user.id
+        )
         .order_by(ScheduledTrip.created_at.desc())
     )
+
     last_trip = result.scalars().first()
 
     if last_trip and last_trip.status not in [
@@ -163,28 +207,86 @@ async def create_trip(
         ScheduledTripStatus.CANCELLED,
         ScheduledTripStatus.PREMATURE_END
     ]:
-        raise HTTPException(400, "Previous trip not finished")
+        raise HTTPException(
+            status_code=400,
+            detail="Previous trip not finished"
+        )
 
     # ---------------------------------------------------
-    # 6. Create trip
+    # 6. RFID RESERVED SEAT LOGIC
+    # ---------------------------------------------------
+
+    # ✅ If driver does not provide value
+    # then fallback to vehicle default
+    final_rfid_reserved_seat_count = (
+        rfid_reserved_seat_count
+        if rfid_reserved_seat_count is not None
+        else (
+            vehicle.default_rfid_reserved_seat_count or 0
+        )
+    )
+
+    # ---------------------------------------------------
+    # VALIDATION
+    # ---------------------------------------------------
+    if final_rfid_reserved_seat_count < 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "RFID reserved seat count "
+                "cannot be negative"
+            )
+        )
+
+    if final_rfid_reserved_seat_count > vehicle.seat_count:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "RFID reserved seat count "
+                "cannot exceed vehicle seat count"
+            )
+        )
+
+    # ---------------------------------------------------
+    # 7. CREATE TRIP
     # ---------------------------------------------------
     trip = ScheduledTrip(
         route_id=route.id,
+
         vehicle_id=vehicle.id,
+
         driver_user_id=current_user.id,
+
         planned_start_at=planned_start_at,
+
         planned_end_at=planned_end_at,
+
         status=ScheduledTripStatus.SCHEDULED,
-        rfid_reserved_seat_count=vehicle.default_rfid_reserved_seat_count or 0,
+
+        # ✅ FINAL RFID RESERVED SEAT COUNT
+        rfid_reserved_seat_count=(
+            final_rfid_reserved_seat_count
+        ),
     )
 
     session.add(trip)
+
     await session.commit()
     await session.refresh(trip)
 
+    # ---------------------------------------------------
+    # RESPONSE
+    # ---------------------------------------------------
     return {
         "trip_id": trip.id,
-        "planned_start_at_ist": to_ist(trip.planned_start_at),
+
+        "rfid_reserved_seat_count": (
+            trip.rfid_reserved_seat_count
+        ),
+
+        "planned_start_at_ist": to_ist(
+            trip.planned_start_at
+        ),
     }
 # ============================================================
 # START TRIP
@@ -193,7 +295,7 @@ async def create_trip(
 @router.post("/{trip_id}/start")
 async def start_trip(
     trip_id: str,
-    request: Request,   # ✅ FIXED POSITION
+    request: Request,   
     lat: float = Form(...),
     lng: float = Form(...),
     session: AsyncSession = Depends(get_async_session),

@@ -58,14 +58,24 @@ def parse_registration_date(date_str: str) -> datetime:
 # ---------------------------
 # Register Vehicle
 # ---------------------------
-@router.patch("/register", response_model=VehicleOut, status_code=status.HTTP_201_CREATED)
+@router.patch(
+    "/register",
+    response_model=VehicleOut,
+    status_code=status.HTTP_201_CREATED
+)
 async def register_vehicle(
     registration_number: str = Form(...),
     registration_valid_till: str = Form(...),
+
     vehicle_name: str = Form(...),
     vehicle_model: str = Form(...),
     color: str = Form(...),
+
     seat_count: int = Form(...),
+
+    # ✅ NEW RFID RESERVED FIELD
+    default_rfid_reserved_seat_count: int = Form(0),
+
     has_ac: bool = Form(False),
 
     ownership_type: str = Form(...),
@@ -74,6 +84,7 @@ async def register_vehicle(
 
     rc_file: UploadFile = File(...),
     rear_photo: UploadFile = File(...),
+
     authentication_file: UploadFile | None = File(None),
 
     front_photo: UploadFile | None = File(None),
@@ -92,98 +103,238 @@ async def register_vehicle(
     # ROLE CHECK
     # ---------------------------
     if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers allowed")
-    
-    registration_number = validate_registration_number(registration_number)
+        raise HTTPException(
+            status_code=403,
+            detail="Only drivers allowed"
+        )
+
+    registration_number = validate_registration_number(
+        registration_number
+    )
+
+    # ---------------------------
+    # BASIC VALIDATION
+    # ---------------------------
+    if seat_count <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Seat count must be greater than 0"
+        )
+
+    # ✅ RFID RESERVED VALIDATION
+    if default_rfid_reserved_seat_count < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Reserved RFID seat count cannot be negative"
+        )
+
+    if default_rfid_reserved_seat_count > seat_count:
+        raise HTTPException(
+            status_code=400,
+            detail="Reserved RFID seat count cannot exceed total seat count"
+        )
+
     # ---------------------------
     # OWNERSHIP VALIDATION
     # ---------------------------
     try:
-        ownership_enum = VehicleOwnershipType(ownership_type)
+        ownership_enum = VehicleOwnershipType(
+            ownership_type
+        )
+
     except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid ownership_type")
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid ownership_type"
+        )
 
     # 🔥 RENTED RULE
     if ownership_enum == VehicleOwnershipType.RENTED:
+
         if not authentication_file:
-            raise HTTPException(400, "Authentication file required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Authentication file required "
+                    "for rented vehicle"
+                )
+            )
+
         if not owner_name:
-            raise HTTPException(400, "Owner name required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Owner name required "
+                    "for rented vehicle"
+                )
+            )
+
         if not owner_aadhaar_card:
-            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Owner Aadhaar required "
+                    "for rented vehicle"
+                )
+            )
 
     # 🔥 SELF RULE
     if ownership_enum == VehicleOwnershipType.SELF:
+
         if authentication_file:
-            raise HTTPException(400, "Authentication file not allowed for self vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Authentication file not allowed "
+                    "for self vehicle"
+                )
+            )
 
     # ---------------------------
     # DATE PARSE
     # ---------------------------
-    registration_valid_till_dt = parse_registration_date(registration_valid_till)
+    registration_valid_till_dt = parse_registration_date(
+        registration_valid_till
+    )
 
     # ---------------------------
     # KYC CHECK
     # ---------------------------
     result = await session.execute(
-        select(DriverProfile).where(DriverProfile.user_id == current_driver.id)
+        select(DriverProfile).where(
+            DriverProfile.user_id == current_driver.id
+        )
     )
+
     driver_profile = result.scalar_one_or_none()
 
     if not driver_profile:
-        raise HTTPException(400, "Complete KYC first")
+        raise HTTPException(
+            status_code=400,
+            detail="Complete KYC first"
+        )
 
-    if driver_profile.verification_status != DriverVerificationStatus.VERIFIED:
-        raise HTTPException(403, "KYC not verified")
+    if (
+        driver_profile.verification_status
+        != DriverVerificationStatus.VERIFIED
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="KYC not verified"
+        )
 
     # ---------------------------
     # DUPLICATE CHECK
     # ---------------------------
     result = await session.execute(
-        select(Vehicle).where(Vehicle.registration_number == registration_number)
+        select(Vehicle).where(
+            Vehicle.registration_number
+            == registration_number
+        )
     )
+
     if result.scalar_one_or_none():
-        raise HTTPException(400, "Vehicle already exists")
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle already exists"
+        )
 
     # ---------------------------
     # FILE SAVE HELPER
     # ---------------------------
-    def save_file(file: UploadFile | None, prefix: str):
+    def save_file(
+        file: UploadFile | None,
+        prefix: str
+    ):
         if not file:
             return None
-        filename = f"{registration_number}_{prefix}_{file.filename}"
+
+        filename = (
+            f"{registration_number}_"
+            f"{prefix}_"
+            f"{file.filename}"
+        )
+
         path = UPLOAD_DIR / filename
+
         with open(path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+
         return str(path)
 
     # ---------------------------
     # SAVE FILES
     # ---------------------------
     rc_path = save_file(rc_file, "rc")
-    rear_path = save_file(rear_photo, "rear")
 
-    auth_path = save_file(authentication_file, "auth")
-    front_path = save_file(front_photo, "front")
-    interior_path = save_file(interior_photo, "interior")
-    left_path = save_file(left_side_photo, "left")
-    right_path = save_file(right_side_photo, "right")
+    rear_path = save_file(
+        rear_photo,
+        "rear"
+    )
 
-    insurance_path = save_file(insurance_document, "insurance")
-    pollution_path = save_file(pollution_document, "pollution")
-    aadhaar_path = save_file(owner_aadhaar_card, "aadhaar")
+    auth_path = save_file(
+        authentication_file,
+        "auth"
+    )
+
+    front_path = save_file(
+        front_photo,
+        "front"
+    )
+
+    interior_path = save_file(
+        interior_photo,
+        "interior"
+    )
+
+    left_path = save_file(
+        left_side_photo,
+        "left"
+    )
+
+    right_path = save_file(
+        right_side_photo,
+        "right"
+    )
+
+    insurance_path = save_file(
+        insurance_document,
+        "insurance"
+    )
+
+    pollution_path = save_file(
+        pollution_document,
+        "pollution"
+    )
+
+    aadhaar_path = save_file(
+        owner_aadhaar_card,
+        "aadhaar"
+    )
 
     # ---------------------------
     # CREATE VEHICLE
     # ---------------------------
     vehicle = Vehicle(
         driver_user_id=current_driver.id,
+
         registration_number=registration_number,
-        registration_valid_till=registration_valid_till_dt,
+
+        registration_valid_till=(
+            registration_valid_till_dt
+        ),
+
         vehicle_name=vehicle_name,
         vehicle_model=vehicle_model,
         color=color,
+
         seat_count=seat_count,
+
+        # ✅ RFID RESERVED SEATS
+        default_rfid_reserved_seat_count=(
+            default_rfid_reserved_seat_count
+        ),
+
         has_ac=has_ac,
 
         # existing
@@ -204,10 +355,13 @@ async def register_vehicle(
 
         owner_name=owner_name,
 
-        verification_status=VehicleVerificationStatus.DRAFT,
+        verification_status=(
+            VehicleVerificationStatus.DRAFT
+        ),
     )
 
     session.add(vehicle)
+
     await session.commit()
     await session.refresh(vehicle)
 
@@ -220,18 +374,48 @@ async def get_my_vehicle(
     current_driver: User = Depends(get_current_active_user),
     session: AsyncSession = Depends(get_async_session)
 ):
-    # Only drivers allowed
+    # ---------------------------
+    # ROLE CHECK
+    # ---------------------------
     if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers allowed")
+        raise HTTPException(
+            status_code=403,
+            detail="Only drivers allowed"
+        )
 
-    # Fetch vehicle
+    # ---------------------------
+    # FETCH VEHICLE
+    # ---------------------------
     result = await session.execute(
-        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
+        select(Vehicle).where(
+            Vehicle.driver_user_id == current_driver.id
+        )
     )
+
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle found")
+        raise HTTPException(
+            status_code=404,
+            detail="No vehicle found"
+        )
+
+    # ---------------------------
+    # RFID RESERVED SEAT SAFETY
+    # ---------------------------
+    if (
+        vehicle.default_rfid_reserved_seat_count
+        < 0
+    ):
+        vehicle.default_rfid_reserved_seat_count = 0
+
+    if (
+        vehicle.default_rfid_reserved_seat_count
+        > vehicle.seat_count
+    ):
+        vehicle.default_rfid_reserved_seat_count = (
+            vehicle.seat_count
+        )
 
     return vehicle
 # ---------------------------
@@ -246,6 +430,10 @@ async def update_vehicle(
     vehicle_model: str | None = Form(None),
     color: str | None = Form(None),
     seat_count: int | None = Form(None),
+
+    # ✅ NEW RFID RESERVED FIELD
+    default_rfid_reserved_seat_count: int | None = Form(None),
+
     has_ac: bool | None = Form(None),
     registration_valid_till: str | None = Form(None),
 
@@ -312,10 +500,13 @@ async def update_vehicle(
     def save_file(file: UploadFile | None, prefix: str):
         if not file:
             return None
+
         filename = f"{vehicle.registration_number}_{prefix}_{file.filename}"
         path = UPLOAD_DIR / filename
+
         with open(path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+
         return str(path)
 
     # ---------------------------
@@ -330,14 +521,58 @@ async def update_vehicle(
     if color is not None:
         vehicle.color = color
 
+    # ✅ SEAT COUNT VALIDATION
     if seat_count is not None:
+
+        if seat_count <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Seat count must be greater than 0"
+            )
+
+        # Prevent lowering below reserved RFID seats
+        if (
+            vehicle.default_rfid_reserved_seat_count > seat_count
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Seat count cannot be less than reserved RFID seats"
+            )
+
         vehicle.seat_count = seat_count
+
+    # ✅ RFID RESERVED SEAT VALIDATION
+    if default_rfid_reserved_seat_count is not None:
+
+        if default_rfid_reserved_seat_count < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Reserved RFID seat count cannot be negative"
+            )
+
+        effective_seat_count = (
+            seat_count
+            if seat_count is not None
+            else vehicle.seat_count
+        )
+
+        if default_rfid_reserved_seat_count > effective_seat_count:
+            raise HTTPException(
+                status_code=400,
+                detail="Reserved RFID seat count cannot exceed total seat count"
+            )
+
+        vehicle.default_rfid_reserved_seat_count = (
+            default_rfid_reserved_seat_count
+        )
 
     if has_ac is not None:
         vehicle.has_ac = has_ac
 
     if registration_valid_till is not None:
-        vehicle.registration_valid_till = parse_registration_date(registration_valid_till)
+        vehicle.registration_valid_till = parse_registration_date(
+            registration_valid_till
+        )
 
     # ---------------------------
     # OWNERSHIP UPDATE
@@ -345,8 +580,12 @@ async def update_vehicle(
     if ownership_type is not None:
         try:
             vehicle.ownership_type = VehicleOwnershipType(ownership_type)
+
         except ValueError:
-            raise HTTPException(400, "Invalid ownership_type")
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid ownership_type"
+            )
 
     if owner_name is not None:
         vehicle.owner_name = owner_name
@@ -361,14 +600,20 @@ async def update_vehicle(
         vehicle.rear_photo_file_path = save_file(rear_photo, "rear")
 
     if authentication_file:
-        vehicle.authentication_file_path = save_file(authentication_file, "auth")
+        vehicle.authentication_file_path = save_file(
+            authentication_file,
+            "auth"
+        )
 
     # ✅ vehicle images
     if front_photo:
         vehicle.front_photo_file_path = save_file(front_photo, "front")
 
     if interior_photo:
-        vehicle.interior_photo_file_path = save_file(interior_photo, "interior")
+        vehicle.interior_photo_file_path = save_file(
+            interior_photo,
+            "interior"
+        )
 
     if left_side_photo:
         vehicle.left_side_file_path = save_file(left_side_photo, "left")
@@ -378,24 +623,45 @@ async def update_vehicle(
 
     # ✅ documents
     if insurance_document:
-        vehicle.insurance_document = save_file(insurance_document, "insurance")
+        vehicle.insurance_document = save_file(
+            insurance_document,
+            "insurance"
+        )
 
     if pollution_document:
-        vehicle.pollution_document = save_file(pollution_document, "pollution")
+        vehicle.pollution_document = save_file(
+            pollution_document,
+            "pollution"
+        )
 
     if owner_aadhaar_card:
-        vehicle.owner_aadhaar_card = save_file(owner_aadhaar_card, "aadhaar")
+        vehicle.owner_aadhaar_card = save_file(
+            owner_aadhaar_card,
+            "aadhaar"
+        )
 
     # ---------------------------
     # 🔥 FINAL BUSINESS VALIDATION
     # ---------------------------
     if vehicle.ownership_type == VehicleOwnershipType.RENTED:
+
         if not vehicle.owner_name:
-            raise HTTPException(400, "Owner name required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Owner name required for rented vehicle"
+            )
+
         if not vehicle.owner_aadhaar_card:
-            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Owner Aadhaar required for rented vehicle"
+            )
+
         if not vehicle.authentication_file_path:
-            raise HTTPException(400, "Authentication file required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Authentication file required for rented vehicle"
+            )
 
     # ---------------------------
     # CLEANUP
@@ -406,7 +672,6 @@ async def update_vehicle(
     await session.refresh(vehicle)
 
     return vehicle
-
 # ---------------------------
 # SUBMIT VEHICLE
 # ---------------------------
@@ -420,18 +685,26 @@ async def submit_vehicle(
     # ROLE CHECK
     # ---------------------------
     if current_driver.role != UserRole.DRIVER:
-        raise HTTPException(status_code=403, detail="Only drivers allowed")
+        raise HTTPException(
+            status_code=403,
+            detail="Only drivers allowed"
+        )
 
     # ---------------------------
     # FETCH VEHICLE
     # ---------------------------
     result = await session.execute(
-        select(Vehicle).where(Vehicle.driver_user_id == current_driver.id)
+        select(Vehicle).where(
+            Vehicle.driver_user_id == current_driver.id
+        )
     )
     vehicle = result.scalar_one_or_none()
 
     if not vehicle:
-        raise HTTPException(status_code=404, detail="No vehicle found")
+        raise HTTPException(
+            status_code=404,
+            detail="No vehicle found"
+        )
 
     # ---------------------------
     # STATUS CHECK
@@ -446,52 +719,119 @@ async def submit_vehicle(
         )
 
     # ---------------------------
+    # 🔥 BASIC VALIDATION
+    # ---------------------------
+    if vehicle.seat_count <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Seat count must be greater than 0"
+        )
+
+    # ✅ RFID RESERVED SEAT VALIDATION
+    if vehicle.default_rfid_reserved_seat_count < 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Reserved RFID seat count cannot be negative"
+        )
+
+    if (
+        vehicle.default_rfid_reserved_seat_count
+        > vehicle.seat_count
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Reserved RFID seat count cannot exceed total seat count"
+        )
+
+    # ---------------------------
     # 🔥 VALIDATION BEFORE SUBMIT
     # ---------------------------
-
     if not vehicle.rc_file_path:
-        raise HTTPException(400, "RC file is required before submission")
+        raise HTTPException(
+            status_code=400,
+            detail="RC file is required before submission"
+        )
 
     if not vehicle.rear_photo_file_path:
-        raise HTTPException(400, "Rear photo is required before submission")
+        raise HTTPException(
+            status_code=400,
+            detail="Rear photo is required before submission"
+        )
 
     if not vehicle.front_photo_file_path:
-        raise HTTPException(400, "Front photo is required")
+        raise HTTPException(
+            status_code=400,
+            detail="Front photo is required"
+        )
 
     if not vehicle.left_side_file_path:
-        raise HTTPException(400, "Left side photo is required")
+        raise HTTPException(
+            status_code=400,
+            detail="Left side photo is required"
+        )
 
+    # ---------------------------
+    # RENTED VEHICLE VALIDATION
+    # ---------------------------
     if vehicle.ownership_type == VehicleOwnershipType.RENTED:
+
         if not vehicle.owner_name:
-            raise HTTPException(400, "Owner name required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Owner name required for rented vehicle"
+            )
 
         if not vehicle.owner_aadhaar_card:
-            raise HTTPException(400, "Owner Aadhaar required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Owner Aadhaar required for rented vehicle"
+            )
 
         if not vehicle.authentication_file_path:
-            raise HTTPException(400, "Authentication file required for rented vehicle")
+            raise HTTPException(
+                status_code=400,
+                detail="Authentication file required for rented vehicle"
+            )
 
+    # ---------------------------
+    # REQUIRED DOCUMENTS
+    # ---------------------------
     if not vehicle.insurance_document:
-        raise HTTPException(400, "Insurance document required")
+        raise HTTPException(
+            status_code=400,
+            detail="Insurance document required"
+        )
 
     if not vehicle.pollution_document:
-        raise HTTPException(400, "Pollution document required")
+        raise HTTPException(
+            status_code=400,
+            detail="Pollution document required"
+        )
 
     # ---------------------------
     # UPDATE STATUS
     # ---------------------------
-    vehicle.verification_status = VehicleVerificationStatus.PENDING
-    vehicle.verification_requested_at = datetime.now(timezone.utc)
+    vehicle.verification_status = (
+        VehicleVerificationStatus.PENDING
+    )
+
+    vehicle.verification_requested_at = (
+        datetime.now(timezone.utc)
+    )
 
     await session.commit()
     await session.refresh(vehicle)
 
     # ---------------------------
-    # 🔔 SEND NOTIFICATION (FIXED)
+    # 🔔 SEND NOTIFICATION
     # ---------------------------
     ws_hub = getattr(request.app.state, "ws_hub", None)
+
     if ws_hub is None:
-        print("⚠️ WS Hub not initialized - real-time notifications disabled")
+        print(
+            "⚠️ WS Hub not initialized - "
+            "real-time notifications disabled"
+        )
 
     notification_service = NotificationService(
         db=session,
@@ -505,15 +845,24 @@ async def submit_vehicle(
             User.is_active.is_(True),
         )
     )
+
     admin_user_ids = list(result.scalars().all())
 
-    # ✅ Single call (NO asyncio.gather)
+    # ✅ Single notification call
     if admin_user_ids:
+
         await notification_service.notify_user(
-            user_id=admin_user_ids[0],           # primary
-            user_ids=admin_user_ids[1:],         # rest
+            user_id=admin_user_ids[0],
+            user_ids=admin_user_ids[1:],
+
             title="New Vehicle Submitted 🚗",
-            message=f"Driver {current_driver.email} submitted vehicle {vehicle.registration_number}",
+
+            message=(
+                f"Driver {current_driver.email} "
+                f"submitted vehicle "
+                f"{vehicle.registration_number}"
+            ),
+
             data={
                 "vehicle_id": vehicle.id,
                 "driver_id": current_driver.id,
