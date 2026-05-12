@@ -27,6 +27,9 @@ from app.db.schema import (
     ScheduledTrip,
     TransferStatus,
     TripBooking,
+    RFIDPayoutTransfer,
+    RFIDPayoutTransferStatus,
+    RFIDTripRide,
 )
 
 from app.notifications.hub import WSHub
@@ -641,6 +644,50 @@ class RoutePayoutService:
             json_payload=payload,
         )
     
+    async def _create_rfid_transfer_from_payment(
+        self,
+        *,
+        razorpay_payment_id: str,
+        linked_account_id: str,
+        amount_subunits: int,
+        transfer: RFIDPayoutTransfer,
+    ) -> dict[str, Any]:
+        if amount_subunits < 100:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_transfer_amount_too_small",
+                    "message": "RFID transfer amount must be at least 100 subunits.",
+                },
+            )
+
+        payload = {
+            "transfers": [
+                {
+                    "account": linked_account_id,
+                    "amount": amount_subunits,
+                    "currency": "INR",
+                    "notes": {
+                        "rfid_payout_transfer_id": transfer.id,
+                        "rfid_ride_id": transfer.rfid_ride_id,
+                        "scheduled_trip_id": transfer.scheduled_trip_id,
+                        "driver_user_id": transfer.driver_user_id,
+                    },
+                    "linked_account_notes": [
+                        "rfid_payout_transfer_id",
+                        "rfid_ride_id",
+                        "scheduled_trip_id",
+                    ],
+                }
+            ]
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"/payments/{razorpay_payment_id}/transfers",
+            json_payload=payload,
+        )
+
     async def _fetch_razorpay_payment(
         self,
         razorpay_payment_id: str,
