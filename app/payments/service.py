@@ -1143,6 +1143,15 @@ class RoutePayoutService:
             "still_withheld_count": still_withheld_count,
             "items": items,
         }
+    
+    async def _fetch_razorpay_transfer(
+        self,
+        razorpay_transfer_id: str,
+    ) -> dict[str, Any]:
+        return await self._razorpay_request(
+            method="GET",
+            path=f"/transfers/{razorpay_transfer_id}",
+        )
 
     async def _fetch_razorpay_payment(
         self,
