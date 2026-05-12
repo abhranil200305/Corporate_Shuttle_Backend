@@ -455,6 +455,38 @@ class RFIDPayoutTransferListResponse(BaseModel):
     items: list[RFIDPayoutTransferResponse]
     count: int
 
+class RFIDPayoutTransferBulkTriggerRequest(BaseModel):
+    transfer_ids: list[str] | None = Field(default=None, max_length=100)
+    driver_user_id: str | None = Field(default=None, min_length=1, max_length=36)
+    scheduled_trip_id: str | None = Field(default=None, min_length=1, max_length=36)
+    limit: int = Field(default=25, ge=1, le=100)
+
+    @field_validator("transfer_ids")
+    @classmethod
+    def validate_transfer_ids(cls, values: list[str] | None) -> list[str] | None:
+        if values is None:
+            return None
+
+        cleaned_values: list[str] = []
+        seen: set[str] = set()
+
+        for value in values:
+            cleaned = _clean_required_text(value)
+            if cleaned in seen:
+                continue
+            seen.add(cleaned)
+            cleaned_values.append(cleaned)
+
+        if not cleaned_values:
+            raise ValueError("At least one RFID payout transfer id is required.")
+
+        return cleaned_values
+
+    @field_validator("driver_user_id", "scheduled_trip_id")
+    @classmethod
+    def validate_optional_ids(cls, value: str | None) -> str | None:
+        return _clean_optional_text(value)
+
 
 # ============================================================
 # manual reversal request
