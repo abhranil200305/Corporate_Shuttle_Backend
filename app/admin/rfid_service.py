@@ -1998,6 +1998,46 @@ class AdminRFIDService:
             "transfer_reversals": transfer_reversal_items,
             "ride_transfer_status": ride.transfer_status,
         }
+    
+    @staticmethod
+    def _provider_reversed_amount_available_for_fare_reversal(
+        *,
+        transfer: schema.RFIDPayoutTransfer,
+        allocation: schema.RFIDRechargeFundingAllocation,
+    ) -> Decimal:
+        transfer_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        allocation_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(allocation.reversed_amount or 0)
+        )
+        allocation_remaining_amount = AdminRFIDService._remaining_funding_allocation_amount(
+            allocation
+        )
+
+        provider_reversed_not_restored = AdminRFIDService._normalize_money(
+            transfer_reversed_amount - allocation_reversed_amount
+        )
+
+        if provider_reversed_not_restored <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if allocation_remaining_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        return AdminRFIDService._normalize_money(
+            min(provider_reversed_not_restored, allocation_remaining_amount)
+        )
+
+    @staticmethod
+    def _is_rfid_payout_transfer_provider_side_state(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> bool:
+        return transfer.status in {
+            schema.RFIDPayoutTransferStatus.CREATED,
+            schema.RFIDPayoutTransferStatus.PROCESSED,
+            schema.RFIDPayoutTransferStatus.REVERSED,
+        }
 
     async def list_payout_ready_rfid_transfers(
         self,
