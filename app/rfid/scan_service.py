@@ -193,6 +193,94 @@ class RFIDScanService:
 
         return self._money(amount)
 
+    async def _allocate_rfid_fare_from_funding_lots(
+        self,
+        *,
+        account_id: str,
+        card_id: str,
+        passenger_user_id: str | None,
+        rfid_ride_id: str,
+        scheduled_trip_id: str,
+        route_id: str,
+        vehicle_id: str,
+        driver_user_id: str,
+        fare_amount: Decimal,
+    ) -> list[schema.RFIDRechargeFundingAllocation]:
+        remaining_to_allocate = self._money(fare_amount)
+
+        if remaining_to_allocate <= Decimal("0.00"):
+            return []
+
+        stmt = (
+            select(schema.RFIDFundingLot)
+            .where(
+                schema.RFIDFundingLot.account_id == account_id,
+                schema.RFIDFundingLot.card_id == card_id,
+                schema.RFIDFundingLot.status == schema.RFIDFundingLotStatus.AVAILABLE,
+                schema.RFIDFundingLot.remaining_amount > Decimal("0.00"),
+            )
+            .order_by(schema.RFIDFundingLot.created_at.asc())
+            .with_for_update()
+        )
+
+        result = await self.db.execute(stmt)
+        funding_lots = list(result.scalars().all())
+
+        allocations: list[schema.RFIDRechargeFundingAllocation] = []
+
+        for funding_lot in funding_lots:
+            if remaining_to_allocate <= Decimal("0.00"):
+                break
+
+            lot_remaining_before = self._money(funding_lot.remaining_amount)
+            allocation_amount = min(lot_remaining_before, remaining_to_allocate)
+            allocation_amount = self._money(allocation_amount)
+
+            if allocation_amount <= Decimal("0.00"):
+                continue
+
+            lot_remaining_after = self._money(
+                lot_remaining_before - allocation_amount
+            )
+
+            allocation = schema.RFIDRechargeFundingAllocation(
+                id=schema.new_id(),
+                funding_lot_id=funding_lot.id,
+                recharge_id=funding_lot.recharge_id,
+                account_id=account_id,
+                card_id=card_id,
+                passenger_user_id=passenger_user_id,
+                rfid_ride_id=rfid_ride_id,
+                scheduled_trip_id=scheduled_trip_id,
+                route_id=route_id,
+                vehicle_id=vehicle_id,
+                driver_user_id=driver_user_id,
+                source_razorpay_payment_id=funding_lot.razorpay_payment_id,
+                amount=allocation_amount,
+                reversed_amount=Decimal("0.00"),
+                allocated_at=schema.utcnow(),
+            )
+
+            funding_lot.remaining_amount = lot_remaining_after
+
+            if lot_remaining_after <= Decimal("0.00"):
+                funding_lot.status = schema.RFIDFundingLotStatus.EXHAUSTED
+
+            self.db.add(allocation)
+            self.db.add(funding_lot)
+            allocations.append(allocation)
+
+            remaining_to_allocate = self._money(
+                remaining_to_allocate - allocation_amount
+            )
+
+        if remaining_to_allocate > Decimal("0.00"):
+            raise RuntimeError(
+                "RFID funding lots are insufficient for settled fare allocation."
+            )
+
+        return allocations
+
     async def _get_running_trip_for_vehicle(
         self,
         vehicle_id: str,
