@@ -518,3 +518,141 @@ class RouteTripDiscoveryResponse(BaseModel):
     to_time: datetime | None
     items: list[RouteTripDiscoveryOptionResponse]
     count: int
+
+# ============================================================
+# Passenger RFID
+# ============================================================
+
+
+class PassengerRFIDCardResponse(BaseModel):
+    id: str
+    card_uid_masked: str | None
+    inventory_status: str
+    authorization_status: str
+    assigned_at: datetime | None
+
+
+class PassengerRFIDAccountResponse(BaseModel):
+    id: str
+    card_id: str
+    current_balance: Decimal
+    held_balance: Decimal
+    available_balance: Decimal
+    currency: str
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerRFIDAssignmentResponse(BaseModel):
+    id: str
+    card_id: str
+    passenger_user_id: str
+    assigned_at: datetime
+    reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerRFIDMeResponse(BaseModel):
+    has_assigned_card: bool
+    card: PassengerRFIDCardResponse | None
+    account: PassengerRFIDAccountResponse | None
+    assignment: PassengerRFIDAssignmentResponse | None
+
+
+class PassengerRFIDLedgerEntryResponse(BaseModel):
+    id: str
+    account_id: str
+    card_id: str
+    passenger_user_id: str | None
+    entry_type: str
+    amount_delta: Decimal
+    held_delta: Decimal
+    balance_after: Decimal
+    held_balance_after: Decimal
+    source_recharge_id: str | None
+    scheduled_trip_id: str | None
+    rfid_ride_id: str | None
+    stop_id: str | None
+    razorpay_order_id: str | None
+    razorpay_payment_id: str | None
+    note: str | None
+    created_at: datetime
+
+
+class PassengerRFIDLedgerListResponse(BaseModel):
+    items: list[PassengerRFIDLedgerEntryResponse]
+    count: int
+
+
+class PassengerRFIDRechargeResponse(BaseModel):
+    id: str
+    account_id: str
+    card_id: str
+    passenger_user_id: str | None
+    amount: Decimal
+    status: str
+    source_type: str
+    razorpay_order_id: str | None
+    razorpay_payment_id: str | None
+    razorpay_status: str | None
+    razorpay_amount: Decimal | None
+    paid_at: datetime | None
+    credited_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerRFIDRechargeListResponse(BaseModel):
+    items: list[PassengerRFIDRechargeResponse]
+    count: int
+
+
+class PassengerRFIDRideResponse(BaseModel):
+    id: str
+    card_id: str
+    account_id: str
+    passenger_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    vehicle_id: str
+    driver_user_id: str
+
+    pickup_stop_id: str
+    pickup_sequence_no: int
+    boarded_at: datetime
+    board_lat: Decimal
+    board_lng: Decimal
+
+    dropoff_stop_id: str | None
+    dropoff_sequence_no: int | None
+    dropped_at: datetime | None
+    drop_lat: Decimal | None
+    drop_lng: Decimal | None
+
+    status: str
+    hold_amount: Decimal
+    fare_amount: Decimal
+    fare_reversed_amount: Decimal
+
+    transfer_status: str
+    transfer_ready_at: datetime | None
+    transfer_processed_at: datetime | None
+
+    pickup_stop: StopBriefResponse | None = None
+    dropoff_stop: StopBriefResponse | None = None
+
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerRFIDRideListResponse(BaseModel):
+    items: list[PassengerRFIDRideResponse]
+    count: int
+
+
+class PassengerRFIDRideDetailResponse(BaseModel):
+    ride: PassengerRFIDRideResponse
+    ledger_entries: list[PassengerRFIDLedgerEntryResponse]
+    recharges: list[PassengerRFIDRechargeResponse]

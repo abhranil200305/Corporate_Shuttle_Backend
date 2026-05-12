@@ -41,6 +41,11 @@ from app.passenger.schemas import (
     SupportTicketListResponse,
     SupportTicketResponse,
     VerifyBookingPaymentRequest,
+    PassengerRFIDLedgerListResponse,
+    PassengerRFIDMeResponse,
+    PassengerRFIDRechargeListResponse,
+    PassengerRFIDRideDetailResponse,
+    PassengerRFIDRideListResponse,
 )
 
 from app.passenger.service import PassengerService
@@ -92,6 +97,70 @@ async def upsert_profile_picture(
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
     return await service.upsert_profile_picture(current_user, file)
+
+@router.get("/rfid/me", response_model=PassengerRFIDMeResponse)
+async def get_rfid_me(
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDMeResponse:
+    return await service.get_rfid_me(current_user)
+
+
+@router.get("/rfid/ledger", response_model=PassengerRFIDLedgerListResponse)
+async def list_rfid_ledger(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    entry_type: str | None = Query(default=None, min_length=1, max_length=80),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDLedgerListResponse:
+    return await service.list_rfid_ledger(
+        current_user,
+        page=page,
+        page_size=page_size,
+        entry_type=entry_type,
+    )
+
+
+@router.get("/rfid/recharges", response_model=PassengerRFIDRechargeListResponse)
+async def list_rfid_recharges(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    status: str | None = Query(default=None, min_length=1, max_length=80),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRechargeListResponse:
+    return await service.list_rfid_recharges(
+        current_user,
+        page=page,
+        page_size=page_size,
+        status=status,
+    )
+
+
+@router.get("/rfid/rides", response_model=PassengerRFIDRideListResponse)
+async def list_rfid_rides(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    status: str | None = Query(default=None, min_length=1, max_length=80),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRideListResponse:
+    return await service.list_rfid_rides(
+        current_user,
+        page=page,
+        page_size=page_size,
+        status=status,
+    )
+
+
+@router.get("/rfid/rides/{rfid_ride_id}", response_model=PassengerRFIDRideDetailResponse)
+async def get_rfid_ride_detail(
+    rfid_ride_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRideDetailResponse:
+    return await service.get_rfid_ride_detail(current_user, rfid_ride_id)
 
 @router.get("/route-trip-options", response_model=RouteTripDiscoveryResponse)
 async def discover_route_trip_options(

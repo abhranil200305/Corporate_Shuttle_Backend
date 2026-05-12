@@ -37,6 +37,12 @@ from app.db.schema import (
     TripEvent,
     User,
     UserRole,
+    RFIDCard,
+    RFIDCardAccount,
+    RFIDCardAssignment,
+    RFIDLedgerEntry,
+    RFIDRecharge,
+    RFIDTripRide,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -1221,6 +1227,220 @@ class PassengerService:
             data=data or {},
         )
 
+    @staticmethod
+    def _available_rfid_balance(account: RFIDCardAccount) -> Decimal:
+        return PassengerService._quantize_money(
+            Decimal(account.current_balance or 0)
+            - Decimal(account.held_balance or 0)
+        )
+
+    def _serialize_passenger_rfid_card(
+        self,
+        card: RFIDCard,
+    ) -> dict[str, Any]:
+        return {
+            "id": card.id,
+            "card_uid_masked": card.card_uid_masked,
+            "inventory_status": card.inventory_status,
+            "authorization_status": card.authorization_status,
+            "assigned_at": card.assigned_at,
+        }
+
+    def _serialize_passenger_rfid_account(
+        self,
+        account: RFIDCardAccount,
+    ) -> dict[str, Any]:
+        return {
+            "id": account.id,
+            "card_id": account.card_id,
+            "current_balance": account.current_balance,
+            "held_balance": account.held_balance,
+            "available_balance": self._available_rfid_balance(account),
+            "currency": account.currency,
+            "is_active": account.is_active,
+            "created_at": account.created_at,
+            "updated_at": account.updated_at,
+        }
+
+    def _serialize_passenger_rfid_assignment(
+        self,
+        assignment: RFIDCardAssignment,
+    ) -> dict[str, Any]:
+        return {
+            "id": assignment.id,
+            "card_id": assignment.card_id,
+            "passenger_user_id": assignment.passenger_user_id,
+            "assigned_at": assignment.assigned_at,
+            "reason": assignment.reason,
+            "created_at": assignment.created_at,
+            "updated_at": assignment.updated_at,
+        }
+
+    def _serialize_passenger_rfid_ledger_entry(
+        self,
+        entry: RFIDLedgerEntry,
+    ) -> dict[str, Any]:
+        return {
+            "id": entry.id,
+            "account_id": entry.account_id,
+            "card_id": entry.card_id,
+            "passenger_user_id": entry.passenger_user_id,
+            "entry_type": entry.entry_type,
+            "amount_delta": entry.amount_delta,
+            "held_delta": entry.held_delta,
+            "balance_after": entry.balance_after,
+            "held_balance_after": entry.held_balance_after,
+            "source_recharge_id": entry.source_recharge_id,
+            "scheduled_trip_id": entry.scheduled_trip_id,
+            "rfid_ride_id": entry.rfid_ride_id,
+            "stop_id": entry.stop_id,
+            "razorpay_order_id": entry.razorpay_order_id,
+            "razorpay_payment_id": entry.razorpay_payment_id,
+            "note": entry.note,
+            "created_at": entry.created_at,
+        }
+
+    def _serialize_passenger_rfid_recharge(
+        self,
+        recharge: RFIDRecharge,
+    ) -> dict[str, Any]:
+        return {
+            "id": recharge.id,
+            "account_id": recharge.account_id,
+            "card_id": recharge.card_id,
+            "passenger_user_id": recharge.passenger_user_id,
+            "amount": recharge.amount,
+            "status": recharge.status,
+            "source_type": recharge.source_type,
+            "razorpay_order_id": recharge.razorpay_order_id,
+            "razorpay_payment_id": recharge.razorpay_payment_id,
+            "razorpay_status": recharge.razorpay_status,
+            "razorpay_amount": recharge.razorpay_amount,
+            "paid_at": recharge.paid_at,
+            "credited_at": recharge.credited_at,
+            "created_at": recharge.created_at,
+            "updated_at": recharge.updated_at,
+        }
+
+    def _serialize_passenger_rfid_ride(
+        self,
+        ride: RFIDTripRide,
+        *,
+        stops_by_id: dict[str, Stop] | None = None,
+    ) -> dict[str, Any]:
+        stops_by_id = stops_by_id or {}
+
+        pickup_stop = stops_by_id.get(ride.pickup_stop_id)
+        dropoff_stop = (
+            None
+            if ride.dropoff_stop_id is None
+            else stops_by_id.get(ride.dropoff_stop_id)
+        )
+
+        return {
+            "id": ride.id,
+            "card_id": ride.card_id,
+            "account_id": ride.account_id,
+            "passenger_user_id": ride.passenger_user_id,
+            "scheduled_trip_id": ride.scheduled_trip_id,
+            "route_id": ride.route_id,
+            "vehicle_id": ride.vehicle_id,
+            "driver_user_id": ride.driver_user_id,
+            "pickup_stop_id": ride.pickup_stop_id,
+            "pickup_sequence_no": ride.pickup_sequence_no,
+            "boarded_at": ride.boarded_at,
+            "board_lat": ride.board_lat,
+            "board_lng": ride.board_lng,
+            "dropoff_stop_id": ride.dropoff_stop_id,
+            "dropoff_sequence_no": ride.dropoff_sequence_no,
+            "dropped_at": ride.dropped_at,
+            "drop_lat": ride.drop_lat,
+            "drop_lng": ride.drop_lng,
+            "status": ride.status,
+            "hold_amount": ride.hold_amount,
+            "fare_amount": ride.fare_amount,
+            "fare_reversed_amount": ride.fare_reversed_amount,
+            "transfer_status": ride.transfer_status,
+            "transfer_ready_at": ride.transfer_ready_at,
+            "transfer_processed_at": ride.transfer_processed_at,
+            "pickup_stop": None
+            if pickup_stop is None
+            else self._serialize_stop_brief(pickup_stop),
+            "dropoff_stop": None
+            if dropoff_stop is None
+            else self._serialize_stop_brief(dropoff_stop),
+            "created_at": ride.created_at,
+            "updated_at": ride.updated_at,
+        }
+
+    async def _get_current_rfid_assignment(
+        self,
+        passenger_user_id: str,
+    ) -> RFIDCardAssignment | None:
+        stmt = (
+            select(RFIDCardAssignment)
+            .where(
+                RFIDCardAssignment.passenger_user_id == passenger_user_id,
+                RFIDCardAssignment.unassigned_at.is_(None),
+            )
+            .order_by(RFIDCardAssignment.assigned_at.desc())
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
+    async def _get_passenger_rfid_card_account(
+        self,
+        *,
+        passenger_user_id: str,
+    ) -> tuple[RFIDCard | None, RFIDCardAccount | None, RFIDCardAssignment | None]:
+        assignment = await self._get_current_rfid_assignment(passenger_user_id)
+
+        if assignment is None:
+            return None, None, None
+
+        card_stmt = (
+            select(RFIDCard)
+            .where(
+                RFIDCard.id == assignment.card_id,
+                RFIDCard.assigned_passenger_user_id == passenger_user_id,
+            )
+            .limit(1)
+        )
+        card_result = await self.db.execute(card_stmt)
+        card = card_result.scalar_one_or_none()
+
+        if card is None:
+            return None, None, None
+
+        account_stmt = (
+            select(RFIDCardAccount)
+            .where(RFIDCardAccount.card_id == card.id)
+            .limit(1)
+        )
+        account_result = await self.db.execute(account_stmt)
+        account = account_result.scalar_one_or_none()
+
+        return card, account, assignment
+
+    async def _get_stops_by_id(
+        self,
+        stop_ids: list[str],
+    ) -> dict[str, Stop]:
+        cleaned_stop_ids = [
+            stop_id
+            for stop_id in set(stop_ids)
+            if stop_id
+        ]
+
+        if not cleaned_stop_ids:
+            return {}
+
+        stmt = select(Stop).where(Stop.id.in_(cleaned_stop_ids))
+        result = await self.db.execute(stmt)
+        stops = list(result.scalars().all())
+        return {stop.id: stop for stop in stops}
+
     # ------------------------------------------------------------------
     # profile
     # ------------------------------------------------------------------
@@ -1405,6 +1625,231 @@ class PassengerService:
                 "created_at": profile.created_at,
                 "updated_at": profile.updated_at,
             },
+        }
+    
+    async def get_rfid_me(self, current_user: User) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        card, account, assignment = await self._get_passenger_rfid_card_account(
+            passenger_user_id=current_user.id
+        )
+
+        return {
+            "has_assigned_card": card is not None and account is not None,
+            "card": None if card is None else self._serialize_passenger_rfid_card(card),
+            "account": None
+            if account is None
+            else self._serialize_passenger_rfid_account(account),
+            "assignment": None
+            if assignment is None
+            else self._serialize_passenger_rfid_assignment(assignment),
+        }
+
+    async def list_rfid_ledger(
+        self,
+        current_user: User,
+        *,
+        page: int,
+        page_size: int,
+        entry_type: str | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        filters = [
+            RFIDLedgerEntry.passenger_user_id == current_user.id,
+        ]
+
+        if entry_type is not None:
+            filters.append(RFIDLedgerEntry.entry_type == entry_type)
+
+        count_stmt = select(func.count(RFIDLedgerEntry.id)).where(*filters)
+        list_stmt = (
+            select(RFIDLedgerEntry)
+            .where(*filters)
+            .order_by(RFIDLedgerEntry.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        entries = list(list_result.scalars().all())
+
+        return {
+            "items": [
+                self._serialize_passenger_rfid_ledger_entry(entry)
+                for entry in entries
+            ],
+            "count": int(count_result.scalar_one() or 0),
+        }
+
+    async def list_rfid_recharges(
+        self,
+        current_user: User,
+        *,
+        page: int,
+        page_size: int,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        filters = [
+            RFIDRecharge.passenger_user_id == current_user.id,
+        ]
+
+        if status is not None:
+            filters.append(RFIDRecharge.status == status)
+
+        count_stmt = select(func.count(RFIDRecharge.id)).where(*filters)
+        list_stmt = (
+            select(RFIDRecharge)
+            .where(*filters)
+            .order_by(RFIDRecharge.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        recharges = list(list_result.scalars().all())
+
+        return {
+            "items": [
+                self._serialize_passenger_rfid_recharge(recharge)
+                for recharge in recharges
+            ],
+            "count": int(count_result.scalar_one() or 0),
+        }
+
+    async def list_rfid_rides(
+        self,
+        current_user: User,
+        *,
+        page: int,
+        page_size: int,
+        status: str | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        filters = [
+            RFIDTripRide.passenger_user_id == current_user.id,
+        ]
+
+        if status is not None:
+            filters.append(RFIDTripRide.status == status)
+
+        count_stmt = select(func.count(RFIDTripRide.id)).where(*filters)
+        list_stmt = (
+            select(RFIDTripRide)
+            .where(*filters)
+            .order_by(RFIDTripRide.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        rides = list(list_result.scalars().all())
+
+        stop_ids: list[str] = []
+        for ride in rides:
+            stop_ids.append(ride.pickup_stop_id)
+            if ride.dropoff_stop_id is not None:
+                stop_ids.append(ride.dropoff_stop_id)
+
+        stops_by_id = await self._get_stops_by_id(stop_ids)
+
+        return {
+            "items": [
+                self._serialize_passenger_rfid_ride(
+                    ride,
+                    stops_by_id=stops_by_id,
+                )
+                for ride in rides
+            ],
+            "count": int(count_result.scalar_one() or 0),
+        }
+
+    async def get_rfid_ride_detail(
+        self,
+        current_user: User,
+        rfid_ride_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        ride_stmt = (
+            select(RFIDTripRide)
+            .where(
+                RFIDTripRide.id == rfid_ride_id,
+                RFIDTripRide.passenger_user_id == current_user.id,
+            )
+            .limit(1)
+        )
+        ride_result = await self.db.execute(ride_stmt)
+        ride = ride_result.scalar_one_or_none()
+
+        if ride is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_ride_not_found",
+                    "message": "RFID ride not found.",
+                },
+            )
+
+        stop_ids = [ride.pickup_stop_id]
+        if ride.dropoff_stop_id is not None:
+            stop_ids.append(ride.dropoff_stop_id)
+
+        stops_by_id = await self._get_stops_by_id(stop_ids)
+
+        ledger_stmt = (
+            select(RFIDLedgerEntry)
+            .where(
+                RFIDLedgerEntry.rfid_ride_id == ride.id,
+                RFIDLedgerEntry.passenger_user_id == current_user.id,
+            )
+            .order_by(RFIDLedgerEntry.created_at.asc())
+        )
+        ledger_result = await self.db.execute(ledger_stmt)
+        ledger_entries = list(ledger_result.scalars().all())
+
+        recharge_ids = [
+            entry.source_recharge_id
+            for entry in ledger_entries
+            if entry.source_recharge_id is not None
+        ]
+
+        recharges: list[RFIDRecharge] = []
+
+        if recharge_ids:
+            recharge_stmt = (
+                select(RFIDRecharge)
+                .where(
+                    RFIDRecharge.id.in_(list(set(recharge_ids))),
+                    RFIDRecharge.passenger_user_id == current_user.id,
+                )
+                .order_by(RFIDRecharge.created_at.asc())
+            )
+            recharge_result = await self.db.execute(recharge_stmt)
+            recharges = list(recharge_result.scalars().all())
+
+        return {
+            "ride": self._serialize_passenger_rfid_ride(
+                ride,
+                stops_by_id=stops_by_id,
+            ),
+            "ledger_entries": [
+                self._serialize_passenger_rfid_ledger_entry(entry)
+                for entry in ledger_entries
+            ],
+            "recharges": [
+                self._serialize_passenger_rfid_recharge(recharge)
+                for recharge in recharges
+            ],
         }
 
     # ------------------------------------------------------------------
