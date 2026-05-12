@@ -756,8 +756,11 @@ class RoutePayoutService:
         if normalized == "failed":
             return RFIDPayoutTransferStatus.FAILED
 
-        if normalized in {"reversed", "partially_reversed"}:
+        if normalized == "reversed":
             return RFIDPayoutTransferStatus.REVERSED
+
+        if normalized == "partially_reversed":
+            return RFIDPayoutTransferStatus.PROCESSED
 
         return RFIDPayoutTransferStatus.CREATED
     
