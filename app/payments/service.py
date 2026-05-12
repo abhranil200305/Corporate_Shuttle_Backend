@@ -920,6 +920,88 @@ class RoutePayoutService:
             "failure_reason": transfer.failure_reason,
             "provider_response": provider_response,
         }
+    
+    async def trigger_ready_rfid_payout_transfers(
+        self,
+        *,
+        transfer_ids: list[str] | None = None,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        limit: int = 25,
+    ) -> dict[str, Any]:
+        normalized_limit = max(1, min(int(limit), 100))
+
+        filters = [
+            RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.READY,
+        ]
+
+        if transfer_ids:
+            cleaned_transfer_ids = [
+                str(transfer_id).strip()
+                for transfer_id in transfer_ids
+                if str(transfer_id).strip()
+            ]
+
+            if not cleaned_transfer_ids:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "empty_rfid_payout_transfer_ids",
+                        "message": "At least one RFID payout transfer id is required.",
+                    },
+                )
+
+            filters.append(RFIDPayoutTransfer.id.in_(cleaned_transfer_ids))
+
+        if driver_user_id is not None:
+            filters.append(RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id)
+
+        stmt = (
+            select(RFIDPayoutTransfer.id)
+            .where(*filters)
+            .order_by(RFIDPayoutTransfer.created_at.asc())
+            .limit(normalized_limit)
+        )
+        result = await self.db.execute(stmt)
+        selected_transfer_ids = list(result.scalars().all())
+
+        items: list[dict[str, Any]] = []
+
+        for selected_transfer_id in selected_transfer_ids:
+            try:
+                item = await self.trigger_rfid_payout_transfer(selected_transfer_id)
+                items.append(
+                    {
+                        "transfer_id": selected_transfer_id,
+                        "ok": True,
+                        "result": item,
+                        "error": None,
+                    }
+                )
+            except HTTPException as exc:
+                items.append(
+                    {
+                        "transfer_id": selected_transfer_id,
+                        "ok": False,
+                        "result": None,
+                        "error": exc.detail,
+                    }
+                )
+
+        successful_count = sum(1 for item in items if item["ok"])
+        failed_count = len(items) - successful_count
+
+        return {
+            "message": "RFID payout transfer bulk trigger completed.",
+            "requested_count": 0 if transfer_ids is None else len(transfer_ids),
+            "selected_count": len(selected_transfer_ids),
+            "successful_count": successful_count,
+            "failed_count": failed_count,
+            "items": items,
+        }
 
     async def _fetch_razorpay_payment(
         self,
