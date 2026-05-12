@@ -750,70 +750,71 @@ class RFIDScanService:
                         response_message = "RFID drop scan rejected."
                     else:
                         debit_entry = schema.RFIDLedgerEntry(
-                        id=schema.new_id(),
-                        account_id=card_account.id,
-                        card_id=card.id,
-                        passenger_user_id=card.assigned_passenger_user_id,
-                        entry_type=schema.RFIDLedgerEntryType.FARE_DEBIT,
-                        amount_delta=-fare_amount,
-                        held_delta=Decimal("0.00"),
-                        balance_after=current_balance_after,
-                        held_balance_after=held_balance_before,
-                        scheduled_trip_id=active_context.scheduled_trip.id,
-                        rfid_ride_id=open_ride.id,
-                        stop_id=active_context.stop.id,
-                        note="RFID actual fare debited on drop.",
-                        created_at=now,
-                    )
+                            id=schema.new_id(),
+                            account_id=card_account.id,
+                            card_id=card.id,
+                            passenger_user_id=card.assigned_passenger_user_id,
+                            entry_type=schema.RFIDLedgerEntryType.FARE_DEBIT,
+                            amount_delta=-fare_amount,
+                            held_delta=Decimal("0.00"),
+                            balance_after=current_balance_after,
+                            held_balance_after=held_balance_before,
+                            scheduled_trip_id=active_context.scheduled_trip.id,
+                            rfid_ride_id=open_ride.id,
+                            stop_id=active_context.stop.id,
+                            note="RFID actual fare debited on drop.",
+                            created_at=now,
+                        )
 
-                    release_amount = self._money(hold_amount - fare_amount)
+                        release_amount = self._money(hold_amount - fare_amount)
 
-                    release_entry = schema.RFIDLedgerEntry(
-                        id=schema.new_id(),
-                        account_id=card_account.id,
-                        card_id=card.id,
-                        passenger_user_id=card.assigned_passenger_user_id,
-                        entry_type=schema.RFIDLedgerEntryType.HOLD_RELEASE,
-                        amount_delta=Decimal("0.00"),
-                        held_delta=-hold_amount,
-                        balance_after=current_balance_after,
-                        held_balance_after=held_balance_after,
-                        scheduled_trip_id=active_context.scheduled_trip.id,
-                        rfid_ride_id=open_ride.id,
-                        stop_id=active_context.stop.id,
-                        note=(
-                            "RFID fare hold released on drop."
-                            if release_amount > Decimal("0.00")
-                            else "RFID fare hold fully consumed on drop."
-                        ),
-                        created_at=now,
-                    )
+                        release_entry = schema.RFIDLedgerEntry(
+                            id=schema.new_id(),
+                            account_id=card_account.id,
+                            card_id=card.id,
+                            passenger_user_id=card.assigned_passenger_user_id,
+                            entry_type=schema.RFIDLedgerEntryType.HOLD_RELEASE,
+                            amount_delta=Decimal("0.00"),
+                            held_delta=-hold_amount,
+                            balance_after=current_balance_after,
+                            held_balance_after=held_balance_after,
+                            scheduled_trip_id=active_context.scheduled_trip.id,
+                            rfid_ride_id=open_ride.id,
+                            stop_id=active_context.stop.id,
+                            note=(
+                                "RFID fare hold released on drop."
+                                if release_amount > Decimal("0.00")
+                                else "RFID fare hold fully consumed on drop."
+                            ),
+                            created_at=now,
+                        )
 
-                    open_ride.dropoff_stop_id = active_context.stop.id
-                    open_ride.dropoff_sequence_no = active_context.route_stop.sequence_no
-                    open_ride.drop_rfid_scan_event_id = scan_event.id
-                    open_ride.dropped_at = now
-                    open_ride.drop_lat = payload.scan_lat
-                    open_ride.drop_lng = payload.scan_lng
-                    open_ride.status = schema.RFIDRideStatus.COMPLETED
-                    open_ride.fare_amount = fare_amount
-                    open_ride.commission_percent_snapshot = Decimal("0.00")
-                    open_ride.commission_amount = Decimal("0.00")
-                    open_ride.driver_payout_amount = fare_amount
-                    open_ride.platform_amount = Decimal("0.00")
-                    open_ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
-                    open_ride.transfer_ready_at = now
+                        open_ride.dropoff_stop_id = active_context.stop.id
+                        open_ride.dropoff_sequence_no = (
+                            active_context.route_stop.sequence_no
+                        )
+                        open_ride.drop_rfid_scan_event_id = scan_event.id
+                        open_ride.dropped_at = now
+                        open_ride.drop_lat = payload.scan_lat
+                        open_ride.drop_lng = payload.scan_lng
+                        open_ride.status = schema.RFIDRideStatus.COMPLETED
+                        open_ride.fare_amount = fare_amount
+                        open_ride.commission_percent_snapshot = Decimal("0.00")
+                        open_ride.commission_amount = Decimal("0.00")
+                        open_ride.driver_payout_amount = fare_amount
+                        open_ride.platform_amount = Decimal("0.00")
+                        open_ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+                        open_ride.transfer_ready_at = now
 
-                    card_account.current_balance = current_balance_after
-                    card_account.held_balance = held_balance_after
-                    scan_event.rfid_ride_id = open_ride.id
+                        card_account.current_balance = current_balance_after
+                        card_account.held_balance = held_balance_after
+                        scan_event.rfid_ride_id = open_ride.id
 
-                    self.db.add(debit_entry)
-                    self.db.add(release_entry)
-                    self.db.add(open_ride)
-                    self.db.add(card_account)
-                    self.db.add(scan_event)
-
+                        self.db.add(debit_entry)
+                        self.db.add(release_entry)
+                        self.db.add(open_ride)
+                        self.db.add(card_account)
+                        self.db.add(scan_event)
         if device is not None:
             device.last_seen_at = schema.utcnow()
             device.last_seen_lat = payload.scan_lat
