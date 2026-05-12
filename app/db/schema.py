@@ -1713,6 +1713,108 @@ class RFIDRideFundingAllocation(UUIDPKMixin, Base):
         ),
     )
 
+class RFIDRechargeFundingAllocation(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "rfid_recharge_funding_allocations"
+
+    funding_lot_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_funding_lots.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    recharge_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_recharges.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    account_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_card_accounts.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    card_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    passenger_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rfid_ride_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("rfid_trip_rides.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    vehicle_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    driver_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    source_razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    reversed_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    allocated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+    reversed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint("amount > 0", name="ck_rfid_funding_allocations_amount_positive"),
+        CheckConstraint(
+            "reversed_amount >= 0",
+            name="ck_rfid_funding_allocations_reversed_nonnegative",
+        ),
+        CheckConstraint(
+            "reversed_amount <= amount",
+            name="ck_rfid_funding_allocations_reversed_not_above_amount",
+        ),
+        UniqueConstraint(
+            "funding_lot_id",
+            "rfid_ride_id",
+            name="uq_rfid_funding_allocations_lot_ride",
+        ),
+        Index(
+            "ix_rfid_funding_allocations_lot",
+            "funding_lot_id",
+        ),
+        Index(
+            "ix_rfid_funding_allocations_recharge",
+            "recharge_id",
+        ),
+        Index(
+            "ix_rfid_funding_allocations_ride",
+            "rfid_ride_id",
+        ),
+        Index(
+            "ix_rfid_funding_allocations_driver_trip",
+            "driver_user_id",
+            "scheduled_trip_id",
+        ),
+        Index(
+            "ix_rfid_funding_allocations_razorpay_payment",
+            "source_razorpay_payment_id",
+        ),
+    )
 
 class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "rfid_payout_transfers"
@@ -1755,7 +1857,7 @@ class RFIDPayoutTransfer(UUIDPKMixin, TimestampMixin, Base):
 
     source_funding_allocation_id: Mapped[str | None] = mapped_column(
         String(36),
-        ForeignKey("rfid_ride_funding_allocations.id", ondelete="SET NULL"),
+        ForeignKey("rfid_recharge_funding_allocations.id", ondelete="SET NULL"),
         nullable=True,
     )
 
