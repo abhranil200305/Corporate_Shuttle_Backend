@@ -1805,13 +1805,6 @@ class AdminRFIDService:
         total_available_for_fare_reversal = Decimal("0.00")
 
         for transfer in transfers:
-            remaining_transfer_amount = self._remaining_payout_transfer_amount(
-                transfer
-            )
-
-            if remaining_transfer_amount <= Decimal("0.00"):
-                continue
-
             if transfer.source_funding_allocation_id is None:
                 raise HTTPException(
                     status_code=409,
@@ -1833,7 +1826,14 @@ class AdminRFIDService:
             if remaining_allocation_amount <= Decimal("0.00"):
                 continue
 
+            remaining_transfer_amount = self._remaining_payout_transfer_amount(
+                transfer
+            )
+
             if self._is_rfid_payout_transfer_locally_reversible(transfer):
+                if remaining_transfer_amount <= Decimal("0.00"):
+                    continue
+
                 available_amount = self._normalize_money(
                     min(remaining_transfer_amount, remaining_allocation_amount)
                 )
