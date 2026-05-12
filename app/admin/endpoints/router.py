@@ -1254,8 +1254,6 @@ async def trigger_ready_rfid_payout_transfers(
 		limit=payload.limit,
 	)
 
-	await db.commit()
-
 	return result
 
 # -----------------------------
