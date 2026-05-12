@@ -1205,6 +1205,38 @@ async def trigger_rfid_payout_transfer(
 
 	return result
 
+@router.get(
+	"/rfid/payout-transfers",
+	response_model=RFIDPayoutTransferListResponse,
+	tags=["Admin RFID"],
+)
+async def list_rfid_payout_transfers(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	status: schema.RFIDPayoutTransferStatus | None = Query(default=None),
+	driver_user_id: str | None = Query(default=None, min_length=1, max_length=36),
+	scheduled_trip_id: str | None = Query(default=None, min_length=1, max_length=36),
+	rfid_ride_id: str | None = Query(default=None, min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	transfers, count = await service.list_rfid_payout_transfers(
+		page=page,
+		page_size=page_size,
+		status=status,
+		driver_user_id=driver_user_id,
+		scheduled_trip_id=scheduled_trip_id,
+		rfid_ride_id=rfid_ride_id,
+	)
+
+	return {
+		"items": [
+			service.serialize_payout_transfer(transfer)
+			for transfer in transfers
+		],
+		"count": count,
+	}
+
 # -----------------------------
 # Admin:  driver vehical verification
 # -----------------------------
