@@ -17,6 +17,7 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDPayoutTransferBulkTriggerRequest,
 	RFIDTripRideListResponse,
 	RFIDPayoutTransferListResponse,
 	RFIDCardAssignRequest,
@@ -1236,6 +1237,26 @@ async def list_rfid_payout_transfers(
 		],
 		"count": count,
 	}
+
+@router.post(
+	"/rfid/payout-transfers/trigger-ready",
+	tags=["Admin RFID"],
+)
+async def trigger_ready_rfid_payout_transfers(
+	payload: RFIDPayoutTransferBulkTriggerRequest,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = RoutePayoutService(db)
+	result = await service.trigger_ready_rfid_payout_transfers(
+		transfer_ids=payload.transfer_ids,
+		driver_user_id=payload.driver_user_id,
+		scheduled_trip_id=payload.scheduled_trip_id,
+		limit=payload.limit,
+	)
+
+	await db.commit()
+
+	return result
 
 # -----------------------------
 # Admin:  driver vehical verification
