@@ -1413,6 +1413,71 @@ class AdminRFIDService:
             "created_at": ride.created_at,
             "updated_at": ride.updated_at,
         }
+    
+    @staticmethod
+    def serialize_payout_transfer(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> dict[str, Any]:
+        return {
+            "id": transfer.id,
+            "rfid_ride_id": transfer.rfid_ride_id,
+            "driver_user_id": transfer.driver_user_id,
+            "scheduled_trip_id": transfer.scheduled_trip_id,
+            "route_id": transfer.route_id,
+            "vehicle_id": transfer.vehicle_id,
+            "source_recharge_id": transfer.source_recharge_id,
+            "source_funding_allocation_id": transfer.source_funding_allocation_id,
+            "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
+            "linked_account_id": transfer.linked_account_id,
+            "amount": transfer.amount,
+            "status": transfer.status,
+            "razorpay_transfer_id": transfer.razorpay_transfer_id,
+            "failure_reason": transfer.failure_reason,
+            "processed_at": transfer.processed_at,
+            "reversed_at": transfer.reversed_at,
+            "created_at": transfer.created_at,
+            "updated_at": transfer.updated_at,
+        }
+
+    async def list_payout_ready_rfid_transfers(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+    ) -> tuple[list[schema.RFIDPayoutTransfer], int]:
+        filters = [
+            schema.RFIDPayoutTransfer.status
+            == schema.RFIDPayoutTransferStatus.READY,
+            schema.RFIDPayoutTransfer.amount > Decimal("0.00"),
+        ]
+
+        if driver_user_id is not None:
+            filters.append(schema.RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id
+            )
+
+        count_stmt = select(func.count(schema.RFIDPayoutTransfer.id)).where(*filters)
+
+        list_stmt = (
+            select(schema.RFIDPayoutTransfer)
+            .where(*filters)
+            .order_by(schema.RFIDPayoutTransfer.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return (
+            list(list_result.scalars().all()),
+            int(count_result.scalar_one() or 0),
+        )
 
     async def list_payout_ready_rfid_rides(
         self,

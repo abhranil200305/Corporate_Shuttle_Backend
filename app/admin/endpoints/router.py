@@ -18,6 +18,7 @@ from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
 	RFIDTripRideListResponse,
+	RFIDPayoutTransferListResponse,
 	RFIDCardAssignRequest,
 	RFIDCardBulkRegisterRequest,
 	RFIDCardBulkRegisterResponse,
@@ -1163,10 +1164,10 @@ async def decommission_rfid_card(
 
 @router.get(
 	"/rfid/rides/payout-ready",
-	response_model=RFIDTripRideListResponse,
+	response_model=RFIDPayoutTransferListResponse,
 	tags=["Admin RFID"],
 )
-async def list_payout_ready_rfid_rides(
+async def list_payout_ready_rfid_transfers(
 	page: int = Query(default=1, ge=1),
 	page_size: int = Query(default=25, ge=1, le=100),
 	driver_user_id: str | None = Query(default=None, min_length=1, max_length=36),
@@ -1174,7 +1175,7 @@ async def list_payout_ready_rfid_rides(
 	db: AsyncSession = Depends(get_async_session),
 ):
 	service = AdminRFIDService(db)
-	rides, count = await service.list_payout_ready_rfid_rides(
+	transfers, count = await service.list_payout_ready_rfid_transfers(
 		page=page,
 		page_size=page_size,
 		driver_user_id=driver_user_id,
@@ -1182,7 +1183,10 @@ async def list_payout_ready_rfid_rides(
 	)
 
 	return {
-		"items": [service.serialize_trip_ride(ride) for ride in rides],
+		"items": [
+			service.serialize_payout_transfer(transfer)
+			for transfer in transfers
+		 ],
 		"count": count,
 	}
 
