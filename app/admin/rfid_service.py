@@ -1482,6 +1482,8 @@ class AdminRFIDService:
             "payable_amount": AdminRFIDService._normalize_money(
                 Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
             ),
+            "has_reversals": False,
+            "reversal_count": 0,
             "status": transfer.status,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "failure_reason": transfer.failure_reason,

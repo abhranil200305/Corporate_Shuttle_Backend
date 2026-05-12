@@ -444,6 +444,8 @@ class RFIDPayoutTransferResponse(BaseModel):
     amount: Decimal
     reversed_amount: Decimal
     payable_amount: Decimal
+    has_reversals: bool = False
+    reversal_count: int = 0
     status: str
     razorpay_transfer_id: str | None
     failure_reason: str | None
