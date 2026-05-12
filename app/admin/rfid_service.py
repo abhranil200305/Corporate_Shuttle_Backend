@@ -1374,6 +1374,54 @@ class AdminRFIDService:
             "updated_at": transfer.updated_at,
         }
     
+    async def list_rfid_payout_transfers(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        status: schema.RFIDPayoutTransferStatus | None = None,
+        driver_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        rfid_ride_id: str | None = None,
+    ) -> tuple[list[schema.RFIDPayoutTransfer], int]:
+        filters = []
+
+        if status is not None:
+            filters.append(schema.RFIDPayoutTransfer.status == status)
+
+        if driver_user_id is not None:
+            filters.append(schema.RFIDPayoutTransfer.driver_user_id == driver_user_id)
+
+        if scheduled_trip_id is not None:
+            filters.append(
+                schema.RFIDPayoutTransfer.scheduled_trip_id == scheduled_trip_id
+            )
+
+        if rfid_ride_id is not None:
+            filters.append(schema.RFIDPayoutTransfer.rfid_ride_id == rfid_ride_id)
+
+        count_stmt = select(func.count(schema.RFIDPayoutTransfer.id))
+        list_stmt = select(schema.RFIDPayoutTransfer)
+
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            list_stmt = list_stmt.where(*filters)
+
+        list_stmt = (
+            list_stmt
+            .order_by(schema.RFIDPayoutTransfer.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        return (
+            list(list_result.scalars().all()),
+            int(count_result.scalar_one() or 0),
+        )
+    
     @staticmethod
     def serialize_trip_ride(ride: schema.RFIDTripRide) -> dict[str, Any]:
         return {
