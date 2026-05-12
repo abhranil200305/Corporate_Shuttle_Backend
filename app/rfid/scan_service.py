@@ -286,6 +286,18 @@ class RFIDScanService:
             )
 
         return allocations
+    
+    async def _get_driver_payout_details(
+        self,
+        driver_user_id: str,
+    ) -> schema.DriverPayoutDetails | None:
+        stmt = (
+            select(schema.DriverPayoutDetails)
+            .where(schema.DriverPayoutDetails.driver_user_id == driver_user_id)
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
 
     async def _get_running_trip_for_vehicle(
         self,
@@ -809,6 +821,33 @@ class RFIDScanService:
                         card_account.current_balance = current_balance_after
                         card_account.held_balance = held_balance_after
                         scan_event.rfid_ride_id = open_ride.id
+
+                        payout_transfers = (
+                            await self._create_rfid_payout_transfers_for_allocations(
+                                allocations=funding_allocations,
+                                ride=open_ride,
+                            )
+                        )
+
+                        has_ready_transfer = any(
+                            transfer.status == schema.RFIDPayoutTransferStatus.READY
+                            for transfer in payout_transfers
+                        )
+                        has_withheld_transfer = any(
+                            transfer.status == schema.RFIDPayoutTransferStatus.WITHHELD
+                            for transfer in payout_transfers
+                        )
+
+                        if has_ready_transfer:
+                            open_ride.transfer_status = (
+                                schema.RFIDPayoutTransferStatus.READY
+                            )
+                            open_ride.transfer_ready_at = now
+                        elif has_withheld_transfer:
+                            open_ride.transfer_status = (
+                                schema.RFIDPayoutTransferStatus.WITHHELD
+                            )
+                            open_ride.transfer_ready_at = None
 
                         self.db.add(debit_entry)
                         self.db.add(release_entry)
