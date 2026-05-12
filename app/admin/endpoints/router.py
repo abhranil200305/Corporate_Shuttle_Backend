@@ -17,6 +17,7 @@ from sqlalchemy.orm import joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
+	RFIDPayoutTransferDetailResponse,
 	RFIDPayoutTransferReversalListResponse,
 	RFIDPayoutTransferReversalRequest,
 	RFIDRideDeductionReversalRequest,
@@ -1387,6 +1388,18 @@ async def list_rfid_payout_transfer_reversals(
 		],
 		"count": count,
 	}
+
+@router.get(
+	"/rfid/payout-transfers/{transfer_id}",
+	response_model=RFIDPayoutTransferDetailResponse,
+	tags=["Admin RFID"],
+)
+async def get_rfid_payout_transfer_detail(
+	transfer_id: str = Path(..., min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminRFIDService(db)
+	return await service.get_rfid_payout_transfer_detail(transfer_id)
 
 # -----------------------------
 # Admin:  driver vehical verification

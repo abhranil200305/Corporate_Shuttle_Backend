@@ -2289,6 +2289,140 @@ class AdminRFIDService:
             transfers,
             int(count_result.scalar_one() or 0),
         )
+    
+    @staticmethod
+    def serialize_recharge_funding_allocation(
+        allocation: schema.RFIDRechargeFundingAllocation,
+    ) -> dict[str, Any]:
+        return {
+            "id": allocation.id,
+            "funding_lot_id": allocation.funding_lot_id,
+            "recharge_id": allocation.recharge_id,
+            "account_id": allocation.account_id,
+            "card_id": allocation.card_id,
+            "passenger_user_id": allocation.passenger_user_id,
+            "rfid_ride_id": allocation.rfid_ride_id,
+            "scheduled_trip_id": allocation.scheduled_trip_id,
+            "route_id": allocation.route_id,
+            "vehicle_id": allocation.vehicle_id,
+            "driver_user_id": allocation.driver_user_id,
+            "source_razorpay_payment_id": allocation.source_razorpay_payment_id,
+            "amount": allocation.amount,
+            "reversed_amount": allocation.reversed_amount,
+            "allocated_at": allocation.allocated_at,
+            "reversed_at": allocation.reversed_at,
+            "created_at": allocation.created_at,
+            "updated_at": allocation.updated_at,
+        }
+
+    @staticmethod
+    def serialize_funding_lot(
+        funding_lot: schema.RFIDFundingLot,
+    ) -> dict[str, Any]:
+        return {
+            "id": funding_lot.id,
+            "recharge_id": funding_lot.recharge_id,
+            "account_id": funding_lot.account_id,
+            "card_id": funding_lot.card_id,
+            "source_amount": funding_lot.source_amount,
+            "remaining_amount": funding_lot.remaining_amount,
+            "razorpay_payment_id": funding_lot.razorpay_payment_id,
+            "source_type": funding_lot.source_type,
+            "status": funding_lot.status,
+            "created_at": funding_lot.created_at,
+            "updated_at": funding_lot.updated_at,
+        }
+
+    async def get_rfid_payout_transfer_detail(
+        self,
+        transfer_id: str,
+    ) -> dict[str, Any]:
+        transfer_stmt = (
+            select(schema.RFIDPayoutTransfer)
+            .where(schema.RFIDPayoutTransfer.id == transfer_id)
+            .limit(1)
+        )
+        transfer_result = await self.db.execute(transfer_stmt)
+        transfer = transfer_result.scalar_one_or_none()
+
+        if transfer is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_payout_transfer_not_found",
+                    "message": "RFID payout transfer not found.",
+                },
+            )
+
+        await self._attach_payout_transfer_reversal_summary([transfer])
+
+        allocation = None
+        funding_lot = None
+        source_recharge = None
+
+        if transfer.source_funding_allocation_id is not None:
+            allocation_stmt = (
+                select(schema.RFIDRechargeFundingAllocation)
+                .where(
+                    schema.RFIDRechargeFundingAllocation.id
+                    == transfer.source_funding_allocation_id
+                )
+                .limit(1)
+            )
+            allocation_result = await self.db.execute(allocation_stmt)
+            allocation = allocation_result.scalar_one_or_none()
+
+        if allocation is not None:
+            funding_lot_stmt = (
+                select(schema.RFIDFundingLot)
+                .where(schema.RFIDFundingLot.id == allocation.funding_lot_id)
+                .limit(1)
+            )
+            funding_lot_result = await self.db.execute(funding_lot_stmt)
+            funding_lot = funding_lot_result.scalar_one_or_none()
+
+        source_recharge_id = transfer.source_recharge_id
+
+        if source_recharge_id is None and allocation is not None:
+            source_recharge_id = allocation.recharge_id
+
+        if source_recharge_id is not None:
+            recharge_stmt = (
+                select(schema.RFIDRecharge)
+                .where(schema.RFIDRecharge.id == source_recharge_id)
+                .limit(1)
+            )
+            recharge_result = await self.db.execute(recharge_stmt)
+            source_recharge = recharge_result.scalar_one_or_none()
+
+        reversals_stmt = (
+            select(schema.RFIDPayoutTransferReversal)
+            .where(
+                schema.RFIDPayoutTransferReversal.rfid_payout_transfer_id
+                == transfer.id
+            )
+            .order_by(schema.RFIDPayoutTransferReversal.created_at.desc())
+        )
+        reversals_result = await self.db.execute(reversals_stmt)
+        reversals = list(reversals_result.scalars().all())
+
+        return {
+            "transfer": self.serialize_payout_transfer(transfer),
+            "funding_allocation": None
+            if allocation is None
+            else self.serialize_recharge_funding_allocation(allocation),
+            "funding_lot": None
+            if funding_lot is None
+            else self.serialize_funding_lot(funding_lot),
+            "source_recharge": None
+            if source_recharge is None
+            else self.serialize_recharge(source_recharge),
+            "reversals": [
+                self.serialize_payout_transfer_reversal(reversal)
+                for reversal in reversals
+            ],
+            "reversal_count": len(reversals),
+        }
 
     async def list_payout_ready_rfid_rides(
         self,
