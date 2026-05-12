@@ -1537,6 +1537,148 @@ class AdminRFIDService:
             - Decimal(transfer.reversed_amount or 0)
         )
 
+    @staticmethod
+    def _is_rfid_payout_transfer_locally_reversible(
+        transfer: schema.RFIDPayoutTransfer,
+    ) -> bool:
+        return transfer.status in {
+            schema.RFIDPayoutTransferStatus.READY,
+            schema.RFIDPayoutTransferStatus.WITHHELD,
+            schema.RFIDPayoutTransferStatus.FAILED,
+        }
+
+    @staticmethod
+    def _remaining_funding_allocation_amount(
+        allocation: schema.RFIDRechargeFundingAllocation,
+    ) -> Decimal:
+        return AdminRFIDService._normalize_money(
+            Decimal(allocation.amount or 0)
+            - Decimal(allocation.reversed_amount or 0)
+        )
+
+    async def _get_rfid_funding_allocation_for_update_or_404(
+        self,
+        allocation_id: str,
+    ) -> schema.RFIDRechargeFundingAllocation:
+        stmt = (
+            select(schema.RFIDRechargeFundingAllocation)
+            .where(schema.RFIDRechargeFundingAllocation.id == allocation_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        allocation = result.scalar_one_or_none()
+
+        if allocation is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_funding_allocation_not_found",
+                    "message": "RFID funding allocation not found.",
+                },
+            )
+
+        return allocation
+
+    async def _get_rfid_funding_lot_for_update_or_404(
+        self,
+        funding_lot_id: str,
+    ) -> schema.RFIDFundingLot:
+        stmt = (
+            select(schema.RFIDFundingLot)
+            .where(schema.RFIDFundingLot.id == funding_lot_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        funding_lot = result.scalar_one_or_none()
+
+        if funding_lot is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_funding_lot_not_found",
+                    "message": "RFID funding lot not found.",
+                },
+            )
+
+        return funding_lot
+
+    async def _restore_rfid_funding_allocation_amount(
+        self,
+        *,
+        allocation: schema.RFIDRechargeFundingAllocation,
+        amount: Decimal,
+    ) -> schema.RFIDFundingLot:
+        amount_to_restore = self._normalize_money(amount)
+
+        if amount_to_restore <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "non_positive_funding_restore_amount",
+                    "message": "Funding restore amount must be greater than zero.",
+                },
+            )
+
+        remaining_allocation_amount = self._remaining_funding_allocation_amount(
+            allocation
+        )
+
+        if amount_to_restore > remaining_allocation_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_restore_exceeds_allocation",
+                    "message": "Cannot restore more than the unreversed funding allocation amount.",
+                    "allocation_id": allocation.id,
+                    "amount_to_restore": str(amount_to_restore),
+                    "remaining_allocation_amount": str(remaining_allocation_amount),
+                },
+            )
+
+        funding_lot = await self._get_rfid_funding_lot_for_update_or_404(
+            allocation.funding_lot_id
+        )
+
+        lot_remaining_before = self._normalize_money(
+            Decimal(funding_lot.remaining_amount or 0)
+        )
+        lot_source_amount = self._normalize_money(
+            Decimal(funding_lot.source_amount or 0)
+        )
+        lot_remaining_after = self._normalize_money(
+            lot_remaining_before + amount_to_restore
+        )
+
+        if lot_remaining_after > lot_source_amount:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_lot_restore_exceeds_source",
+                    "message": "Cannot restore funding lot above its original source amount.",
+                    "funding_lot_id": funding_lot.id,
+                    "amount_to_restore": str(amount_to_restore),
+                    "lot_remaining_before": str(lot_remaining_before),
+                    "lot_source_amount": str(lot_source_amount),
+                },
+            )
+
+        allocation.reversed_amount = self._normalize_money(
+            Decimal(allocation.reversed_amount or 0) + amount_to_restore
+        )
+        allocation.reversed_at = schema.utcnow()
+
+        funding_lot.remaining_amount = lot_remaining_after
+
+        if lot_remaining_after > Decimal("0.00"):
+            funding_lot.status = schema.RFIDFundingLotStatus.AVAILABLE
+
+        self.db.add(allocation)
+        self.db.add(funding_lot)
+
+        return funding_lot
+
     async def _refresh_rfid_ride_transfer_status_from_rows(
         self,
         ride: schema.RFIDTripRide,
