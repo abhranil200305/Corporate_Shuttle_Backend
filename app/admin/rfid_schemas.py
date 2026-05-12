@@ -524,6 +524,30 @@ class RFIDPayoutTransferReversalRequest(BaseModel):
     @classmethod
     def validate_admin_note(cls, value: str | None) -> str | None:
         return _clean_optional_text(value)
+    
+class RFIDPayoutTransferReversalResponse(BaseModel):
+    id: str
+    rfid_payout_transfer_id: str
+    rfid_ride_id: str
+    driver_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    vehicle_id: str
+    amount: Decimal
+    status: str
+    razorpay_reversal_id: str | None
+    failure_reason: str | None
+    requested_by_admin_id: str
+    reason: str
+    admin_note: str | None
+    processed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RFIDPayoutTransferReversalListResponse(BaseModel):
+    items: list[RFIDPayoutTransferReversalResponse]
+    count: int
 
 # ============================================================
 # manual reversal request
