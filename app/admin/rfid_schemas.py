@@ -595,6 +595,39 @@ class RFIDPayoutTransferDetailResponse(BaseModel):
     reversals: list[RFIDPayoutTransferReversalResponse]
     reversal_count: int
 
+class RFIDRideMoneyDetailResponse(BaseModel):
+    ride: RFIDTripRideResponse
+    ledger_entries: list[RFIDLedgerEntryResponse]
+    funding_allocations: list[RFIDRechargeFundingAllocationResponse]
+    payout_transfers: list[RFIDPayoutTransferResponse]
+    payout_transfer_reversals: list[RFIDPayoutTransferReversalResponse]
+
+    ledger_entry_count: int
+    funding_allocation_count: int
+    payout_transfer_count: int
+    payout_transfer_reversal_count: int
+
+class RFIDPayoutOperationsSummaryResponse(BaseModel):
+    payout_transfer_total: int
+    payout_transfer_counts_by_status: dict[str, int]
+    payout_transfer_amount_by_status: dict[str, Decimal]
+    payout_transfer_reversed_amount_by_status: dict[str, Decimal]
+    payout_transfer_payable_amount_by_status: dict[str, Decimal]
+
+    provider_reversal_total: int
+    provider_reversal_counts_by_status: dict[str, int]
+    provider_reversal_amount_by_status: dict[str, Decimal]
+
+    ready_transfer_count: int
+    created_transfer_count: int
+    processed_transfer_count: int
+    failed_transfer_count: int
+    withheld_transfer_count: int
+    reversed_transfer_count: int
+
+    failed_provider_reversal_count: int
+    processed_provider_reversal_count: int
+
 # ============================================================
 # manual reversal request
 # ============================================================
