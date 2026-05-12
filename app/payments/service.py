@@ -935,6 +935,8 @@ class RoutePayoutService:
             RFIDPayoutTransfer.status == RFIDPayoutTransferStatus.READY,
         ]
 
+        requested_count = 0
+
         if transfer_ids:
             cleaned_transfer_ids = [
                 str(transfer_id).strip()
@@ -951,6 +953,7 @@ class RoutePayoutService:
                     },
                 )
 
+            requested_count = len(cleaned_transfer_ids)
             filters.append(RFIDPayoutTransfer.id.in_(cleaned_transfer_ids))
 
         if driver_user_id is not None:
@@ -973,6 +976,8 @@ class RoutePayoutService:
         for selected_transfer_id in selected_transfer_ids:
             try:
                 item = await self.trigger_rfid_payout_transfer(selected_transfer_id)
+                await self.db.commit()
+
                 items.append(
                     {
                         "transfer_id": selected_transfer_id,
@@ -981,7 +986,10 @@ class RoutePayoutService:
                         "error": None,
                     }
                 )
+
             except HTTPException as exc:
+                await self.db.rollback()
+
                 items.append(
                     {
                         "transfer_id": selected_transfer_id,
@@ -996,7 +1004,7 @@ class RoutePayoutService:
 
         return {
             "message": "RFID payout transfer bulk trigger completed.",
-            "requested_count": 0 if transfer_ids is None else len(transfer_ids),
+            "requested_count": requested_count,
             "selected_count": len(selected_transfer_ids),
             "successful_count": successful_count,
             "failed_count": failed_count,
