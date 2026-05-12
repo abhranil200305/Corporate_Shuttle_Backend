@@ -1800,8 +1800,9 @@ class AdminRFIDService:
                 },
             )
 
-        blocked_transfers: list[dict[str, Any]] = []
-        locally_reversible_total = Decimal("0.00")
+        reversal_sources: list[dict[str, Any]] = []
+        blocked_provider_transfers: list[dict[str, Any]] = []
+        total_available_for_fare_reversal = Decimal("0.00")
 
         for transfer in transfers:
             remaining_transfer_amount = self._remaining_payout_transfer_amount(
@@ -1809,67 +1810,6 @@ class AdminRFIDService:
             )
 
             if remaining_transfer_amount <= Decimal("0.00"):
-                continue
-
-            if self._is_rfid_payout_transfer_locally_reversible(transfer):
-                locally_reversible_total = self._normalize_money(
-                    locally_reversible_total + remaining_transfer_amount
-                )
-                continue
-
-            blocked_transfers.append(
-                {
-                    "transfer_id": transfer.id,
-                    "status": transfer.status.value,
-                    "remaining_amount": str(remaining_transfer_amount),
-                    "razorpay_transfer_id": transfer.razorpay_transfer_id,
-                }
-            )
-
-        if blocked_transfers:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "rfid_reversal_requires_provider_transfer_handling",
-                    "message": "One or more RFID payout transfers have provider-side state. Reconcile or reverse provider transfers before applying this local fare reversal.",
-                    "blocked_transfers": blocked_transfers,
-                },
-            )
-
-        if reversal_amount > locally_reversible_total:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "rfid_reversal_exceeds_locally_reversible_payout",
-                    "message": "Cannot reverse more than the locally reversible payout transfer amount.",
-                    "requested_reversal_amount": str(reversal_amount),
-                    "locally_reversible_total": str(locally_reversible_total),
-                },
-            )
-
-        remaining_to_reverse = reversal_amount
-        transfer_reversal_items: list[dict[str, Any]] = []
-        now = schema.utcnow()
-
-        for transfer in transfers:
-            if remaining_to_reverse <= Decimal("0.00"):
-                break
-
-            if not self._is_rfid_payout_transfer_locally_reversible(transfer):
-                continue
-
-            remaining_transfer_amount = self._remaining_payout_transfer_amount(
-                transfer
-            )
-
-            if remaining_transfer_amount <= Decimal("0.00"):
-                continue
-
-            amount_from_transfer = self._normalize_money(
-                min(remaining_transfer_amount, remaining_to_reverse)
-            )
-
-            if amount_from_transfer <= Decimal("0.00"):
                 continue
 
             if transfer.source_funding_allocation_id is None:
@@ -1886,22 +1826,132 @@ class AdminRFIDService:
                 transfer.source_funding_allocation_id
             )
 
-            await self._restore_rfid_funding_allocation_amount(
-                allocation=allocation,
-                amount=amount_from_transfer,
+            remaining_allocation_amount = self._remaining_funding_allocation_amount(
+                allocation
             )
 
-            transfer.reversed_amount = self._normalize_money(
-                Decimal(transfer.reversed_amount or 0) + amount_from_transfer
+            if remaining_allocation_amount <= Decimal("0.00"):
+                continue
+
+            if self._is_rfid_payout_transfer_locally_reversible(transfer):
+                available_amount = self._normalize_money(
+                    min(remaining_transfer_amount, remaining_allocation_amount)
+                )
+
+                if available_amount > Decimal("0.00"):
+                    reversal_sources.append(
+                        {
+                            "mode": "local",
+                            "transfer": transfer,
+                            "allocation": allocation,
+                            "available_amount": available_amount,
+                        }
+                    )
+                    total_available_for_fare_reversal = self._normalize_money(
+                        total_available_for_fare_reversal + available_amount
+                    )
+
+                continue
+
+            if self._is_rfid_payout_transfer_provider_side_state(transfer):
+                available_amount = (
+                    self._provider_reversed_amount_available_for_fare_reversal(
+                        transfer=transfer,
+                        allocation=allocation,
+                    )
+                )
+
+                if available_amount > Decimal("0.00"):
+                    reversal_sources.append(
+                        {
+                            "mode": "provider_reversed",
+                            "transfer": transfer,
+                            "allocation": allocation,
+                            "available_amount": available_amount,
+                        }
+                    )
+                    total_available_for_fare_reversal = self._normalize_money(
+                        total_available_for_fare_reversal + available_amount
+                    )
+                else:
+                    blocked_provider_transfers.append(
+                        {
+                            "transfer_id": transfer.id,
+                            "status": transfer.status.value,
+                            "remaining_payable_amount": str(
+                                remaining_transfer_amount
+                            ),
+                            "transfer_reversed_amount": str(
+                                self._normalize_money(
+                                    Decimal(transfer.reversed_amount or 0)
+                                )
+                            ),
+                            "allocation_reversed_amount": str(
+                                self._normalize_money(
+                                    Decimal(allocation.reversed_amount or 0)
+                                )
+                            ),
+                            "razorpay_transfer_id": transfer.razorpay_transfer_id,
+                        }
+                    )
+
+        if reversal_amount > total_available_for_fare_reversal:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_reversal_exceeds_available_reversal_sources",
+                    "message": "Cannot reverse this fare amount yet. Reverse provider-side payout transfers first, or choose an amount covered by local/provider-reversed sources.",
+                    "requested_reversal_amount": str(reversal_amount),
+                    "available_for_fare_reversal": str(
+                        total_available_for_fare_reversal
+                    ),
+                    "blocked_provider_transfers": blocked_provider_transfers,
+                },
             )
+
+        remaining_to_reverse = reversal_amount
+        transfer_reversal_items: list[dict[str, Any]] = []
+        now = schema.utcnow()
+
+        for source in reversal_sources:
+            if remaining_to_reverse <= Decimal("0.00"):
+                break
+
+            source_available_amount = self._normalize_money(
+                source["available_amount"]
+            )
+
+            amount_from_source = self._normalize_money(
+                min(source_available_amount, remaining_to_reverse)
+            )
+
+            if amount_from_source <= Decimal("0.00"):
+                continue
+
+            mode = source["mode"]
+            transfer = source["transfer"]
+            allocation = source["allocation"]
+
+            old_transfer_status = transfer.status
+
+            await self._restore_rfid_funding_allocation_amount(
+                allocation=allocation,
+                amount=amount_from_source,
+            )
+
+            if mode == "local":
+                transfer.reversed_amount = self._normalize_money(
+                    Decimal(transfer.reversed_amount or 0) + amount_from_source
+                )
 
             remaining_after_transfer_reversal = (
                 self._remaining_payout_transfer_amount(transfer)
             )
 
-            old_transfer_status = transfer.status
-
             if remaining_after_transfer_reversal <= Decimal("0.00"):
+                transfer.reversed_amount = self._normalize_money(
+                    Decimal(transfer.amount or 0)
+                )
                 transfer.status = schema.RFIDPayoutTransferStatus.REVERSED
                 transfer.reversed_at = transfer.reversed_at or now
                 transfer.failure_reason = None
@@ -1911,9 +1961,10 @@ class AdminRFIDService:
             transfer_reversal_items.append(
                 {
                     "transfer_id": transfer.id,
+                    "mode": mode,
                     "old_status": old_transfer_status,
                     "new_status": transfer.status,
-                    "reversed_amount": amount_from_transfer,
+                    "reversed_amount": amount_from_source,
                     "remaining_payable_amount": remaining_after_transfer_reversal,
                     "funding_allocation_id": allocation.id,
                     "funding_lot_id": allocation.funding_lot_id,
@@ -1921,7 +1972,7 @@ class AdminRFIDService:
             )
 
             remaining_to_reverse = self._normalize_money(
-                remaining_to_reverse - amount_from_transfer
+                remaining_to_reverse - amount_from_source
             )
 
         if remaining_to_reverse > Decimal("0.00"):
@@ -1929,7 +1980,7 @@ class AdminRFIDService:
                 status_code=409,
                 detail={
                     "error": "rfid_reversal_incomplete",
-                    "message": "RFID reversal could not be fully allocated across payout transfers.",
+                    "message": "RFID reversal could not be fully allocated across available reversal sources.",
                     "remaining_to_reverse": str(remaining_to_reverse),
                 },
             )
