@@ -1190,6 +1190,21 @@ async def list_payout_ready_rfid_transfers(
 		"count": count,
 	}
 
+@router.post(
+	"/rfid/payout-transfers/{transfer_id}/trigger",
+	tags=["Admin RFID"],
+)
+async def trigger_rfid_payout_transfer(
+	transfer_id: str = Path(..., min_length=1, max_length=36),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = RoutePayoutService(db)
+	result = await service.trigger_rfid_payout_transfer(transfer_id)
+
+	await db.commit()
+
+	return result
+
 # -----------------------------
 # Admin:  driver vehical verification
 # -----------------------------
