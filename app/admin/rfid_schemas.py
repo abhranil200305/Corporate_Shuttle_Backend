@@ -509,6 +509,21 @@ class RFIDPayoutTransferReconcileCreatedRequest(BaseModel):
     @classmethod
     def validate_optional_ids(cls, value: str | None) -> str | None:
         return _clean_optional_text(value)
+    
+class RFIDPayoutTransferReversalRequest(BaseModel):
+    amount: Decimal = Field(..., gt=Decimal("0.00"))
+    reason: str = Field(..., min_length=1, max_length=120)
+    admin_note: str | None = Field(default=None, max_length=2000)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        return _clean_required_text(value)
+
+    @field_validator("admin_note")
+    @classmethod
+    def validate_admin_note(cls, value: str | None) -> str | None:
+        return _clean_optional_text(value)
 
 # ============================================================
 # manual reversal request
