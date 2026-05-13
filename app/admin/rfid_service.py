@@ -2708,3 +2708,64 @@ class AdminRFIDService:
             int(count_result.scalar_one() or 0),
         )
     
+    async def _get_or_create_platform_settings_for_update(
+        self,
+    ) -> schema.PlatformSettings:
+        stmt = (
+            select(schema.PlatformSettings)
+            .where(schema.PlatformSettings.settings_key == "default")
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        settings = result.scalar_one_or_none()
+
+        if settings is not None:
+            return settings
+
+        settings = schema.PlatformSettings(
+            id=schema.new_id(),
+            settings_key="default",
+            allow_driver_rfid_seat_reservation=True,
+        )
+
+        self.db.add(settings)
+        await self.db.flush()
+
+        return settings
+
+    async def get_rfid_seat_policy(self) -> dict[str, Any]:
+        stmt = (
+            select(schema.PlatformSettings)
+            .where(schema.PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        settings = result.scalar_one_or_none()
+
+        return {
+            "allow_driver_rfid_seat_reservation": True
+            if settings is None
+            else bool(settings.allow_driver_rfid_seat_reservation),
+        }
+
+    async def update_rfid_seat_policy(
+        self,
+        *,
+        allow_driver_rfid_seat_reservation: bool,
+    ) -> dict[str, Any]:
+        settings = await self._get_or_create_platform_settings_for_update()
+
+        settings.allow_driver_rfid_seat_reservation = (
+            allow_driver_rfid_seat_reservation
+        )
+
+        self.db.add(settings)
+        await self.db.flush()
+
+        return {
+            "allow_driver_rfid_seat_reservation": bool(
+                settings.allow_driver_rfid_seat_reservation
+            ),
+        }
+    

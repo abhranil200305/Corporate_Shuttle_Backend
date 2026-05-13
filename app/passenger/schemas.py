@@ -715,6 +715,9 @@ class PassengerRFIDInProgressTripResponse(BaseModel):
     balance_shortfall: Decimal
     minimum_recharge_amount: Decimal
 
+    rfid_seat_policy: str
+    rfid_physical_seat_check_required: bool
+
     rfid_reserved_seat_count: int
     rfid_occupied_seat_count: int
     rfid_available_seat_count: int

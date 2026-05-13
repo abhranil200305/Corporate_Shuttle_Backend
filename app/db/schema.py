@@ -2418,6 +2418,13 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
     )
     commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    allow_driver_rfid_seat_reservation: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
     __table_args__ = (
         CheckConstraint(
             "commission_percent >= 0 AND commission_percent <= 100",

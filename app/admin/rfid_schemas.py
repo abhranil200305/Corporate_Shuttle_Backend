@@ -652,3 +652,10 @@ class RFIDRideDeductionReversalRequest(BaseModel):
 class RFIDGenericMutationResponse(BaseModel):
     message: str
     data: dict[str, Any] | None = None
+
+class AdminRFIDSeatPolicyResponse(BaseModel):
+    allow_driver_rfid_seat_reservation: bool
+
+
+class AdminRFIDSeatPolicyUpdateRequest(BaseModel):
+    allow_driver_rfid_seat_reservation: bool

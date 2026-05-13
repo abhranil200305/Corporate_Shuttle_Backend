@@ -581,6 +581,17 @@ class RFIDScanService:
         )
         result = await self.db.execute(stmt)
         return len(result.scalars().all())
+    
+    async def _is_driver_rfid_seat_reservation_enabled(self) -> bool:
+        stmt = (
+            select(schema.PlatformSettings.allow_driver_rfid_seat_reservation)
+            .where(schema.PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        value = result.scalar_one_or_none()
+
+        return True if value is None else bool(value)
 
     async def record_scan(self, payload: RFIDScanRequest) -> dict[str, Any]:
         device = await self._get_device_by_serial(payload.device_serial_number)
@@ -681,36 +692,54 @@ class RFIDScanService:
                     if actual_drop_fare is None:
                         rejection_reason = "rfid_actual_drop_fare_not_configured"
                 elif scan_type == schema.RFIDScanType.BOARD:
-                    reserved_seat_count = self._get_rfid_reserved_seat_count(
-                        active_context.vehicle
+                    use_fixed_rfid_reserved_seats = (
+                        await self._is_driver_rfid_seat_reservation_enabled()
                     )
 
-                    if reserved_seat_count <= 0:
-                        rejection_reason = "rfid_seat_pool_not_configured"
+                    rfid_seat_policy_allows_backend_boarding = False
+
+                    if use_fixed_rfid_reserved_seats:
+                        reserved_seat_count = self._get_rfid_reserved_seat_count(
+                            active_context.vehicle
+                        )
+
+                        if reserved_seat_count <= 0:
+                            rejection_reason = "rfid_seat_pool_not_configured"
+                        else:
+                            open_rfid_ride_count = (
+                                await self._count_open_rfid_rides_for_trip(
+                                    active_context.scheduled_trip.id
+                                )
+                            )
+
+                            if open_rfid_ride_count >= reserved_seat_count:
+                                rejection_reason = "rfid_seat_pool_full"
+                            else:
+                                rfid_seat_policy_allows_backend_boarding = True
                     else:
-                        open_rfid_ride_count = (
-                            await self._count_open_rfid_rides_for_trip(
-                                active_context.scheduled_trip.id
+                        # Seat permission is physically managed by onboard crew.
+                        # Backend intentionally does not check fixed RFID pool
+                        # or dynamic empty seats when this policy is disabled.
+                        rfid_seat_policy_allows_backend_boarding = True
+
+                    if (
+                        rfid_seat_policy_allows_backend_boarding
+                        and card_account is not None
+                    ):
+                        max_downstream_fare = (
+                            await self._get_max_downstream_fare_from_stop(
+                                route_id=active_context.scheduled_trip.route_id,
+                                pickup_stop_id=active_context.stop.id,
+                                pickup_sequence_no=active_context.route_stop.sequence_no,
                             )
                         )
 
-                        if open_rfid_ride_count >= reserved_seat_count:
-                            rejection_reason = "rfid_seat_pool_full"
-                        elif card_account is not None:
-                            max_downstream_fare = (
-                                await self._get_max_downstream_fare_from_stop(
-                                    route_id=active_context.scheduled_trip.route_id,
-                                    pickup_stop_id=active_context.stop.id,
-                                    pickup_sequence_no=active_context.route_stop.sequence_no,
-                                )
+                        if max_downstream_fare is None:
+                            rejection_reason = "rfid_downstream_fare_not_configured"
+                        elif self._available_balance(card_account) < max_downstream_fare:
+                            rejection_reason = (
+                                "rfid_insufficient_balance_for_max_route_fare"
                             )
-
-                            if max_downstream_fare is None:
-                                rejection_reason = "rfid_downstream_fare_not_configured"
-                            elif self._available_balance(card_account) < max_downstream_fare:
-                                rejection_reason = (
-                                    "rfid_insufficient_balance_for_max_route_fare"
-                                )
         scan_accepted = False
         scan_rejection_reason = rejection_reason
         response_message = "RFID scan recorded. Boarding/deboarding is not enabled yet."

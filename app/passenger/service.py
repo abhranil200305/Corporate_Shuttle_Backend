@@ -598,16 +598,73 @@ class PassengerService:
         result = await self.db.execute(stmt)
         return int(result.scalar_one() or 0)
     
-    @staticmethod
-    def _get_app_bookable_capacity(trip: ScheduledTrip) -> int:
+    async def _is_driver_rfid_seat_reservation_enabled(self) -> bool:
+        stmt = (
+            select(PlatformSettings.allow_driver_rfid_seat_reservation)
+            .where(PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        value = result.scalar_one_or_none()
+
+        return True if value is None else bool(value)
+
+    async def _get_app_bookable_capacity_for_trip(
+        self,
+        trip: ScheduledTrip,
+    ) -> int:
         vehicle_capacity = (
             int(trip.vehicle.seat_count or 0)
             if trip.vehicle is not None
             else 0
         )
+
+        if not await self._is_driver_rfid_seat_reservation_enabled():
+            return max(vehicle_capacity, 0)
+
         rfid_reserved_capacity = int(trip.rfid_reserved_seat_count or 0)
 
         return max(vehicle_capacity - rfid_reserved_capacity, 0)
+
+    async def _get_rfid_capacity_for_in_progress_discovery(
+        self,
+        *,
+        trip: ScheduledTrip,
+    ) -> dict[str, Any]:
+        use_fixed_rfid_reserved_seats = (
+            await self._is_driver_rfid_seat_reservation_enabled()
+        )
+
+        if not use_fixed_rfid_reserved_seats:
+            return {
+                "rfid_seat_policy": "crew_managed",
+                "rfid_physical_seat_check_required": True,
+                "rfid_reserved_seat_count": 0,
+                "rfid_occupied_seat_count": 0,
+                "rfid_available_seat_count": 0,
+                "rfid_seat_available": True,
+            }
+
+        reserved_capacity = self._get_rfid_reserved_capacity_for_trip(trip)
+
+        open_rfid_ride_count = await self._count_open_rfid_rides_overlapping_leg(
+            scheduled_trip_id=trip.id,
+            dropoff_sequence_no=10**9,
+        )
+
+        available_seat_count = max(
+            reserved_capacity - open_rfid_ride_count,
+            0,
+        )
+
+        return {
+            "rfid_seat_policy": "reserved_pool",
+            "rfid_physical_seat_check_required": False,
+            "rfid_reserved_seat_count": reserved_capacity,
+            "rfid_occupied_seat_count": open_rfid_ride_count,
+            "rfid_available_seat_count": available_seat_count,
+            "rfid_seat_available": available_seat_count > 0,
+        }
 
     def _serialize_stop_brief(self, stop: Stop) -> dict[str, Any]:
         return {
@@ -681,7 +738,7 @@ class PassengerService:
                 "color": trip.vehicle.color,
                 "seat_count": trip.vehicle.seat_count,
                 "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
-                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
+                "app_bookable_seat_count": await self._get_app_bookable_capacity_for_trip(trip),
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": {
@@ -2824,15 +2881,14 @@ class PassengerService:
             if not dropoff_route_stop.deboarding_allowed:
                 continue
 
-            reserved_capacity = self._get_rfid_reserved_capacity_for_trip(trip)
-
-            occupied_count = await self._count_open_rfid_rides_overlapping_leg(
-                scheduled_trip_id=trip.id,
-                dropoff_sequence_no=dropoff_sequence_no,
+            rfid_capacity = await self._get_rfid_capacity_for_in_progress_discovery(
+                trip=trip,
             )
 
-            available_seat_count = max(reserved_capacity - occupied_count, 0)
-            seat_available = available_seat_count > 0
+            reserved_capacity = int(rfid_capacity["rfid_reserved_seat_count"])
+            occupied_count = int(rfid_capacity["rfid_occupied_seat_count"])
+            available_seat_count = int(rfid_capacity["rfid_available_seat_count"])
+            seat_available = bool(rfid_capacity["rfid_seat_available"])
 
             required_hold_amount = await self._get_rfid_max_downstream_fare_from_stop(
                 route_id=trip.route_id,
@@ -2862,8 +2918,6 @@ class PassengerService:
 
             if already_boarded_on_trip:
                 unavailable_reason = "already_boarded_on_trip"
-            elif reserved_capacity <= 0:
-                unavailable_reason = "rfid_seat_pool_not_configured"
             elif not seat_available:
                 unavailable_reason = "rfid_seat_pool_full"
             elif required_hold_amount is None:
@@ -2886,7 +2940,7 @@ class PassengerService:
                     "color": trip.vehicle.color,
                     "seat_count": trip.vehicle.seat_count,
                     "rfid_reserved_seat_count": reserved_capacity,
-                    "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
+                    "app_bookable_seat_count": await self._get_app_bookable_capacity_for_trip(trip),
                     "has_ac": trip.vehicle.has_ac,
                 }
 
@@ -2921,6 +2975,10 @@ class PassengerService:
                     "available_balance": available_balance,
                     "balance_shortfall": balance_shortfall,
                     "minimum_recharge_amount": balance_shortfall,
+                    "rfid_seat_policy": rfid_capacity["rfid_seat_policy"],
+                    "rfid_physical_seat_check_required": rfid_capacity[
+                        "rfid_physical_seat_check_required"
+                    ],
                     "rfid_reserved_seat_count": reserved_capacity,
                     "rfid_occupied_seat_count": occupied_count,
                     "rfid_available_seat_count": available_seat_count,
@@ -3139,7 +3197,7 @@ class PassengerService:
             dropoff_stop_id=payload.dropoff_stop_id,
         )
 
-        seat_capacity = self._get_app_bookable_capacity(trip)
+        seat_capacity = await self._get_app_bookable_capacity_for_trip(trip)
 
         overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
@@ -3771,7 +3829,7 @@ class PassengerService:
             pickup_sequence_no=pickup_route_stop.sequence_no,
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
-        seat_count = self._get_app_bookable_capacity(trip)
+        seat_count = await self._get_app_bookable_capacity_for_trip(trip)
         if overlapping_active_booking_count >= seat_count:
             raise HTTPException(
                 status_code=409,
@@ -4509,7 +4567,7 @@ class PassengerService:
             target_sequence_no=dropoff_route_stop.sequence_no,
         )
 
-        seat_capacity = self._get_app_bookable_capacity(trip)
+        seat_capacity = await self._get_app_bookable_capacity_for_trip(trip)
 
         overlapping_active_bookings = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
@@ -4549,7 +4607,7 @@ class PassengerService:
                 "color": trip.vehicle.color,
                 "seat_count": trip.vehicle.seat_count,
                 "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
-                "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
+                "app_bookable_seat_count": await self._get_app_bookable_capacity_for_trip(trip),
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": None if trip.driver is None else {

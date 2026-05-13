@@ -48,6 +48,8 @@ from app.admin.rfid_schemas import (
 	RFIDCardBlockRequest,
 	RFIDCardDecommissionRequest,
 	RFIDCardReturnRequest,
+	AdminRFIDSeatPolicyResponse,
+    AdminRFIDSeatPolicyUpdateRequest,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -1430,6 +1432,38 @@ async def get_rfid_payout_operations_summary(
 		driver_user_id=driver_user_id,
 		scheduled_trip_id=scheduled_trip_id,
 	)
+
+@router.get(
+    "/rfid/seat-policy",
+    response_model=AdminRFIDSeatPolicyResponse,
+    tags=["Admin RFID"],
+)
+async def get_rfid_seat_policy(
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminRFIDService(db)
+    return await service.get_rfid_seat_policy()
+
+@router.patch(
+    "/rfid/seat-policy",
+    response_model=AdminRFIDSeatPolicyResponse,
+    tags=["Admin RFID"],
+)
+async def update_rfid_seat_policy(
+    payload: AdminRFIDSeatPolicyUpdateRequest,
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
+):
+    service = AdminRFIDService(db)
+    result = await service.update_rfid_seat_policy(
+        allow_driver_rfid_seat_reservation=(
+            payload.allow_driver_rfid_seat_reservation
+        ),
+    )
+
+    await db.commit()
+
+    return result
 
 # -----------------------------
 # Admin:  driver vehical verification
