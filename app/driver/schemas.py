@@ -23,29 +23,28 @@ class VehicleBase(BaseModel):
     seat_count: int
     has_ac: bool
 
-    # ✅ existing files
+    
     rc_file_path: str
     rear_photo_file_path: str
 
-    # ✅ ownership
     ownership_type: VehicleOwnershipType | None
     authentication_file_path: str | None
     default_rfid_reserved_seat_count: int
-    # ✅ NEW: vehicle images
+   
     front_photo_file_path: Optional[str] = None
     interior_photo_file_path: Optional[str] = None
     left_side_file_path: Optional[str] = None
     right_side_file_path: Optional[str] = None
 
-    # ✅ NEW: documents
+
     insurance_document: Optional[str] = None
     pollution_document: Optional[str] = None
     owner_aadhaar_card: Optional[str] = None
 
-    # ✅ NEW: owner info
+   
     owner_name: Optional[str] = None
 
-    # ✅ status
+  
     verification_status: VehicleVerificationStatus
     is_active: bool
 
