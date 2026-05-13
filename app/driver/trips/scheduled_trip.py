@@ -28,7 +28,7 @@ from app.db.schema import (
     PlatformSettings,          
     VehicleVerificationStatus  
 )
-from app.db.schema import RFIDTripRide
+from app.db.schema import RFIDTripRide, RFIDRideStatus
 from app.db.schema import ScanType  
 from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
@@ -232,7 +232,9 @@ async def create_trip(
     # 6. PLATFORM SETTINGS
     # ---------------------------------------------------
     result = await session.execute(
-        select(PlatformSettings).limit(1)
+        select(PlatformSettings).where(
+            PlatformSettings.settings_key == "default"
+        )
     )
 
     platform_settings = result.scalar_one_or_none()
@@ -908,12 +910,7 @@ async def end_trip(
     rfid_active_rides_result = await session.execute(
         select(RFIDTripRide).where(
             RFIDTripRide.scheduled_trip_id == trip_id,
-
-            (
-                (RFIDTripRide.completed_at.is_(None))
-                |
-                (RFIDTripRide.drop_scanned_at.is_(None))
-            )
+            RFIDTripRide.status == RFIDRideStatus.BOARDED,
         )
     )
 
