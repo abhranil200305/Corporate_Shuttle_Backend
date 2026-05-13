@@ -1847,6 +1847,95 @@ class PassengerService:
             },
         }
     
+    async def get_rfid_summary(
+        self,
+        current_user: User,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        me = await self.get_rfid_me(current_user)
+
+        current_ride_stmt = (
+            select(RFIDTripRide)
+            .where(
+                RFIDTripRide.passenger_user_id == current_user.id,
+                RFIDTripRide.status == "boarded",
+            )
+            .order_by(RFIDTripRide.boarded_at.desc())
+            .limit(1)
+        )
+        current_ride_result = await self.db.execute(current_ride_stmt)
+        current_ride = current_ride_result.scalar_one_or_none()
+
+        ledger_stmt = (
+            select(RFIDLedgerEntry)
+            .where(RFIDLedgerEntry.passenger_user_id == current_user.id)
+            .order_by(RFIDLedgerEntry.created_at.desc())
+            .limit(5)
+        )
+        ledger_result = await self.db.execute(ledger_stmt)
+        recent_ledger_entries = list(ledger_result.scalars().all())
+
+        recharge_stmt = (
+            select(RFIDRecharge)
+            .where(RFIDRecharge.passenger_user_id == current_user.id)
+            .order_by(RFIDRecharge.created_at.desc())
+            .limit(5)
+        )
+        recharge_result = await self.db.execute(recharge_stmt)
+        recent_recharges = list(recharge_result.scalars().all())
+
+        ride_stmt = (
+            select(RFIDTripRide)
+            .where(RFIDTripRide.passenger_user_id == current_user.id)
+            .order_by(RFIDTripRide.created_at.desc())
+            .limit(5)
+        )
+        ride_result = await self.db.execute(ride_stmt)
+        recent_rides = list(ride_result.scalars().all())
+
+        stop_ids: list[str] = []
+
+        if current_ride is not None:
+            stop_ids.append(current_ride.pickup_stop_id)
+            if current_ride.dropoff_stop_id is not None:
+                stop_ids.append(current_ride.dropoff_stop_id)
+
+        for ride in recent_rides:
+            stop_ids.append(ride.pickup_stop_id)
+            if ride.dropoff_stop_id is not None:
+                stop_ids.append(ride.dropoff_stop_id)
+
+        stops_by_id = await self._get_stops_by_id(stop_ids)
+
+        return {
+            "me": me,
+            "current_ride": None
+            if current_ride is None
+            else self._serialize_passenger_rfid_ride(
+                current_ride,
+                stops_by_id=stops_by_id,
+            ),
+            "recent_ledger_entries": [
+                self._serialize_passenger_rfid_ledger_entry(entry)
+                for entry in recent_ledger_entries
+            ],
+            "recent_recharges": [
+                self._serialize_passenger_rfid_recharge(recharge)
+                for recharge in recent_recharges
+            ],
+            "recent_rides": [
+                self._serialize_passenger_rfid_ride(
+                    ride,
+                    stops_by_id=stops_by_id,
+                )
+                for ride in recent_rides
+            ],
+            "recent_ledger_entry_count": len(recent_ledger_entries),
+            "recent_recharge_count": len(recent_recharges),
+            "recent_ride_count": len(recent_rides),
+        }
+    
     async def get_rfid_me(self, current_user: User) -> dict[str, Any]:
         self.ensure_passenger(current_user)
 

@@ -677,3 +677,15 @@ class PassengerRFIDRechargeMutationResponse(BaseModel):
     message: str
     recharge: PassengerRFIDRechargeResponse
     account: PassengerRFIDAccountResponse
+
+class PassengerRFIDSummaryResponse(BaseModel):
+    me: PassengerRFIDMeResponse
+    current_ride: PassengerRFIDRideResponse | None
+
+    recent_ledger_entries: list[PassengerRFIDLedgerEntryResponse]
+    recent_recharges: list[PassengerRFIDRechargeResponse]
+    recent_rides: list[PassengerRFIDRideResponse]
+
+    recent_ledger_entry_count: int
+    recent_recharge_count: int
+    recent_ride_count: int

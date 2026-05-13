@@ -50,6 +50,7 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeCreateOrderResponse,
     PassengerRFIDRechargeMutationResponse,
     PassengerRFIDRechargeVerifyPaymentRequest,
+    PassengerRFIDSummaryResponse,
 )
 
 from app.passenger.service import PassengerService
@@ -101,6 +102,13 @@ async def upsert_profile_picture(
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
     return await service.upsert_profile_picture(current_user, file)
+
+@router.get("/rfid/summary", response_model=PassengerRFIDSummaryResponse)
+async def get_rfid_summary(
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDSummaryResponse:
+    return await service.get_rfid_summary(current_user)
 
 @router.get("/rfid/me", response_model=PassengerRFIDMeResponse)
 async def get_rfid_me(
