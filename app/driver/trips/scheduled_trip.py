@@ -25,12 +25,12 @@ from app.db.schema import (
     User,
     UserRole,
     TripScanEvent,
+    PlatformSettings,          
+    VehicleVerificationStatus  
 )
 from app.db.schema import ScanType  
 from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
-from geopy.distance import geodesic
-
 
 router = APIRouter(
     prefix="/driver/scheduled-trips",
@@ -74,7 +74,10 @@ async def create_trip(
 
     planned_start_at: datetime = Form(...),
     planned_end_at: datetime = Form(...),
+
+    # ✅ OPTIONAL RFID RESERVED SEATS
     rfid_reserved_seat_count: int | None = Form(None),
+
     session: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
@@ -140,6 +143,18 @@ async def create_trip(
                 "Vehicle is inactive. "
                 "Contact admin and raise a support ticket"
             )
+        )
+
+    # ---------------------------------------------------
+    # VEHICLE VERIFICATION CHECK
+    # ---------------------------------------------------
+    if (
+        vehicle.verification_status
+        != VehicleVerificationStatus.VERIFIED
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Vehicle is not verified"
         )
 
     # ---------------------------------------------------
@@ -213,42 +228,80 @@ async def create_trip(
         )
 
     # ---------------------------------------------------
-    # 6. RFID RESERVED SEAT LOGIC
+    # 6. PLATFORM SETTINGS
     # ---------------------------------------------------
-
-    # ✅ If driver does not provide value
-    # then fallback to vehicle default
-    final_rfid_reserved_seat_count = (
-        rfid_reserved_seat_count
-        if rfid_reserved_seat_count is not None
-        else (
-            vehicle.default_rfid_reserved_seat_count or 0
-        )
+    result = await session.execute(
+        select(PlatformSettings).limit(1)
     )
 
-    # ---------------------------------------------------
-    # VALIDATION
-    # ---------------------------------------------------
-    if final_rfid_reserved_seat_count < 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "RFID reserved seat count "
-                "cannot be negative"
-            )
-        )
+    platform_settings = result.scalar_one_or_none()
 
-    if final_rfid_reserved_seat_count > vehicle.seat_count:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "RFID reserved seat count "
-                "cannot exceed vehicle seat count"
-            )
+    # ✅ fallback
+    allow_driver_rfid_seat_reservation = True
+
+    if platform_settings:
+        allow_driver_rfid_seat_reservation = (
+            platform_settings.allow_driver_rfid_seat_reservation
         )
 
     # ---------------------------------------------------
-    # 7. CREATE TRIP
+    # 7. RFID RESERVED SEAT LOGIC
+    # ---------------------------------------------------
+    # ✅ CASE 1:
+    # Platform allows driver RFID reservation
+    # Driver can choose custom value
+    # ---------------------------------------------------
+    if allow_driver_rfid_seat_reservation:
+
+        final_rfid_reserved_seat_count = (
+            rfid_reserved_seat_count
+            if rfid_reserved_seat_count is not None
+            else 0
+        )
+
+        # -------------------------------
+        # VALIDATION
+        # -------------------------------
+        if final_rfid_reserved_seat_count < 0:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "RFID reserved seat count "
+                    "cannot be negative"
+                )
+            )
+
+        if final_rfid_reserved_seat_count > vehicle.seat_count:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "RFID reserved seat count "
+                    "cannot exceed vehicle seat count"
+                )
+            )
+
+    # ---------------------------------------------------
+    # ✅ CASE 2:
+    # Platform disabled RFID seat reservation
+    # Driver CANNOT choose seat count
+    # Automatically force 0
+    # ---------------------------------------------------
+    else:
+
+        # ❌ Driver trying to send value
+        if rfid_reserved_seat_count is not None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "RFID seat reservation "
+                    "is disabled by platform admin"
+                )
+            )
+
+        final_rfid_reserved_seat_count = 0
+
+    # ---------------------------------------------------
+    # 8. CREATE TRIP
     # ---------------------------------------------------
     trip = ScheduledTrip(
         route_id=route.id,
@@ -282,6 +335,10 @@ async def create_trip(
 
         "rfid_reserved_seat_count": (
             trip.rfid_reserved_seat_count
+        ),
+
+        "allow_driver_rfid_seat_reservation": (
+            allow_driver_rfid_seat_reservation
         ),
 
         "planned_start_at_ist": to_ist(
