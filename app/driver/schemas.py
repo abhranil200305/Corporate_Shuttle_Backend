@@ -30,7 +30,7 @@ class VehicleBase(BaseModel):
     # ✅ ownership
     ownership_type: VehicleOwnershipType | None
     authentication_file_path: str | None
-
+    default_rfid_reserved_seat_count: int
     # ✅ NEW: vehicle images
     front_photo_file_path: Optional[str] = None
     interior_photo_file_path: Optional[str] = None
