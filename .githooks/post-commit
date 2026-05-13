@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+
+set -eu
+
+OWNER="abhranil200305"
+REPO="Corporate_Shuttle_Backend"
+QUERY="import repo:${OWNER}/${REPO}"
+
+echo "Nudging GitHub search index for ${OWNER}/${REPO}..."
+
+if command -v gh >/dev/null 2>&1; then
+  gh api \
+    --method GET /search/code \
+    -f q="$QUERY" \
+    -f per_page=1 \
+    >/dev/null || true
+
+  echo "GitHub search index nudge completed."
+else
+  echo "GitHub CLI not found. Skipping index nudge."
+fi
