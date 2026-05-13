@@ -46,6 +46,10 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeListResponse,
     PassengerRFIDRideDetailResponse,
     PassengerRFIDRideListResponse,
+    PassengerRFIDRechargeCreateOrderRequest,
+    PassengerRFIDRechargeCreateOrderResponse,
+    PassengerRFIDRechargeMutationResponse,
+    PassengerRFIDRechargeVerifyPaymentRequest,
 )
 
 from app.passenger.service import PassengerService
@@ -121,6 +125,38 @@ async def list_rfid_ledger(
         entry_type=entry_type,
     )
 
+@router.post(
+    "/rfid/recharges/create-order",
+    response_model=PassengerRFIDRechargeCreateOrderResponse,
+)
+async def create_rfid_recharge_order(
+    payload: PassengerRFIDRechargeCreateOrderRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRechargeCreateOrderResponse:
+    result = await service.create_rfid_recharge_order(current_user, payload)
+    await service.db.commit()
+    return result
+
+
+@router.post(
+    "/rfid/recharges/{recharge_id}/verify-payment",
+    response_model=PassengerRFIDRechargeMutationResponse,
+)
+async def verify_rfid_recharge_payment(
+    recharge_id: str,
+    payload: PassengerRFIDRechargeVerifyPaymentRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRechargeMutationResponse:
+    result = await service.verify_rfid_recharge_payment(
+        current_user,
+        recharge_id=recharge_id,
+        payload=payload,
+    )
+    await service.db.commit()
+    return result
+
 
 @router.get("/rfid/recharges", response_model=PassengerRFIDRechargeListResponse)
 async def list_rfid_recharges(
@@ -161,6 +197,7 @@ async def get_rfid_ride_detail(
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerRFIDRideDetailResponse:
     return await service.get_rfid_ride_detail(current_user, rfid_ride_id)
+
 
 @router.get("/route-trip-options", response_model=RouteTripDiscoveryResponse)
 async def discover_route_trip_options(

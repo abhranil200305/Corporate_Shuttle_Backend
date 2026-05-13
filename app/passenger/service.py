@@ -43,6 +43,13 @@ from app.db.schema import (
     RFIDLedgerEntry,
     RFIDRecharge,
     RFIDTripRide,
+    RFIDFundingLot,
+    RFIDFundingLotSourceType,
+    RFIDFundingLotStatus,
+    RFIDLedgerEntryType,
+    RFIDRechargeSourceType,
+    RFIDRechargeStatus,
+    new_id,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -53,6 +60,8 @@ from app.passenger.schemas import (
     LegAvailableSeatsRequest,
     PassengerProfileUpsertRequest,
     VerifyBookingPaymentRequest,
+    PassengerRFIDRechargeCreateOrderRequest,
+    PassengerRFIDRechargeVerifyPaymentRequest,
 )
 
 
@@ -1440,6 +1449,217 @@ class PassengerService:
         result = await self.db.execute(stmt)
         stops = list(result.scalars().all())
         return {stop.id: stop for stop in stops}
+    
+    @staticmethod
+    def _get_rfid_razorpay_credentials() -> tuple[str, str]:
+        key_id = os.getenv("RAZORPAY_KEY_ID", "").strip()
+        key_secret = os.getenv("RAZORPAY_KEY_SECRET", "").strip()
+
+        if not key_id or not key_secret:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "razorpay_credentials_missing",
+                    "message": "Razorpay credentials are not configured.",
+                },
+            )
+
+        return key_id, key_secret
+
+    @classmethod
+    def _build_rfid_razorpay_auth_header(cls) -> str:
+        key_id, key_secret = cls._get_rfid_razorpay_credentials()
+        token = base64.b64encode(
+            f"{key_id}:{key_secret}".encode("utf-8")
+        ).decode("ascii")
+        return f"Basic {token}"
+
+    @classmethod
+    async def _rfid_razorpay_request(
+        cls,
+        *,
+        method: str,
+        path: str,
+        json_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        base_url = os.getenv("RAZORPAY_BASE_URL", "https://api.razorpay.com/v1").rstrip(
+            "/"
+        )
+        url = f"{base_url}{path}"
+
+        headers = {
+            "Authorization": cls._build_rfid_razorpay_auth_header(),
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.request(
+                    method,
+                    url,
+                    headers=headers,
+                    json=json_payload,
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "razorpay_request_failed",
+                    "message": "Could not reach Razorpay.",
+                },
+            ) from exc
+
+        try:
+            data = response.json()
+        except ValueError:
+            data = {"raw_response": response.text}
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "razorpay_request_failed",
+                    "message": "Razorpay rejected the request.",
+                    "provider_status_code": response.status_code,
+                    "provider_response": data,
+                },
+            )
+
+        if not isinstance(data, dict):
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "razorpay_response_invalid",
+                    "message": "Razorpay returned an invalid response.",
+                },
+            )
+
+        return data
+
+    @classmethod
+    async def _create_rfid_recharge_razorpay_order(
+        cls,
+        *,
+        amount: Decimal,
+        receipt: str,
+        notes: dict[str, Any],
+    ) -> dict[str, Any]:
+        amount_subunits = cls._to_subunits(amount)
+
+        if amount_subunits < 100:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "rfid_recharge_amount_too_small",
+                    "message": "RFID recharge amount must be at least ₹1.00.",
+                },
+            )
+
+        return await cls._rfid_razorpay_request(
+            method="POST",
+            path="/orders",
+            json_payload={
+                "amount": amount_subunits,
+                "currency": "INR",
+                "receipt": receipt,
+                "payment_capture": 1,
+                "notes": notes,
+            },
+        )
+
+    @classmethod
+    def _verify_rfid_recharge_signature(
+        cls,
+        *,
+        razorpay_order_id: str,
+        razorpay_payment_id: str,
+        razorpay_signature: str,
+    ) -> None:
+        _key_id, key_secret = cls._get_rfid_razorpay_credentials()
+
+        message = f"{razorpay_order_id}|{razorpay_payment_id}".encode("utf-8")
+        expected_signature = hmac.new(
+            key_secret.encode("utf-8"),
+            message,
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(expected_signature, razorpay_signature):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_rfid_recharge_signature",
+                    "message": "RFID recharge payment signature is invalid.",
+                },
+            )
+
+    async def _get_rfid_recharge_for_update_or_404(
+        self,
+        *,
+        recharge_id: str,
+        passenger_user_id: str,
+    ) -> RFIDRecharge:
+        stmt = (
+            select(RFIDRecharge)
+            .where(
+                RFIDRecharge.id == recharge_id,
+                RFIDRecharge.passenger_user_id == passenger_user_id,
+            )
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        recharge = result.scalar_one_or_none()
+
+        if recharge is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_recharge_not_found",
+                    "message": "RFID recharge not found.",
+                },
+            )
+
+        return recharge
+
+    async def _get_rfid_account_for_update_or_404(
+        self,
+        *,
+        card_id: str,
+        passenger_user_id: str,
+    ) -> RFIDCardAccount:
+        card, account, _assignment = await self._get_passenger_rfid_card_account(
+            passenger_user_id=passenger_user_id
+        )
+
+        if card is None or account is None or card.id != card_id:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_card_account_not_found",
+                    "message": "RFID card account not found.",
+                },
+            )
+
+        stmt = (
+            select(RFIDCardAccount)
+            .where(RFIDCardAccount.id == account.id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        locked_account = result.scalar_one_or_none()
+
+        if locked_account is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "rfid_card_account_not_found",
+                    "message": "RFID card account not found.",
+                },
+            )
+
+        return locked_account
 
     # ------------------------------------------------------------------
     # profile
@@ -1682,6 +1902,247 @@ class PassengerService:
                 for entry in entries
             ],
             "count": int(count_result.scalar_one() or 0),
+        }
+
+    async def create_rfid_recharge_order(
+        self,
+        current_user: User,
+        payload: PassengerRFIDRechargeCreateOrderRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        recharge_amount = self._quantize_money(payload.amount)
+
+        if recharge_amount <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "non_positive_rfid_recharge_amount",
+                    "message": "RFID recharge amount must be greater than zero.",
+                },
+            )
+
+        card, account, _assignment = await self._get_passenger_rfid_card_account(
+            passenger_user_id=current_user.id
+        )
+
+        if card is None or account is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_assigned",
+                    "message": "No RFID card is assigned to this passenger.",
+                },
+            )
+
+        if not account.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_account_inactive",
+                    "message": "RFID account is inactive.",
+                },
+            )
+
+        if card.authorization_status != "allowed":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_allowed",
+                    "message": "RFID card is not allowed for recharge.",
+                },
+            )
+
+        recharge = RFIDRecharge(
+            id=new_id(),
+            account_id=account.id,
+            card_id=card.id,
+            passenger_user_id=current_user.id,
+            amount=recharge_amount,
+            status=RFIDRechargeStatus.CREATED,
+            source_type=RFIDRechargeSourceType.RAZORPAY_USER_RECHARGE,
+            created_by_admin_id=None,
+        )
+
+        self.db.add(recharge)
+        await self.db.flush()
+
+        receipt = f"rfid_recharge_{recharge.id[:24]}"
+
+        payment_order = await self._create_rfid_recharge_razorpay_order(
+            amount=recharge_amount,
+            receipt=receipt,
+            notes={
+                "purpose": "rfid_recharge",
+                "rfid_recharge_id": recharge.id,
+                "rfid_account_id": account.id,
+                "rfid_card_id": card.id,
+                "passenger_user_id": current_user.id,
+            },
+        )
+
+        razorpay_order_id = payment_order.get("id")
+
+        if not razorpay_order_id:
+            recharge.status = RFIDRechargeStatus.FAILED
+            recharge.provider_payload_json = json.dumps(
+                payment_order,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+
+            self.db.add(recharge)
+            await self.db.flush()
+
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "razorpay_order_id_missing",
+                    "message": "Razorpay did not return an order id.",
+                    "provider_response": payment_order,
+                },
+            )
+
+        recharge.razorpay_order_id = razorpay_order_id
+        recharge.razorpay_amount = recharge_amount
+        recharge.provider_payload_json = json.dumps(
+            payment_order,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            default=str,
+        )
+
+        self.db.add(recharge)
+        await self.db.flush()
+
+        return {
+            "message": "RFID recharge order created.",
+            "recharge": self._serialize_passenger_rfid_recharge(recharge),
+            "payment_order": payment_order,
+        }
+
+    async def verify_rfid_recharge_payment(
+        self,
+        current_user: User,
+        *,
+        recharge_id: str,
+        payload: PassengerRFIDRechargeVerifyPaymentRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        recharge = await self._get_rfid_recharge_for_update_or_404(
+            recharge_id=recharge_id,
+            passenger_user_id=current_user.id,
+        )
+
+        if recharge.status == RFIDRechargeStatus.CREDITED:
+            account = await self._get_rfid_account_for_update_or_404(
+                card_id=recharge.card_id,
+                passenger_user_id=current_user.id,
+            )
+
+            return {
+                "message": "RFID recharge was already credited.",
+                "recharge": self._serialize_passenger_rfid_recharge(recharge),
+                "account": self._serialize_passenger_rfid_account(account),
+            }
+
+        if recharge.status not in {
+            RFIDRechargeStatus.CREATED,
+            RFIDRechargeStatus.PAID,
+        }:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_recharge_not_payable",
+                    "message": "RFID recharge is not in a payable state.",
+                    "status": recharge.status.value,
+                },
+            )
+
+        if recharge.razorpay_order_id != payload.razorpay_order_id:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_recharge_order_mismatch",
+                    "message": "Payment order does not match this RFID recharge.",
+                },
+            )
+
+        self._verify_rfid_recharge_signature(
+            razorpay_order_id=payload.razorpay_order_id,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            razorpay_signature=payload.razorpay_signature,
+        )
+
+        account = await self._get_rfid_account_for_update_or_404(
+            card_id=recharge.card_id,
+            passenger_user_id=current_user.id,
+        )
+
+        now = utcnow()
+        recharge_amount = self._quantize_money(Decimal(recharge.amount or 0))
+        current_balance_before = self._quantize_money(
+            Decimal(account.current_balance or 0)
+        )
+        held_balance = self._quantize_money(Decimal(account.held_balance or 0))
+        current_balance_after = self._quantize_money(
+            current_balance_before + recharge_amount
+        )
+
+        account.current_balance = current_balance_after
+
+        recharge.status = RFIDRechargeStatus.CREDITED
+        recharge.razorpay_payment_id = payload.razorpay_payment_id
+        recharge.razorpay_signature = payload.razorpay_signature
+        recharge.razorpay_status = "paid"
+        recharge.razorpay_amount = recharge_amount
+        recharge.paid_at = recharge.paid_at or now
+        recharge.credited_at = recharge.credited_at or now
+
+        funding_lot = RFIDFundingLot(
+            id=new_id(),
+            recharge_id=recharge.id,
+            account_id=account.id,
+            card_id=recharge.card_id,
+            source_amount=recharge_amount,
+            remaining_amount=recharge_amount,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            source_type=RFIDFundingLotSourceType.RAZORPAY_PAYMENT,
+            status=RFIDFundingLotStatus.AVAILABLE,
+        )
+
+        ledger_entry = RFIDLedgerEntry(
+            id=new_id(),
+            account_id=account.id,
+            card_id=recharge.card_id,
+            passenger_user_id=current_user.id,
+            entry_type=RFIDLedgerEntryType.RECHARGE_CREDIT,
+            amount_delta=recharge_amount,
+            held_delta=Decimal("0.00"),
+            balance_after=current_balance_after,
+            held_balance_after=held_balance,
+            source_recharge_id=recharge.id,
+            razorpay_order_id=payload.razorpay_order_id,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            note="RFID wallet recharge credited.",
+            created_at=now,
+        )
+
+        recharge.credited_ledger_entry_id = ledger_entry.id
+
+        self.db.add(account)
+        self.db.add(recharge)
+        self.db.add(funding_lot)
+        self.db.add(ledger_entry)
+
+        await self.db.flush()
+
+        return {
+            "message": "RFID recharge credited successfully.",
+            "recharge": self._serialize_passenger_rfid_recharge(recharge),
+            "account": self._serialize_passenger_rfid_account(account),
         }
 
     async def list_rfid_recharges(

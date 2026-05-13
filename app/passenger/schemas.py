@@ -656,3 +656,24 @@ class PassengerRFIDRideDetailResponse(BaseModel):
     ride: PassengerRFIDRideResponse
     ledger_entries: list[PassengerRFIDLedgerEntryResponse]
     recharges: list[PassengerRFIDRechargeResponse]
+
+class PassengerRFIDRechargeCreateOrderRequest(BaseModel):
+    amount: Decimal = Field(..., gt=Decimal("0.00"))
+
+
+class PassengerRFIDRechargeCreateOrderResponse(BaseModel):
+    message: str
+    recharge: PassengerRFIDRechargeResponse
+    payment_order: dict[str, Any]
+
+
+class PassengerRFIDRechargeVerifyPaymentRequest(BaseModel):
+    razorpay_order_id: str = Field(..., min_length=1, max_length=64)
+    razorpay_payment_id: str = Field(..., min_length=1, max_length=64)
+    razorpay_signature: str = Field(..., min_length=1, max_length=255)
+
+
+class PassengerRFIDRechargeMutationResponse(BaseModel):
+    message: str
+    recharge: PassengerRFIDRechargeResponse
+    account: PassengerRFIDAccountResponse
