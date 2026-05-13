@@ -51,6 +51,7 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeMutationResponse,
     PassengerRFIDRechargeVerifyPaymentRequest,
     PassengerRFIDSummaryResponse,
+    PassengerRFIDRouteTripDiscoveryResponse,
 )
 
 from app.passenger.service import PassengerService
@@ -216,6 +217,26 @@ async def discover_route_trip_options(
     service: PassengerService = Depends(get_passenger_service),
 ) -> RouteTripDiscoveryResponse:
     return await service.discover_route_trip_options(
+        from_stop_id=from_stop_id,
+        to_stop_id=to_stop_id,
+        from_time=from_time,
+        to_time=to_time,
+    )
+
+@router.get(
+    "/rfid/route-trip-options",
+    response_model=PassengerRFIDRouteTripDiscoveryResponse,
+)
+async def discover_rfid_route_trip_options(
+    from_stop_id: str = Query(..., min_length=1, max_length=36),
+    to_stop_id: str = Query(..., min_length=1, max_length=36),
+    from_time: datetime | None = Query(default=None),
+    to_time: datetime | None = Query(default=None),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerRFIDRouteTripDiscoveryResponse:
+    return await service.discover_rfid_route_trip_options(
+        current_user,
         from_stop_id=from_stop_id,
         to_stop_id=to_stop_id,
         from_time=from_time,

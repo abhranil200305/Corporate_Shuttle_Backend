@@ -50,6 +50,9 @@ from app.db.schema import (
     RFIDRechargeSourceType,
     RFIDRechargeStatus,
     new_id,
+    RFIDCardAuthorizationStatus,
+    RFIDCardInventoryStatus,
+    RFIDRideStatus,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -1661,6 +1664,156 @@ class PassengerService:
 
         return locked_account
 
+    async def _ensure_active_passenger_rfid_card_account(
+        self,
+        current_user: User,
+    ) -> tuple[RFIDCard, RFIDCardAccount, RFIDCardAssignment]:
+        card, account, assignment = await self._get_passenger_rfid_card_account(
+            passenger_user_id=current_user.id
+        )
+
+        if card is None or account is None or assignment is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_assigned",
+                    "message": "No active RFID card is assigned to this passenger.",
+                },
+            )
+
+        if card.inventory_status != RFIDCardInventoryStatus.ASSIGNED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_assigned",
+                    "message": "RFID card is not currently assigned.",
+                },
+            )
+
+        if card.authorization_status != RFIDCardAuthorizationStatus.ALLOWED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_card_not_allowed",
+                    "message": "RFID card is not allowed.",
+                },
+            )
+
+        if not account.is_active:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_account_inactive",
+                    "message": "RFID account is inactive.",
+                },
+            )
+
+        return card, account, assignment
+
+    @staticmethod
+    def _get_loaded_active_trip_event(
+        trip: ScheduledTrip,
+    ) -> TripEvent | None:
+        active_events = [
+            event
+            for event in trip.trip_events
+            if event.arrival_time is not None and event.departure_time is None
+        ]
+
+        active_events.sort(
+            key=lambda event: event.arrival_time,
+            reverse=True,
+        )
+
+        return active_events[0] if active_events else None
+
+    @staticmethod
+    def _get_loaded_route_stop_by_stop_id(
+        trip: ScheduledTrip,
+        stop_id: str,
+    ) -> RouteStop | None:
+        if trip.route is None:
+            return None
+
+        for route_stop in trip.route.route_stops:
+            if route_stop.stop_id == stop_id:
+                return route_stop
+
+        return None
+
+    async def _get_rfid_max_downstream_fare_from_stop(
+        self,
+        *,
+        route_id: str,
+        pickup_stop_id: str,
+        pickup_sequence_no: int,
+    ) -> Decimal | None:
+        stmt = (
+            select(func.max(RouteFare.amount))
+            .join(
+                RouteStop,
+                (RouteStop.route_id == RouteFare.route_id)
+                & (RouteStop.stop_id == RouteFare.dropoff_stop_id),
+            )
+            .where(
+                RouteFare.route_id == route_id,
+                RouteFare.pickup_stop_id == pickup_stop_id,
+                RouteFare.is_active.is_(True),
+                RouteStop.sequence_no > pickup_sequence_no,
+            )
+        )
+
+        result = await self.db.execute(stmt)
+        amount = result.scalar_one_or_none()
+
+        if amount is None:
+            return None
+
+        return self._quantize_money(Decimal(amount))
+
+    async def _count_open_rfid_rides_overlapping_leg(
+        self,
+        *,
+        scheduled_trip_id: str,
+        dropoff_sequence_no: int,
+    ) -> int:
+        stmt = (
+            select(func.count(RFIDTripRide.id))
+            .where(
+                RFIDTripRide.scheduled_trip_id == scheduled_trip_id,
+                RFIDTripRide.status == RFIDRideStatus.BOARDED,
+                RFIDTripRide.pickup_sequence_no < dropoff_sequence_no,
+            )
+        )
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one() or 0)
+
+    async def _has_open_rfid_ride_for_card_on_trip(
+        self,
+        *,
+        card_id: str,
+        scheduled_trip_id: str,
+    ) -> bool:
+        stmt = (
+            select(func.count(RFIDTripRide.id))
+            .where(
+                RFIDTripRide.card_id == card_id,
+                RFIDTripRide.scheduled_trip_id == scheduled_trip_id,
+                RFIDTripRide.status == RFIDRideStatus.BOARDED,
+            )
+        )
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one() or 0) > 0
+
+    @staticmethod
+    def _get_rfid_reserved_capacity_for_trip(
+        trip: ScheduledTrip,
+    ) -> int:
+        if trip.vehicle is not None:
+            return max(int(trip.vehicle.default_rfid_reserved_seat_count or 0), 0)
+
+        return max(int(getattr(trip, "rfid_reserved_seat_count", 0) or 0), 0)
+
     # ------------------------------------------------------------------
     # profile
     # ------------------------------------------------------------------
@@ -2548,6 +2701,255 @@ class PassengerService:
             "to_time": normalized_to_time,
             "items": items,
             "count": len(items),
+        }
+
+    async def discover_rfid_route_trip_options(
+        self,
+        current_user: User,
+        *,
+        from_stop_id: str,
+        to_stop_id: str,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        card, account, _assignment = (
+            await self._ensure_active_passenger_rfid_card_account(current_user)
+        )
+
+        available_balance = self._available_rfid_balance(account)
+
+        base_response = await self.discover_route_trip_options(
+            from_stop_id=from_stop_id,
+            to_stop_id=to_stop_id,
+            from_time=from_time,
+            to_time=to_time,
+        )
+
+        base_items = list(base_response.get("items", []))
+
+        if not base_items:
+            return {
+                "from_stop_id": from_stop_id,
+                "to_stop_id": to_stop_id,
+                "from_time": from_time,
+                "to_time": to_time,
+                "has_active_rfid": True,
+                "rfid_card_id": card.id,
+                "rfid_account_id": account.id,
+                "rfid_available_balance": available_balance,
+                "items": [],
+                "count": 0,
+            }
+
+        options_by_route_id: dict[str, dict[str, Any]] = {}
+
+        for option in base_items:
+            route_id = option["route"]["id"]
+            option["rfid_in_progress_trips"] = []
+            option["rfid_in_progress_trip_count"] = 0
+            options_by_route_id[route_id] = option
+
+        route_ids = list(options_by_route_id.keys())
+
+        trip_stmt = (
+            select(ScheduledTrip)
+            .where(
+                ScheduledTrip.route_id.in_(route_ids),
+                ScheduledTrip.status == ScheduledTripStatus.IN_PROGRESS,
+            )
+            .options(
+                selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+                selectinload(ScheduledTrip.vehicle),
+                selectinload(ScheduledTrip.driver),
+                selectinload(ScheduledTrip.trip_events).selectinload(TripEvent.stop),
+            )
+            .order_by(ScheduledTrip.planned_start_at.asc())
+        )
+
+        if from_time is not None:
+            trip_stmt = trip_stmt.where(ScheduledTrip.planned_end_at >= from_time)
+
+        if to_time is not None:
+            trip_stmt = trip_stmt.where(ScheduledTrip.planned_start_at <= to_time)
+
+        trip_result = await self.db.execute(trip_stmt)
+        in_progress_trips = list(trip_result.scalars().unique().all())
+
+        for trip in in_progress_trips:
+            option = options_by_route_id.get(trip.route_id)
+
+            if option is None:
+                continue
+
+            pickup_sequence_no = int(option["pickup_sequence_no"])
+            dropoff_sequence_no = int(option["dropoff_sequence_no"])
+
+            active_event = self._get_loaded_active_trip_event(trip)
+
+            if active_event is None:
+                continue
+
+            active_route_stop = self._get_loaded_route_stop_by_stop_id(
+                trip,
+                active_event.stop_id,
+            )
+
+            if active_route_stop is None:
+                continue
+
+            current_sequence_no = int(active_route_stop.sequence_no)
+
+            if current_sequence_no > pickup_sequence_no:
+                continue
+
+            pickup_route_stop = self._get_loaded_route_stop_by_stop_id(
+                trip,
+                from_stop_id,
+            )
+            dropoff_route_stop = self._get_loaded_route_stop_by_stop_id(
+                trip,
+                to_stop_id,
+            )
+
+            if pickup_route_stop is None or dropoff_route_stop is None:
+                continue
+
+            if not pickup_route_stop.boarding_allowed:
+                continue
+
+            if not dropoff_route_stop.deboarding_allowed:
+                continue
+
+            reserved_capacity = self._get_rfid_reserved_capacity_for_trip(trip)
+
+            occupied_count = await self._count_open_rfid_rides_overlapping_leg(
+                scheduled_trip_id=trip.id,
+                dropoff_sequence_no=dropoff_sequence_no,
+            )
+
+            available_seat_count = max(reserved_capacity - occupied_count, 0)
+            seat_available = available_seat_count > 0
+
+            required_hold_amount = await self._get_rfid_max_downstream_fare_from_stop(
+                route_id=trip.route_id,
+                pickup_stop_id=from_stop_id,
+                pickup_sequence_no=pickup_sequence_no,
+            )
+
+            selected_fare_amount = self._quantize_money(
+                Decimal(option["fare_amount"] or 0)
+            )
+
+            if required_hold_amount is None:
+                balance_shortfall = Decimal("0.00")
+                balance_sufficient = False
+            else:
+                balance_shortfall = self._quantize_money(
+                    max(required_hold_amount - available_balance, Decimal("0.00"))
+                )
+                balance_sufficient = available_balance >= required_hold_amount
+
+            already_boarded_on_trip = await self._has_open_rfid_ride_for_card_on_trip(
+                card_id=card.id,
+                scheduled_trip_id=trip.id,
+            )
+
+            unavailable_reason = None
+
+            if already_boarded_on_trip:
+                unavailable_reason = "already_boarded_on_trip"
+            elif reserved_capacity <= 0:
+                unavailable_reason = "rfid_seat_pool_not_configured"
+            elif not seat_available:
+                unavailable_reason = "rfid_seat_pool_full"
+            elif required_hold_amount is None:
+                unavailable_reason = "rfid_downstream_fare_not_configured"
+            elif not balance_sufficient:
+                unavailable_reason = "rfid_insufficient_balance_for_max_route_fare"
+
+            rfid_can_avail = unavailable_reason is None
+            rfid_can_board_now = (
+                rfid_can_avail and current_sequence_no == pickup_sequence_no
+            )
+
+            vehicle_payload = None
+            if trip.vehicle is not None:
+                vehicle_payload = {
+                    "id": trip.vehicle.id,
+                    "registration_number": trip.vehicle.registration_number,
+                    "vehicle_name": trip.vehicle.vehicle_name,
+                    "vehicle_model": trip.vehicle.vehicle_model,
+                    "color": trip.vehicle.color,
+                    "seat_count": trip.vehicle.seat_count,
+                    "rfid_reserved_seat_count": reserved_capacity,
+                    "app_bookable_seat_count": self._get_app_bookable_capacity(trip),
+                    "has_ac": trip.vehicle.has_ac,
+                }
+
+            driver_payload = None
+            if trip.driver is not None:
+                driver_payload = {
+                    "id": trip.driver.id,
+                    "email": trip.driver.email,
+                }
+
+            current_stop = active_event.stop or active_route_stop.stop
+
+            option["rfid_in_progress_trips"].append(
+                {
+                    "scheduled_trip_id": trip.id,
+                    "route_id": trip.route_id,
+                    "status": trip.status,
+                    "planned_start_at": trip.planned_start_at,
+                    "planned_end_at": trip.planned_end_at,
+                    "actual_start_at": trip.actual_start_at,
+                    "actual_end_at": trip.actual_end_at,
+                    "pickup_stop": option["pickup_stop"],
+                    "dropoff_stop": option["dropoff_stop"],
+                    "current_stop": None
+                    if current_stop is None
+                    else self._serialize_stop_brief(current_stop),
+                    "pickup_sequence_no": pickup_sequence_no,
+                    "dropoff_sequence_no": dropoff_sequence_no,
+                    "current_sequence_no": current_sequence_no,
+                    "selected_fare_amount": selected_fare_amount,
+                    "required_hold_amount": required_hold_amount,
+                    "available_balance": available_balance,
+                    "balance_shortfall": balance_shortfall,
+                    "minimum_recharge_amount": balance_shortfall,
+                    "rfid_reserved_seat_count": reserved_capacity,
+                    "rfid_occupied_seat_count": occupied_count,
+                    "rfid_available_seat_count": available_seat_count,
+                    "rfid_seat_available": seat_available,
+                    "rfid_balance_sufficient": balance_sufficient,
+                    "rfid_can_avail": rfid_can_avail,
+                    "rfid_can_board_now": rfid_can_board_now,
+                    "rfid_unavailable_reason": unavailable_reason,
+                    "vehicle": vehicle_payload,
+                    "driver": driver_payload,
+                }
+            )
+
+        for option in base_items:
+            option["rfid_in_progress_trip_count"] = len(
+                option["rfid_in_progress_trips"]
+            )
+
+        return {
+            "from_stop_id": from_stop_id,
+            "to_stop_id": to_stop_id,
+            "from_time": from_time,
+            "to_time": to_time,
+            "has_active_rfid": True,
+            "rfid_card_id": card.id,
+            "rfid_account_id": account.id,
+            "rfid_available_balance": available_balance,
+            "items": base_items,
+            "count": len(base_items),
         }
 
     async def list_stops(self, *, active_only: bool = True) -> dict[str, Any]:

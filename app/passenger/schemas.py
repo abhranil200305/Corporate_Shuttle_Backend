@@ -689,3 +689,70 @@ class PassengerRFIDSummaryResponse(BaseModel):
     recent_ledger_entry_count: int
     recent_recharge_count: int
     recent_ride_count: int
+
+class PassengerRFIDInProgressTripResponse(BaseModel):
+    scheduled_trip_id: str
+    route_id: str
+    status: str
+
+    planned_start_at: datetime
+    planned_end_at: datetime
+    actual_start_at: datetime | None
+    actual_end_at: datetime | None
+
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    current_stop: StopBriefResponse | None
+
+    pickup_sequence_no: int
+    dropoff_sequence_no: int
+    current_sequence_no: int | None
+
+    selected_fare_amount: Decimal
+    required_hold_amount: Decimal | None
+
+    available_balance: Decimal
+    balance_shortfall: Decimal
+    minimum_recharge_amount: Decimal
+
+    rfid_reserved_seat_count: int
+    rfid_occupied_seat_count: int
+    rfid_available_seat_count: int
+
+    rfid_seat_available: bool
+    rfid_balance_sufficient: bool
+    rfid_can_avail: bool
+    rfid_can_board_now: bool
+    rfid_unavailable_reason: str | None
+
+    vehicle: VehicleBriefResponse | None
+    driver: DriverBriefResponse | None
+
+
+class PassengerRFIDRouteTripDiscoveryOptionResponse(BaseModel):
+    route: RouteResponse
+    pickup_stop: StopBriefResponse
+    dropoff_stop: StopBriefResponse
+    pickup_sequence_no: int
+    dropoff_sequence_no: int
+    fare_amount: Decimal
+
+    upcoming_scheduled_trips: list[RouteTripDiscoveryTripResponse]
+    upcoming_scheduled_trip_count: int
+
+    rfid_in_progress_trips: list[PassengerRFIDInProgressTripResponse]
+    rfid_in_progress_trip_count: int
+
+class PassengerRFIDRouteTripDiscoveryResponse(BaseModel):
+    from_stop_id: str
+    to_stop_id: str
+    from_time: datetime | None
+    to_time: datetime | None
+
+    has_active_rfid: bool
+    rfid_card_id: str
+    rfid_account_id: str
+    rfid_available_balance: Decimal
+
+    items: list[PassengerRFIDRouteTripDiscoveryOptionResponse]
+    count: int
