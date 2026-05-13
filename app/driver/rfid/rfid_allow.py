@@ -6,9 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_db
 from app.db.schema import PlatformSettings
-from app.driver.rfid.schemas import (
-    DriverRFIDReservationSettingResponse,
-)
+from app.driver.rfid.schemas import DriverRFIDReservationSettingResponse
 
 router = APIRouter(
     prefix="/driver/rfid",
@@ -23,16 +21,18 @@ router = APIRouter(
 async def get_driver_rfid_seat_reservation_setting(
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(PlatformSettings).limit(1)
+    # ✅ Correct: always fetch the canonical settings row
+    stmt = select(PlatformSettings).where(
+        PlatformSettings.settings_key == "default"
+    )
 
     result = await db.execute(stmt)
-
     settings = result.scalar_one_or_none()
 
-    # fallback if settings row not created
+    # ✅ Correct fallback: system default is TRUE
     if not settings:
         return DriverRFIDReservationSettingResponse(
-            allow_driver_rfid_seat_reservation=False
+            allow_driver_rfid_seat_reservation=True
         )
 
     return DriverRFIDReservationSettingResponse(

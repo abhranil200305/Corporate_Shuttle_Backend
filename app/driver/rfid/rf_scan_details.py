@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.dependencies import get_current_active_user, get_db
@@ -68,13 +68,14 @@ async def get_driver_rfid_scan_details(
 
     pickup_stop = schema.Stop.__table__.alias("pickup_stop")
     dropoff_stop = schema.Stop.__table__.alias("dropoff_stop")
+    matched_stop = schema.Stop.__table__.alias("matched_stop")
 
     # ============================================================
     # total count
     # ============================================================
 
     count_stmt = (
-        select(schema.RFIDScanEvent.id)
+        select(func.count(schema.RFIDScanEvent.id))
         .where(
             schema.RFIDScanEvent.scheduled_trip_id == scheduled_trip_id,
             schema.RFIDScanEvent.driver_user_id == current_user.id,
@@ -83,7 +84,7 @@ async def get_driver_rfid_scan_details(
     )
 
     count_result = await db.execute(count_stmt)
-    total_count = len(count_result.scalars().all())
+    total_count = int(count_result.scalar_one() or 0)
 
     # ============================================================
     # main query
@@ -92,15 +93,19 @@ async def get_driver_rfid_scan_details(
     stmt = (
         select(
             schema.RFIDScanEvent.id.label("scan_event_id"),
+
             schema.RFIDScanEvent.scan_type,
             schema.RFIDScanEvent.created_at,
             schema.RFIDScanEvent.accepted,
             schema.RFIDScanEvent.rejection_reason,
 
-            schema.PassengerProfile.full_name.label("passenger_name"),
+            schema.PassengerProfile.full_name.label(
+                "passenger_name"
+            ),
 
-            pickup_stop.c.name.label("board_stop_name"),
-            dropoff_stop.c.name.label("drop_stop_name"),
+            pickup_stop.c.name.label("pickup_stop_name"),
+            dropoff_stop.c.name.label("dropoff_stop_name"),
+            matched_stop.c.name.label("matched_stop_name"),
 
             schema.Route.name.label("route_name"),
 
@@ -110,38 +115,84 @@ async def get_driver_rfid_scan_details(
             schema.RFIDScanEvent.distance_from_stop_meters,
             schema.RFIDScanEvent.within_radius,
         )
+
+        # --------------------------------------------------------
+        # passenger
+        # --------------------------------------------------------
+
         .join(
             schema.PassengerProfile,
             schema.PassengerProfile.user_id
             == schema.RFIDScanEvent.passenger_user_id,
         )
+
+        # --------------------------------------------------------
+        # RFID ride
+        # --------------------------------------------------------
+
         .outerjoin(
-            schema.TripBooking,
-            (
-                (schema.TripBooking.passenger_user_id
-                 == schema.RFIDScanEvent.passenger_user_id)
-                &
-                (schema.TripBooking.scheduled_trip_id
-                 == schema.RFIDScanEvent.scheduled_trip_id)
-            ),
+            schema.RFIDTripRide,
+            schema.RFIDTripRide.id
+            == schema.RFIDScanEvent.rfid_ride_id,
         )
+
+        # --------------------------------------------------------
+        # pickup stop
+        # --------------------------------------------------------
+
         .outerjoin(
             pickup_stop,
-            pickup_stop.c.id == schema.TripBooking.pickup_stop_id,
+            pickup_stop.c.id
+            == schema.RFIDTripRide.pickup_stop_id,
         )
+
+        # --------------------------------------------------------
+        # dropoff stop
+        # --------------------------------------------------------
+
         .outerjoin(
             dropoff_stop,
-            dropoff_stop.c.id == schema.TripBooking.dropoff_stop_id,
+            dropoff_stop.c.id
+            == schema.RFIDTripRide.dropoff_stop_id,
         )
+
+        # --------------------------------------------------------
+        # matched stop from scan event
+        # --------------------------------------------------------
+
+        .outerjoin(
+            matched_stop,
+            matched_stop.c.id
+            == schema.RFIDScanEvent.matched_stop_id,
+        )
+
+        # --------------------------------------------------------
+        # route
+        # --------------------------------------------------------
+
         .outerjoin(
             schema.Route,
             schema.Route.id == schema.RFIDScanEvent.route_id,
         )
+
+        # --------------------------------------------------------
+        # filters
+        # --------------------------------------------------------
+
         .where(
-            schema.RFIDScanEvent.scheduled_trip_id == scheduled_trip_id,
-            schema.RFIDScanEvent.driver_user_id == current_user.id,
+            schema.RFIDScanEvent.scheduled_trip_id
+            == scheduled_trip_id,
+
+            schema.RFIDScanEvent.driver_user_id
+            == current_user.id,
+
             schema.RFIDScanEvent.accepted.is_(True),
         )
+
+        # --------------------------------------------------------
+        # ordering + pagination
+        # --------------------------------------------------------
+
         .order_by(desc(schema.RFIDScanEvent.created_at))
         .offset((page - 1) * page_size)
         .limit(page_size)
@@ -157,34 +208,68 @@ async def get_driver_rfid_scan_details(
     items: list[dict[str, Any]] = []
 
     for row in rows:
+
+        board_stop_name = None
+        drop_stop_name = None
+
+        # --------------------------------------------------------
+        # derive stop names from RFID ride + scan event
+        # --------------------------------------------------------
+
+        if row.scan_type == schema.RFIDScanType.BOARD:
+
+            board_stop_name = (
+                row.pickup_stop_name
+                or row.matched_stop_name
+            )
+
+        elif row.scan_type == schema.RFIDScanType.DROP:
+
+            drop_stop_name = (
+                row.dropoff_stop_name
+                or row.matched_stop_name
+            )
+
         items.append(
             {
                 "scan_event_id": row.scan_event_id,
-                "scan_type": row.scan_type.value
-                if row.scan_type
-                else None,
+
+                "scan_type": (
+                    row.scan_type.value
+                    if row.scan_type
+                    else None
+                ),
+
                 "passenger_name": row.passenger_name,
-                "board_stop_name": row.board_stop_name,
-                "drop_stop_name": row.drop_stop_name,
+
+                "board_stop_name": board_stop_name,
+                "drop_stop_name": drop_stop_name,
+
                 "route_name": row.route_name,
+
                 "accepted": row.accepted,
                 "rejection_reason": row.rejection_reason,
+
                 "scan_lat": (
                     float(row.scan_lat)
                     if row.scan_lat is not None
                     else None
                 ),
+
                 "scan_lng": (
                     float(row.scan_lng)
                     if row.scan_lng is not None
                     else None
                 ),
+
                 "distance_from_stop_meters": (
                     float(row.distance_from_stop_meters)
                     if row.distance_from_stop_meters is not None
                     else None
                 ),
+
                 "within_radius": row.within_radius,
+
                 "scanned_at": (
                     row.created_at.isoformat()
                     if isinstance(row.created_at, datetime)

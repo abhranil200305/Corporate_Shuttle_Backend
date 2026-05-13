@@ -28,6 +28,7 @@ from app.db.schema import (
     PlatformSettings,          
     VehicleVerificationStatus  
 )
+from app.db.schema import RFIDTripRide
 from app.db.schema import ScanType  
 from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
@@ -794,6 +795,10 @@ async def stop_action(
 # END TRIP (WITH GEO + PASSENGER + STOP VALIDATION)
 # ============================================================
 
+# ============================================================
+# END TRIP (WITH GEO + PASSENGER + RFID VALIDATION)
+# ============================================================
+
 @router.post("/{trip_id}/end")
 async def end_trip(
     trip_id: str,
@@ -823,42 +828,115 @@ async def end_trip(
             TripEvent.scheduled_trip_id == trip_id
         )
     )
+
     trip_events = result.scalars().all()
 
     incomplete_stops = [
-        e.stop_id for e in trip_events
-        if e.arrival_time is None or e.departure_time is None
+        e.stop_id
+        for e in trip_events
+        if e.arrival_time is None
+        or e.departure_time is None
     ]
 
     if incomplete_stops:
         raise HTTPException(
             400,
-            f"Stops incomplete: {len(incomplete_stops)} stop(s) missing arrival/departure"
+            (
+                f"Stops incomplete: "
+                f"{len(incomplete_stops)} stop(s) "
+                f"missing arrival/departure"
+            )
         )
 
-    # =========================
-    # CHECK PASSENGERS
-    # =========================
+    # =====================================================
+    # NORMAL BOOKED PASSENGER CHECK
+    # =====================================================
     boarded_result = await session.execute(
-        select(func.count()).select_from(TripScanEvent).where(
+        select(func.count())
+        .select_from(TripScanEvent)
+        .where(
             TripScanEvent.scheduled_trip_id == trip_id,
             TripScanEvent.scan_type == ScanType.BOARD
         )
     )
+
     boarded_count = boarded_result.scalar() or 0
 
     dropped_result = await session.execute(
-        select(func.count()).select_from(TripScanEvent).where(
+        select(func.count())
+        .select_from(TripScanEvent)
+        .where(
             TripScanEvent.scheduled_trip_id == trip_id,
             TripScanEvent.scan_type == ScanType.DROP
         )
     )
+
     dropped_count = dropped_result.scalar() or 0
 
-    if boarded_count > dropped_count:
+    remaining_normal_passengers = (
+        boarded_count - dropped_count
+    )
+
+    if remaining_normal_passengers > 0:
         raise HTTPException(
             400,
-            f"{boarded_count - dropped_count} passenger(s) still inside bus"
+            (
+                f"{remaining_normal_passengers} "
+                f"normal passenger(s) still inside bus"
+            )
+        )
+
+    # =====================================================
+    # RFID PASSENGER CHECK
+    # =====================================================
+    #
+    # Prevent trip end if:
+    #
+    # - RFID passenger still boarded
+    # - RFID DROP scan missing
+    # - RFID ride not completed
+    #
+    # This prevents:
+    #
+    # - open RFID rides
+    # - stuck held balances
+    # - payout settlement mismatch
+    # - unfinished wallet deductions
+    #
+    # =====================================================
+
+    rfid_active_rides_result = await session.execute(
+        select(RFIDTripRide).where(
+            RFIDTripRide.scheduled_trip_id == trip_id,
+
+            (
+                (RFIDTripRide.completed_at.is_(None))
+                |
+                (RFIDTripRide.drop_scanned_at.is_(None))
+            )
+        )
+    )
+
+    active_rfid_rides = (
+        rfid_active_rides_result.scalars().all()
+    )
+
+    active_rfid_count = len(active_rfid_rides)
+
+    if active_rfid_count > 0:
+
+        active_rfid_ride_ids = [
+            ride.id
+            for ride in active_rfid_rides
+        ]
+
+        raise HTTPException(
+            400,
+            (
+                f"{active_rfid_count} RFID passenger(s) "
+                f"still active inside bus. "
+                f"DROP scan pending."
+            )
         )
 
     # =========================
@@ -867,7 +945,11 @@ async def end_trip(
     if current_time < trip.planned_end_at:
         raise HTTPException(
             400,
-            f"Too early to end trip. Planned end at {to_ist(trip.planned_end_at)}"
+            (
+                "Too early to end trip. "
+                f"Planned end at "
+                f"{to_ist(trip.planned_end_at)}"
+            )
         )
 
     # =========================
@@ -875,35 +957,62 @@ async def end_trip(
     # =========================
     result = await session.execute(
         select(RouteStop)
-        .where(RouteStop.route_id == trip.route_id)
-        .order_by(RouteStop.sequence_no.desc())
+        .where(
+            RouteStop.route_id == trip.route_id
+        )
+        .order_by(
+            RouteStop.sequence_no.desc()
+        )
     )
+
     last_stop_rs = result.scalars().first()
 
     if not last_stop_rs:
-        raise HTTPException(400, "No stops found for route")
+        raise HTTPException(
+            400,
+            "No stops found for route"
+        )
 
-    last_stop = await session.get(Stop, last_stop_rs.stop_id)
+    last_stop = await session.get(
+        Stop,
+        last_stop_rs.stop_id
+    )
 
     if not last_stop:
-        raise HTTPException(400, "Last stop not found")
+        raise HTTPException(
+            400,
+            "Last stop not found"
+        )
 
     # =========================
-    # GEO VALIDATION (FIXED)
+    # GEO VALIDATION
     # =========================
     distance = geodesic(
-        (float(last_stop.lat), float(last_stop.lng)),
+        (
+            float(last_stop.lat),
+            float(last_stop.lng)
+        ),
         (lat, lng)
     ).meters
 
-    base_radius = last_stop.radius_meters or 0
-    gps_buffer = 50  # you can tune this
-    allowed_radius = base_radius + gps_buffer
+    base_radius = (
+        last_stop.radius_meters or 0
+    )
+
+    gps_buffer = 50
+
+    allowed_radius = (
+        base_radius + gps_buffer
+    )
 
     if distance > allowed_radius:
         raise HTTPException(
             400,
-            f"Driver not at last stop | distance={round(distance,2)}m | allowed={allowed_radius}m"
+            (
+                "Driver not at last stop | "
+                f"distance={round(distance, 2)}m | "
+                f"allowed={allowed_radius}m"
+            )
         )
 
     # =========================
@@ -917,20 +1026,33 @@ async def end_trip(
 
     await session.commit()
 
+    # =========================
+    # RESPONSE
+    # =========================
     return {
         "message": "Trip completed",
-        "time": to_ist(trip.actual_end_at),
+
+        "time": to_ist(
+            trip.actual_end_at
+        ),
+
         "geo_debug": {
             "distance_m": round(distance, 2),
             "allowed_radius_m": allowed_radius
         },
-        "passenger_check": {
+
+        "normal_passenger_check": {
             "boarded": boarded_count,
-            "dropped": dropped_count
+            "dropped": dropped_count,
+            "remaining": remaining_normal_passengers
         },
+
+        "rfid_passenger_check": {
+            "active_rfid_rides": active_rfid_count
+        },
+
         "stops_checked": len(trip_events)
     }
-
 # ============================================================
 # EMERGENCY END (MERGED)
 # ============================================================
