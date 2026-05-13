@@ -1089,17 +1089,20 @@ class AdminRFIDService:
             created_at=now,
         )
 
-        recharge.credited_ledger_entry_id = ledger_entry.id
-
         account.current_balance = balance_after
         account.held_balance = held_balance_after
 
-        self.db.add(recharge)
-        self.db.add(funding_lot)
-        self.db.add(ledger_entry)
-        self.db.add(account)
-
         try:
+            self.db.add(recharge)
+            await self.db.flush()
+
+            self.db.add(funding_lot)
+            self.db.add(ledger_entry)
+            self.db.add(account)
+            await self.db.flush()
+
+            recharge.credited_ledger_entry_id = ledger_entry.id
+            self.db.add(recharge)
             await self.db.flush()
         except IntegrityError as exc:
             await self.db.rollback()
