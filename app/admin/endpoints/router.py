@@ -49,6 +49,7 @@ from app.admin.rfid_schemas import (
 	RFIDCardReturnRequest,
 	AdminRFIDSeatPolicyResponse,
     AdminRFIDSeatPolicyUpdateRequest,
+	RFIDDeviceVehicleOptionListResponse,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -785,6 +786,34 @@ async def verify_driver(
 # Admin: RFID Devices
 # -----------------------------
 
+@router.get(
+    "/rfid/device-vehicle-options",
+    response_model=RFIDDeviceVehicleOptionListResponse,
+    tags=["Admin RFID"],
+)
+async def list_rfid_device_vehicle_options(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    q: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=80,
+        description="Search by driver name, vehicle license plate, or driver id.",
+    ),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminRFIDService(db)
+
+    items, count = await service.list_device_vehicle_options(
+        page=page,
+        page_size=page_size,
+        q=q,
+    )
+
+    return {
+        "items": items,
+        "count": count,
+    }
 
 @router.post(
 	"/rfid/devices",
@@ -805,7 +834,6 @@ async def create_rfid_device(
 		"message": "RFID device registered successfully.",
 		"device": service.serialize_device(device),
 	}
-
 
 @router.get(
 	"/rfid/devices",

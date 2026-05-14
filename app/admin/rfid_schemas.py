@@ -659,3 +659,14 @@ class AdminRFIDSeatPolicyResponse(BaseModel):
 
 class AdminRFIDSeatPolicyUpdateRequest(BaseModel):
     allow_driver_rfid_seat_reservation: bool
+
+class RFIDDeviceVehicleOptionResponse(BaseModel):
+    vehicle_id: str
+    driver_user_id: str
+    driver_name: str | None
+    vehicle_license_plate: str
+
+
+class RFIDDeviceVehicleOptionListResponse(BaseModel):
+    items: list[RFIDDeviceVehicleOptionResponse]
+    count: int
