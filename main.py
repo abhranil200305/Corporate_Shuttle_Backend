@@ -62,6 +62,16 @@ logging.basicConfig(
     force=True,
 )
 
+
+class _SuppressNotificationWSAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "/notifications/ws" not in record.getMessage()
+
+
+logging.getLogger("uvicorn.access").addFilter(
+    _SuppressNotificationWSAccessLogFilter()
+)
+
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
