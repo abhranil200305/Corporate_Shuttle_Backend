@@ -4,3 +4,4 @@ from pydantic import BaseModel
 
 class DriverRFIDReservationSettingResponse(BaseModel):
     allow_driver_rfid_seat_reservation: bool
+    rfid_device_serial_number: str | None = None
