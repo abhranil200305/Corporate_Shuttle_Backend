@@ -196,30 +196,17 @@ async def notifications_ws(websocket: WebSocket) -> None:
     connection_id: str | None = None
     heartbeat_task: asyncio.Task | None = None
 
-    await websocket.accept()
-
     if not token:
-        await websocket.send_json(
-            {
-                "error": "missing_ws_token",
-                "message": "WebSocket token query parameter is required.",
-            }
-        )
         await websocket.close(code=1008)
         return
 
     try:
         current_user, display_name = await _authenticate_ws_user(token)
-    except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        await websocket.send_json(
-            {
-                "error": detail.get("error", "ws_auth_failed"),
-                "message": detail.get("message", "WebSocket authentication failed."),
-            }
-        )
+    except HTTPException:
         await websocket.close(code=1008)
         return
+
+    await websocket.accept()
 
     hub = _get_ws_hub_from_app(websocket.app)
     connection_id = await hub.register(current_user.id, websocket)
