@@ -73,6 +73,7 @@ class _SuppressUvicornWebSocketProtocolNoise(logging.Filter):
         if message in {
             "connection open",
             "connection closed",
+            "connection rejected (403 Forbidden)",
         }:
             return False
 
