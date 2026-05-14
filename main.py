@@ -63,13 +63,25 @@ logging.basicConfig(
 )
 
 
-class _SuppressNotificationWSAccessLogFilter(logging.Filter):
+class _SuppressUvicornWebSocketProtocolNoise(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        return "/notifications/ws" not in record.getMessage()
+        message = record.getMessage()
+
+        if "WebSocket /notifications/ws" in message:
+            return False
+
+        if message in {
+            "connection open",
+            "connection closed",
+            "connection rejected (403 Forbidden)",
+        }:
+            return False
+
+        return True
 
 
-logging.getLogger("uvicorn.access").addFilter(
-    _SuppressNotificationWSAccessLogFilter()
+logging.getLogger("uvicorn.error").addFilter(
+    _SuppressUvicornWebSocketProtocolNoise()
 )
 
 UPLOADS_DIR = Path.cwd().resolve() / "uploads"

@@ -12,8 +12,7 @@ from fastapi import (
 from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import joinedload
-
+from sqlalchemy.orm import aliased, joinedload
 from app.admin.logic.service import AdminService
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
@@ -103,6 +102,60 @@ router = APIRouter(
 def get_ws_hub(request: Request) -> WSHub:
 	return request.app.state.ws_hub
 
+def _serialize_admin_rfid_device(device: schema.RFIDDevice) -> dict:
+	return {
+		"id": device.id,
+		"serial_number": device.serial_number,
+		"vehicle_id": device.vehicle_id,
+		"is_active": device.is_active,
+		"decommissioned_at": device.decommissioned_at,
+		"last_seen_at": device.last_seen_at,
+		"last_seen_lat": device.last_seen_lat,
+		"last_seen_lng": device.last_seen_lng,
+		"notes": device.notes,
+		"created_at": device.created_at,
+		"updated_at": device.updated_at,
+	}
+
+
+def _serialize_admin_rfid_ride(
+	ride: schema.RFIDTripRide,
+	passenger: schema.User | None,
+	passenger_profile: schema.PassengerProfile | None,
+	card: schema.RFIDCard | None,
+	pickup_stop: schema.Stop | None,
+	dropoff_stop: schema.Stop | None,
+) -> dict:
+	return {
+		"rfid_ride_id": ride.id,
+		"card_id": ride.card_id,
+		"card_uid_masked": card.card_uid_masked if card else None,
+		"passenger_user_id": ride.passenger_user_id,
+		"passenger_name": passenger_profile.full_name if passenger_profile else None,
+		"passenger_email": passenger.email if passenger else None,
+		"status": ride.status,
+		"pickup_stop": {
+			"id": ride.pickup_stop_id,
+			"name": pickup_stop.name if pickup_stop else None,
+			"sequence": ride.pickup_sequence_no,
+		},
+		"dropoff_stop": {
+			"id": ride.dropoff_stop_id,
+			"name": dropoff_stop.name if dropoff_stop else None,
+			"sequence": ride.dropoff_sequence_no,
+		}
+		if ride.dropoff_stop_id
+		else None,
+		"boarded_at": ride.boarded_at,
+		"dropped_at": ride.dropped_at,
+		"fare_amount": float(ride.fare_amount or 0),
+		"fare_reversed_amount": float(ride.fare_reversed_amount or 0),
+		"driver_payout_amount": float(ride.driver_payout_amount or 0),
+		"driver_payout_reversed_amount": float(
+			ride.driver_payout_reversed_amount or 0
+		),
+		"transfer_status": ride.transfer_status,
+	}
 
 @router.post("/send-notification/{user_id}", tags=["Admin Notifications"])
 async def send_admin_notification(
@@ -252,6 +305,19 @@ async def get_driver_details(
 
 	if not d:
 		return {"error": "Driver not found"}
+
+	rfid_devices = []
+	if d.vehicle:
+		rfid_devices_result = await db.execute(
+			select(schema.RFIDDevice)
+			.where(schema.RFIDDevice.vehicle_id == d.vehicle.id)
+			.order_by(
+				schema.RFIDDevice.is_active.desc(),
+				schema.RFIDDevice.created_at.desc(),
+			)
+		)
+		rfid_devices = list(rfid_devices_result.scalars().all())
+
 	return {
 		"user_id": d.id,
 		"email": d.email,
@@ -364,6 +430,22 @@ async def get_driver_details(
 			"passbook_url": d.driver_profile.passbook_file_path
 			if d.driver_profile
 			else None,
+		},
+		"rfid": {
+			"vehicle_id": d.vehicle.id if d.vehicle else None,
+			"default_reserved_seat_count": d.vehicle.default_rfid_reserved_seat_count
+			if d.vehicle
+			else 0,
+			"device_count": len(rfid_devices),
+			"active_device_count": sum(
+				1
+				for device in rfid_devices
+				if device.is_active and device.decommissioned_at is None
+			),
+			"devices": [
+				_serialize_admin_rfid_device(device)
+				for device in rfid_devices
+			],
 		},
 	}
 
@@ -2348,6 +2430,61 @@ async def get_specific_trip_status(
 		}
 		passengers_data.append(passenger_info)
 
+	PickupStop = aliased(schema.Stop)
+	DropoffStop = aliased(schema.Stop)
+
+	rfid_rides_result = await db.execute(
+		select(
+			schema.RFIDTripRide,
+			schema.User,
+			schema.PassengerProfile,
+			schema.RFIDCard,
+			PickupStop,
+			DropoffStop,
+		)
+		.outerjoin(
+			schema.User,
+			schema.User.id == schema.RFIDTripRide.passenger_user_id,
+		)
+		.outerjoin(
+			schema.PassengerProfile,
+			schema.PassengerProfile.user_id == schema.RFIDTripRide.passenger_user_id,
+		)
+		.outerjoin(
+			schema.RFIDCard,
+			schema.RFIDCard.id == schema.RFIDTripRide.card_id,
+		)
+		.outerjoin(
+			PickupStop,
+			PickupStop.id == schema.RFIDTripRide.pickup_stop_id,
+		)
+		.outerjoin(
+			DropoffStop,
+			DropoffStop.id == schema.RFIDTripRide.dropoff_stop_id,
+		)
+		.where(schema.RFIDTripRide.scheduled_trip_id == trip.id)
+		.order_by(schema.RFIDTripRide.boarded_at.asc())
+	)
+
+	rfid_passengers = [
+		_serialize_admin_rfid_ride(
+			ride=ride,
+			passenger=passenger,
+			passenger_profile=passenger_profile,
+			card=card,
+			pickup_stop=pickup_stop,
+			dropoff_stop=dropoff_stop,
+		)
+		for (
+			ride,
+			passenger,
+			passenger_profile,
+			card,
+			pickup_stop,
+			dropoff_stop,
+		) in rfid_rides_result.all()
+	]
+
 	return {
 		"trip_id": trip.id,
 		"status": trip.status,
@@ -2373,6 +2510,11 @@ async def get_specific_trip_status(
 		"occupancy": {
 			"total_bookings": len(trip.bookings),
 			"passengers": passengers_data,
+		},
+		"rfid": {
+			"reserved_seat_count": trip.rfid_reserved_seat_count,
+			"total_rfid_rides": len(rfid_passengers),
+			"passengers": rfid_passengers,
 		},
 		"admin_note": trip.admin_note,
 	}
