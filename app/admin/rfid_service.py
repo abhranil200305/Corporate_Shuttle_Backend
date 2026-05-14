@@ -262,68 +262,68 @@ class AdminRFIDService:
 
         return device
     
-async def list_device_vehicle_options(
-    self,
-    *,
-    page: int,
-    page_size: int,
-    q: str | None = None,
-) -> tuple[list[dict[str, Any]], int]:
-    filters = [
-        schema.User.role == schema.UserRole.DRIVER,
-    ]
+    async def list_device_vehicle_options(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        q: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        filters = [
+            schema.User.role == schema.UserRole.DRIVER,
+        ]
 
-    cleaned_q = q.strip() if q is not None else None
+        cleaned_q = q.strip() if q is not None else None
 
-    if cleaned_q:
-        search = f"%{cleaned_q}%"
-        filters.append(
-            or_(
-                schema.DriverProfile.full_name.ilike(search),
-                schema.Vehicle.registration_number.ilike(search),
-                schema.Vehicle.driver_user_id.ilike(search),
+        if cleaned_q:
+            search = f"%{cleaned_q}%"
+            filters.append(
+                or_(
+                    schema.DriverProfile.full_name.ilike(search),
+                    schema.Vehicle.registration_number.ilike(search),
+                    schema.Vehicle.driver_user_id.ilike(search),
+                )
             )
+
+        count_stmt = (
+            select(func.count(schema.Vehicle.id))
+            .select_from(schema.Vehicle)
+            .join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
+            .outerjoin(
+                schema.DriverProfile,
+                schema.DriverProfile.user_id == schema.User.id,
+            )
+            .where(*filters)
         )
 
-    count_stmt = (
-        select(func.count(schema.Vehicle.id))
-        .select_from(schema.Vehicle)
-        .join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
-        .outerjoin(
-            schema.DriverProfile,
-            schema.DriverProfile.user_id == schema.User.id,
+        list_stmt = (
+            select(
+                schema.Vehicle.id.label("vehicle_id"),
+                schema.Vehicle.driver_user_id.label("driver_user_id"),
+                schema.DriverProfile.full_name.label("driver_name"),
+                schema.Vehicle.registration_number.label("vehicle_license_plate"),
+            )
+            .select_from(schema.Vehicle)
+            .join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
+            .outerjoin(
+                schema.DriverProfile,
+                schema.DriverProfile.user_id == schema.User.id,
+            )
+            .where(*filters)
+            .order_by(
+                schema.DriverProfile.full_name.asc().nulls_last(),
+                schema.Vehicle.registration_number.asc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )
-        .where(*filters)
-    )
 
-    list_stmt = (
-        select(
-            schema.Vehicle.id.label("vehicle_id"),
-            schema.Vehicle.driver_user_id.label("driver_user_id"),
-            schema.DriverProfile.full_name.label("driver_name"),
-            schema.Vehicle.registration_number.label("vehicle_license_plate"),
-        )
-        .select_from(schema.Vehicle)
-        .join(schema.User, schema.User.id == schema.Vehicle.driver_user_id)
-        .outerjoin(
-            schema.DriverProfile,
-            schema.DriverProfile.user_id == schema.User.id,
-        )
-        .where(*filters)
-        .order_by(
-            schema.DriverProfile.full_name.asc().nulls_last(),
-            schema.Vehicle.registration_number.asc(),
-        )
-        .offset((page - 1) * page_size)
-        .limit(page_size)
-    )
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
 
-    count_result = await self.db.execute(count_stmt)
-    list_result = await self.db.execute(list_stmt)
+        rows = list_result.mappings().all()
 
-    rows = list_result.mappings().all()
-
-    return [dict(row) for row in rows], int(count_result.scalar_one() or 0)
+        return [dict(row) for row in rows], int(count_result.scalar_one() or 0)
     
     # ============================================================
     # RFID card admin operations
