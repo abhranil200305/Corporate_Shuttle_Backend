@@ -81,54 +81,161 @@ async def create_driver_profile(
     full_name: str = Form(...),
     phone: str = Form(...),
 
-    residential_street_line_1: Optional[str] = Form(None),
-    residential_street_line_2: Optional[str] = Form(None),
+    # =========================
+    # REQUIRED ADDRESS FIELDS
+    # =========================
+    residential_street_line_1: str = Form(...),
+    residential_street_line_2: str = Form(...),
+
+    # =========================
+    # OPTIONAL ADDRESS FIELDS
+    # =========================
     residential_city: Optional[str] = Form(None),
     residential_state: Optional[str] = Form(None),
     residential_postal_code: Optional[str] = Form(None),
     residential_country: Optional[str] = Form(None),
 
+    # =========================
+    # PROFILE PICTURE
+    # =========================
     profile_pic: Optional[UploadFile] = File(None),
 
+    # =========================
+    # DEPENDENCIES
+    # =========================
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
+    
+    # =========================
+    # CHECK EXISTING PROFILE
+    # =========================
     result = await db.execute(
-        select(DriverProfile).where(DriverProfile.user_id == current_user.id)
+        select(DriverProfile).where(
+            DriverProfile.user_id == current_user.id
+        )
     )
     existing = result.scalar_one_or_none()
 
     if existing:
-        raise HTTPException(status_code=400, detail="Driver profile already exists")
+        raise HTTPException(
+            status_code=400,
+            detail="Driver profile already exists",
+        )
 
-    profile_pic_path = await save_upload_async(profile_pic) if profile_pic else None
+    # =========================
+    # CLEAN REQUIRED FIELDS
+    # =========================
+    full_name = full_name.strip()
+    phone = phone.strip()
 
+    residential_street_line_1 = residential_street_line_1.strip()
+    residential_street_line_2 = residential_street_line_2.strip()
+
+    # =========================
+    # VALIDATE REQUIRED FIELDS
+    # =========================
+    if not full_name:
+        raise HTTPException(
+            status_code=422,
+            detail="full_name cannot be empty",
+        )
+
+    if not phone:
+        raise HTTPException(
+            status_code=422,
+            detail="phone cannot be empty",
+        )
+
+    if not residential_street_line_1:
+        raise HTTPException(
+            status_code=422,
+            detail="residential_street_line_1 cannot be empty",
+        )
+
+    if not residential_street_line_2:
+        raise HTTPException(
+            status_code=422,
+            detail="residential_street_line_2 cannot be empty",
+        )
+
+    # =========================
+    # CLEAN OPTIONAL FIELDS
+    # =========================
+    residential_city = (
+        residential_city.strip()
+        if residential_city
+        else None
+    )
+
+    residential_state = (
+        residential_state.strip()
+        if residential_state
+        else None
+    )
+
+    residential_postal_code = (
+        residential_postal_code.strip()
+        if residential_postal_code
+        else None
+    )
+
+    residential_country = (
+        residential_country.strip()
+        if residential_country
+        else None
+    )
+
+    # =========================
+    # SAVE PROFILE PICTURE
+    # =========================
+    profile_pic_path = (
+        await save_upload_async(profile_pic)
+        if profile_pic
+        else None
+    )
+
+    # =========================
+    # CREATE DRIVER PROFILE
+    # =========================
     driver_profile = DriverProfile(
         user_id=current_user.id,
-        full_name=full_name.strip(),
-        phone=phone.strip(),
+
+        full_name=full_name,
+        phone=phone,
+
         profile_picture_path=profile_pic_path,
 
-        residential_street_line_1=residential_street_line_1.strip() if residential_street_line_1 else None,
-        residential_street_line_2=residential_street_line_2.strip() if residential_street_line_2 else None,
-        residential_city=residential_city.strip() if residential_city else None,
-        residential_state=residential_state.strip() if residential_state else None,
-        residential_postal_code=residential_postal_code.strip() if residential_postal_code else None,
-        residential_country=residential_country.strip() if residential_country else None,
+        residential_street_line_1=residential_street_line_1,
+        residential_street_line_2=residential_street_line_2,
+
+        residential_city=residential_city,
+        residential_state=residential_state,
+        residential_postal_code=residential_postal_code,
+        residential_country=residential_country,
 
         aadhaar_file_path="",
         pan_file_path="",
+
         verification_status=DriverVerificationStatus.DRAFT,
     )
 
     db.add(driver_profile)
 
+    # =========================
+    # SAVE TO DATABASE
+    # =========================
     try:
         await db.commit()
         await db.refresh(driver_profile)
+
     except IntegrityError as e:
         await db.rollback()
-        raise HTTPException(status_code=400, detail=str(e.orig))
+
+        raise HTTPException(
+            status_code=400,
+            detail=str(e.orig),
+        )
 
     return driver_profile
 
