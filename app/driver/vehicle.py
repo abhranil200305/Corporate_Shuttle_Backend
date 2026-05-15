@@ -300,6 +300,30 @@ async def register_vehicle(
         if not file:
             return None
 
+        allowed_extensions = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".avif",
+            ".pdf"
+        }
+
+        extension = (
+            Path(file.filename)
+            .suffix
+            .lower()
+        )
+
+        if extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported file format: "
+                    f"{extension}"
+                )
+            )
+
         filename = (
             f"{registration_number}_"
             f"{prefix}_"
@@ -612,12 +636,39 @@ async def update_vehicle(
     # ---------------------------
     # FILE SAVE HELPER
     # ---------------------------
+    # ---------------------------
+    # FILE SAVE HELPER
+    # ---------------------------
     def save_file(
         file: UploadFile | None,
         prefix: str
     ):
         if not file:
             return None
+
+        allowed_extensions = {
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".avif",
+            ".pdf"
+        }
+
+        extension = (
+            Path(file.filename)
+            .suffix
+            .lower()
+        )
+
+        if extension not in allowed_extensions:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Unsupported file format: "
+                    f"{extension}"
+                )
+            )
 
         filename = (
             f"{vehicle.registration_number}_"
