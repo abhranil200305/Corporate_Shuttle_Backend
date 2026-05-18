@@ -102,6 +102,7 @@ async def get_current_trip_passengers(
             "booking_id": booking.id,
             "passenger_id": booking.passenger_user_id,
             "name": profile.full_name if profile else None,
+            "seat_number": booking.seat_number,
             "status": booking.booking_status,
         })
 

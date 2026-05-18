@@ -103,6 +103,7 @@ async def get_trip_bookings(
             "passenger_name": profile.full_name if profile else None,
             "fare": float(booking.fare_amount) if booking.fare_amount else None,
             "status": booking.booking_status,
+            "seat_number": booking.seat_number,
 
             "pickup_stop": {
                 "id": booking.pickup_stop.id,

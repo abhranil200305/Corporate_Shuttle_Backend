@@ -75,6 +75,7 @@ async def get_stop_passengers(
             "booking_id": booking.id,
             "passenger_id": booking.passenger_user_id,
             "passenger_name": passenger_name,
+            "seat_number": booking.seat_number,
             "pickup_stop": {
                 "id": booking.pickup_stop.id,
                 "name": booking.pickup_stop.name

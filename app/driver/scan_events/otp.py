@@ -232,6 +232,8 @@ async def verify_otp_scan(
     # =====================================================
     return {
         "message": "OTP verified successfully",
+        "booking_id": booking.id,
+        "seat_number": booking.seat_number,
         "scan_type": scan_type.value,
         "distance_meters": round(distance, 2),
         "booking_status": booking.booking_status.value,
