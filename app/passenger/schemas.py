@@ -363,6 +363,7 @@ class CurrentTripSegmentStopResponse(BaseModel):
 
 class CurrentTripStatusResponse(BaseModel):
     booking_id: str
+    seat_number: int
     scheduled_trip_id: str
     otp: str | None
     booking_status: str
@@ -460,6 +461,7 @@ class BookingRatingMutationResponse(BaseModel):
 class PassengerTransactionResponse(BaseModel):
     payment_id: str
     booking_id: str
+    seat_number: int
     scheduled_trip_id: str
     route_id: str
     booking_status: str
