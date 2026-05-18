@@ -2670,6 +2670,8 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
+    seat_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
     booking_status: Mapped[BookingStatus] = mapped_column(
         enum_type(BookingStatus, "booking_status"),
         nullable=False,
@@ -2819,6 +2821,16 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
             postgresql_where=text(
                 "booking_status IN ('pending_payment', 'booked', 'boarded')"
             ),
+        ),
+        CheckConstraint(
+            "seat_number > 0",
+            name="ck_trip_bookings_seat_number_positive",
+        ),
+        Index(
+            "ix_trip_bookings_trip_seat_status",
+            "scheduled_trip_id",
+            "seat_number",
+            "booking_status",
         ),
         CheckConstraint("fare_amount >= 0", name="ck_trip_bookings_fare_nonnegative"),
         CheckConstraint(
