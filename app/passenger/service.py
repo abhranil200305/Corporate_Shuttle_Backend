@@ -1342,6 +1342,7 @@ class PassengerService:
             "route_id": booking.route_id,
             "pickup_stop_id": booking.pickup_stop_id,
             "dropoff_stop_id": booking.dropoff_stop_id,
+            "seat_number": booking.seat_number,
             "booking_status": booking.booking_status.value,
             "refresh": refresh or ["bookings_list", "booking_detail"],
         }
