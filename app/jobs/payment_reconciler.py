@@ -135,6 +135,32 @@ async def _notify_payment_reconcile_outcome(
             },
         )
 
+async def _broadcast_payment_reconcile_seatmap_outcome(
+    *,
+    booking: TripBooking,
+    outcome: str,
+) -> None:
+    seat_releasing_outcomes = {
+        "paid_after_hold_expiry",
+        "captured_after_hold_expiry",
+    }
+
+    if not outcome.startswith("expired_") and outcome not in seat_releasing_outcomes:
+        return
+
+    try:
+        from app.passenger.seatmap_ws import broadcast_all_seatmap_snapshots_for_trip
+
+        await broadcast_all_seatmap_snapshots_for_trip(
+            scheduled_trip_id=booking.scheduled_trip_id,
+            reason="payment_hold_expired",
+        )
+    except Exception:
+        logger.exception(
+            "payment_reconcile_seatmap_broadcast_failed booking_id=%s outcome=%s",
+            booking.id,
+            outcome,
+        )
 
 async def _process_booking_id(
     db: AsyncSession,
@@ -169,6 +195,12 @@ async def _process_booking_id(
             booking=booking,
             outcome=outcome,
         )
+
+        await _broadcast_payment_reconcile_seatmap_outcome(
+            booking=booking,
+            outcome=outcome,
+        )
+
         return outcome
     except Exception:
         await db.rollback()
