@@ -4689,11 +4689,23 @@ class PassengerService:
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
 
-        available_seats = max(seat_capacity - overlapping_active_bookings, 0)
+        occupied_seat_numbers = await self._get_occupied_app_seat_numbers_for_leg(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        available_seat_numbers = [
+            seat_number
+            for seat_number in range(1, seat_capacity + 1)
+            if seat_number not in occupied_seat_numbers
+        ]
+
+        available_seats = len(available_seat_numbers)
 
         trip_bookable = (
             trip.status == ScheduledTripStatus.SCHEDULED
-            and trip.planned_start_at > utcnow()
+            and pickup_planned_time > utcnow()
             and available_seats > 0
         )
 
@@ -4712,6 +4724,8 @@ class PassengerService:
             "seat_capacity": seat_capacity,
             "overlapping_active_bookings": overlapping_active_bookings,
             "available_seats": available_seats,
+            "occupied_seat_numbers": sorted(occupied_seat_numbers),
+            "available_seat_numbers": available_seat_numbers,
             "trip_bookable": trip_bookable,
             "vehicle": None if trip.vehicle is None else {
                 "id": trip.vehicle.id,
@@ -4721,7 +4735,7 @@ class PassengerService:
                 "color": trip.vehicle.color,
                 "seat_count": trip.vehicle.seat_count,
                 "rfid_reserved_seat_count": trip.rfid_reserved_seat_count,
-                "app_bookable_seat_count": await self._get_app_bookable_capacity_for_trip(trip),
+                "app_bookable_seat_count": seat_capacity,
                 "has_ac": trip.vehicle.has_ac,
             },
             "driver": None if trip.driver is None else {
