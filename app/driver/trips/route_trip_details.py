@@ -94,6 +94,8 @@ async def get_route_trip_details(
                 "planned_end": trip.planned_end_at,
                 "actual_start": trip.actual_start_at,
                 "actual_end": trip.actual_end_at,
+                "cancellation_reason": trip.cancellation_reason,
+                "premature_end_reason": trip.premature_end_reason,
 
                 # 🚀 Stops
                 "stops": [
