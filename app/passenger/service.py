@@ -3799,8 +3799,9 @@ class PassengerService:
                 },
             )
 
-        await self._expire_stale_pending_bookings_for_trip(trip.id)
-
+        expired_pending_booking_count = await self._expire_stale_pending_bookings_for_trip(
+            trip.id
+        )
         fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
             route_id=trip.route_id,
             pickup_stop_id=payload.pickup_stop_id,
@@ -3857,6 +3858,13 @@ class PassengerService:
                 BookingStatus.BOARDED,
             ):
                 await self.db.commit()
+
+                if expired_pending_booking_count > 0:
+                    await self._broadcast_seatmap_snapshots_for_trip(
+                        scheduled_trip_id=trip.id,
+                        reason="payment_hold_expired",
+                    )
+
                 return await self._build_create_booking_response(
                     booking_id=existing_booking.id,
                     passenger_user_id=current_user.id,
@@ -3874,6 +3882,12 @@ class PassengerService:
                     razorpay_signature=latest_payment.razorpay_signature,
                 )
                 await self.db.commit()
+
+                if expired_pending_booking_count > 0:
+                    await self._broadcast_seatmap_snapshots_for_trip(
+                        scheduled_trip_id=trip.id,
+                        reason="payment_hold_expired",
+                    )
 
                 return await self._build_create_booking_response(
                     booking_id=existing_booking.id,
