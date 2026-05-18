@@ -1263,6 +1263,7 @@ class PassengerService:
 
         return {
             "booking_id": booking.id,
+            "seat_number": booking.seat_number,
             "scheduled_trip_id": booking.scheduled_trip_id,
             "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
@@ -1302,6 +1303,7 @@ class PassengerService:
         return {
             "payment_id": payment.id,
             "booking_id": booking.id,
+            "seat_number": booking.seat_number,
             "scheduled_trip_id": booking.scheduled_trip_id,
             "route_id": booking.route_id,
             "booking_status": booking.booking_status,
