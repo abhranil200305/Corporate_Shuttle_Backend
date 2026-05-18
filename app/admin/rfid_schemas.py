@@ -670,3 +670,15 @@ class RFIDDeviceVehicleOptionResponse(BaseModel):
 class RFIDDeviceVehicleOptionListResponse(BaseModel):
     items: list[RFIDDeviceVehicleOptionResponse]
     count: int
+
+
+class RFIDCardOptionResponse(BaseModel):
+    card_id: str
+    card_uid_masked: str | None
+    assigned_passenger_user_id: str | None
+    assigned_passenger_name: str | None
+
+
+class RFIDCardOptionListResponse(BaseModel):
+    items: list[RFIDCardOptionResponse]
+    count: int

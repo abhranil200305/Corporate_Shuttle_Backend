@@ -50,6 +50,7 @@ from app.admin.rfid_schemas import (
 	AdminRFIDSeatPolicyResponse,
     AdminRFIDSeatPolicyUpdateRequest,
 	RFIDDeviceVehicleOptionListResponse,
+	RFIDCardOptionListResponse,
 )
 from app.admin.structs.dto import (
 	BookingFullDetailsResponsee,
@@ -805,6 +806,35 @@ async def list_rfid_device_vehicle_options(
     service = AdminRFIDService(db)
 
     items, count = await service.list_device_vehicle_options(
+        page=page,
+        page_size=page_size,
+        q=q,
+    )
+
+    return {
+        "items": items,
+        "count": count,
+    }
+
+@router.get(
+    "/rfid/card-options",
+    response_model=RFIDCardOptionListResponse,
+    tags=["Admin RFID"],
+)
+async def list_rfid_card_options(
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=25, ge=1, le=100),
+    q: str | None = Query(
+        default=None,
+        min_length=1,
+        max_length=80,
+        description="Search by masked card UID, assigned passenger name, or passenger id.",
+    ),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminRFIDService(db)
+
+    items, count = await service.list_card_options(
         page=page,
         page_size=page_size,
         q=q,

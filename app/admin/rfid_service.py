@@ -325,6 +325,74 @@ class AdminRFIDService:
 
         return [dict(row) for row in rows], int(count_result.scalar_one() or 0)
     
+    async def list_card_options(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        q: str | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        cleaned_q = q.strip() if q is not None else None
+
+        filters = []
+
+        if cleaned_q:
+            search = f"%{cleaned_q}%"
+            filters.append(
+                or_(
+                    schema.RFIDCard.card_uid_masked.ilike(search),
+                    schema.RFIDCard.assigned_passenger_user_id.ilike(search),
+                    schema.PassengerProfile.full_name.ilike(search),
+                )
+            )
+
+        count_stmt = (
+            select(func.count(schema.RFIDCard.id))
+            .select_from(schema.RFIDCard)
+            .outerjoin(
+                schema.PassengerProfile,
+                schema.PassengerProfile.user_id
+                == schema.RFIDCard.assigned_passenger_user_id,
+            )
+        )
+
+        list_stmt = (
+            select(
+                schema.RFIDCard.id.label("card_id"),
+                schema.RFIDCard.card_uid_masked.label("card_uid_masked"),
+                schema.RFIDCard.assigned_passenger_user_id.label(
+                    "assigned_passenger_user_id"
+                ),
+                schema.PassengerProfile.full_name.label(
+                    "assigned_passenger_name"
+                ),
+            )
+            .select_from(schema.RFIDCard)
+            .outerjoin(
+                schema.PassengerProfile,
+                schema.PassengerProfile.user_id
+                == schema.RFIDCard.assigned_passenger_user_id,
+            )
+            .order_by(
+                schema.PassengerProfile.full_name.asc().nulls_last(),
+                schema.RFIDCard.card_uid_masked.asc().nulls_last(),
+                schema.RFIDCard.created_at.desc(),
+            )
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+
+        if filters:
+            count_stmt = count_stmt.where(*filters)
+            list_stmt = list_stmt.where(*filters)
+
+        count_result = await self.db.execute(count_stmt)
+        list_result = await self.db.execute(list_stmt)
+
+        rows = list_result.mappings().all()
+
+        return [dict(row) for row in rows], int(count_result.scalar_one() or 0)
+    
     # ============================================================
     # RFID card admin operations
     # ============================================================
