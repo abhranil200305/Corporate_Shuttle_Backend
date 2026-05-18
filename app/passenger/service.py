@@ -598,6 +598,77 @@ class PassengerService:
         result = await self.db.execute(stmt)
         return int(result.scalar_one() or 0)
     
+    async def _get_occupied_app_seat_numbers_for_leg(
+        self,
+        *,
+        scheduled_trip_id: str,
+        pickup_sequence_no: int,
+        dropoff_sequence_no: int,
+    ) -> set[int]:
+        current_time = utcnow()
+
+        stmt = select(TripBooking.seat_number).where(
+            TripBooking.scheduled_trip_id == scheduled_trip_id,
+            TripBooking.pickup_sequence_no_snapshot < dropoff_sequence_no,
+            TripBooking.dropoff_sequence_no_snapshot > pickup_sequence_no,
+            or_(
+                TripBooking.booking_status.in_(
+                    (BookingStatus.BOOKED, BookingStatus.BOARDED)
+                ),
+                and_(
+                    TripBooking.booking_status == BookingStatus.PENDING_PAYMENT,
+                    or_(
+                        TripBooking.payment_hold_expires_at.is_(None),
+                        TripBooking.payment_hold_expires_at > current_time,
+                    ),
+                ),
+            ),
+        )
+
+        result = await self.db.execute(stmt)
+
+        return {
+            int(seat_number)
+            for seat_number in result.scalars().all()
+            if seat_number is not None
+        }
+
+    async def _ensure_requested_seat_available_for_leg(
+        self,
+        *,
+        scheduled_trip_id: str,
+        seat_number: int,
+        seat_capacity: int,
+        pickup_sequence_no: int,
+        dropoff_sequence_no: int,
+    ) -> None:
+        if seat_number < 1 or seat_number > seat_capacity:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_seat_number",
+                    "message": "Selected seat is outside the app-bookable seat range for this trip.",
+                    "seat_number": seat_number,
+                    "seat_capacity": seat_capacity,
+                },
+            )
+
+        occupied_seat_numbers = await self._get_occupied_app_seat_numbers_for_leg(
+            scheduled_trip_id=scheduled_trip_id,
+            pickup_sequence_no=pickup_sequence_no,
+            dropoff_sequence_no=dropoff_sequence_no,
+        )
+
+        if seat_number in occupied_seat_numbers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "seat_unavailable",
+                    "message": "Selected seat is already occupied for the selected route segment.",
+                    "seat_number": seat_number,
+                },
+            )
+    
     async def _is_driver_rfid_seat_reservation_enabled(self) -> bool:
         stmt = (
             select(PlatformSettings.allow_driver_rfid_seat_reservation)
@@ -3723,6 +3794,17 @@ class PassengerService:
                     },
                 )
 
+            if existing_booking.seat_number != payload.seat_number:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "existing_booking_seat_mismatch",
+                        "message": "Passenger already has a booking for this segment with a different seat.",
+                        "existing_seat_number": existing_booking.seat_number,
+                        "requested_seat_number": payload.seat_number,
+                    },
+                )
+
             if existing_booking.booking_status in (
                 BookingStatus.BOOKED,
                 BookingStatus.BOARDED,
@@ -3830,6 +3912,7 @@ class PassengerService:
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
         seat_count = await self._get_app_bookable_capacity_for_trip(trip)
+
         if overlapping_active_booking_count >= seat_count:
             raise HTTPException(
                 status_code=409,
@@ -3838,6 +3921,14 @@ class PassengerService:
                     "message": "No seats are currently available for the selected trip segment.",
                 },
             )
+
+        await self._ensure_requested_seat_available_for_leg(
+            scheduled_trip_id=trip.id,
+            seat_number=payload.seat_number,
+            seat_capacity=seat_count,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
 
         normalized_fare_amount = self._quantize_money(fare.amount)
         current_commission_percent = await self._get_current_commission_percent()
@@ -3858,6 +3949,7 @@ class PassengerService:
                 route_id=trip.route_id,
                 pickup_stop_id=payload.pickup_stop_id,
                 dropoff_stop_id=payload.dropoff_stop_id,
+                seat_number=payload.seat_number,
                 booking_status=BookingStatus.PENDING_PAYMENT,
                 fare_amount=normalized_fare_amount,
                 pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,

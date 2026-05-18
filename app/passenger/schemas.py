@@ -179,6 +179,7 @@ class CreateBookingRequest(BaseModel):
     scheduled_trip_id: str = Field(..., min_length=1, max_length=36)
     pickup_stop_id: str = Field(..., min_length=1, max_length=36)
     dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
+    seat_number: int = Field(..., ge=1)
 
 
 class VerifyBookingPaymentRequest(BaseModel):
@@ -215,6 +216,7 @@ class TripBookingResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    seat_number: int
     otp: str | None
     booking_status: str
     fare_amount: Decimal
@@ -242,6 +244,7 @@ class BookingDetailResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    seat_number: int
     otp: str | None
     booking_status: str
     fare_amount: Decimal
@@ -316,6 +319,7 @@ class CurrentTripBookingResponse(BaseModel):
     route_id: str
     pickup_stop_id: str
     dropoff_stop_id: str
+    seat_number: int
     otp: str | None
     booking_status: str
     fare_amount: Decimal
