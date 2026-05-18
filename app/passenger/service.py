@@ -3279,7 +3279,23 @@ class PassengerService:
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
 
-        available_seats = max(seat_capacity - overlapping_active_bookings, 0)
+        occupied_seat_numbers = await self._get_occupied_app_seat_numbers_for_leg(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        available_seat_numbers = [
+            seat_number
+            for seat_number in range(1, seat_capacity + 1)
+            if seat_number not in occupied_seat_numbers
+        ]
+
+        available_seats = len(available_seat_numbers)
+
+        requested_seat_available = None
+        if payload.seat_number is not None:
+            requested_seat_available = payload.seat_number in available_seat_numbers
 
         trip_bookable = (
             trip.status == ScheduledTripStatus.SCHEDULED
@@ -3297,6 +3313,9 @@ class PassengerService:
             "seat_capacity": seat_capacity,
             "overlapping_active_bookings": overlapping_active_bookings,
             "available_seats": available_seats,
+            "occupied_seat_numbers": sorted(occupied_seat_numbers),
+            "available_seat_numbers": available_seat_numbers,
+            "requested_seat_available": requested_seat_available,
             "trip_bookable": trip_bookable,
         }
 

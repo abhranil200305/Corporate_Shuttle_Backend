@@ -160,6 +160,7 @@ class LegAvailableSeatsRequest(BaseModel):
     route_id: str = Field(..., min_length=1, max_length=36)
     pickup_stop_id: str = Field(..., min_length=1, max_length=36)
     dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
+    seat_number: int | None = Field(default=None, ge=1)
 
 
 class LegAvailableSeatsResponse(BaseModel):
@@ -172,6 +173,9 @@ class LegAvailableSeatsResponse(BaseModel):
     seat_capacity: int
     overlapping_active_bookings: int
     available_seats: int
+    occupied_seat_numbers: list[int]
+    available_seat_numbers: list[int]
+    requested_seat_available: bool | None = None
     trip_bookable: bool
 
 
