@@ -3920,6 +3920,12 @@ class PassengerService:
                         )
                         await self.db.commit()
 
+                        if expired_pending_booking_count > 0:
+                            await self._broadcast_seatmap_snapshots_for_trip(
+                                scheduled_trip_id=trip.id,
+                                reason="payment_hold_expired",
+                            )
+
                         return await self._build_create_booking_response(
                             booking_id=existing_booking.id,
                             passenger_user_id=current_user.id,
@@ -3929,6 +3935,13 @@ class PassengerService:
 
                     if provider_status not in {"failed", "refunded"}:
                         await self.db.commit()
+
+                        if expired_pending_booking_count > 0:
+                            await self._broadcast_seatmap_snapshots_for_trip(
+                                scheduled_trip_id=trip.id,
+                                reason="payment_hold_expired",
+                            )
+
                         return await self._build_create_booking_response(
                             booking_id=existing_booking.id,
                             passenger_user_id=current_user.id,
@@ -3948,6 +3961,13 @@ class PassengerService:
             try:
                 _, order_payload = await self._create_payment_attempt_for_booking(existing_booking)
                 await self.db.commit()
+
+                if expired_pending_booking_count > 0:
+                    await self._broadcast_seatmap_snapshots_for_trip(
+                        scheduled_trip_id=trip.id,
+                        reason="payment_hold_expired",
+                    )
+
             except HTTPException:
                 await self.db.rollback()
                 raise
@@ -4163,6 +4183,11 @@ class PassengerService:
         ):
             await self._expire_pending_booking_hold(booking)
             await self.db.commit()
+
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking.scheduled_trip_id,
+                reason="payment_hold_expired",
+            )
 
             await self._notify_user(
                 user_id=current_user.id,
