@@ -34,6 +34,7 @@ from app.jobs.vehicle_inspection_status_reminder import (
 )
 from app.driver.trips.drop_events import router as drop_events_router
 from app.passenger.router import router as passenger_route
+from app.passenger.seatmap_ws import router as passenger_seatmap_router, seatmap_hub
 from app.driver.support.support import router as support_router
 from app.driver.trips import cancel_trip  
 from app.driver.scan_events.scan import router as driver_scan_router
@@ -171,6 +172,9 @@ async def lifespan(app: FastAPI):
         if ws_hub is not None:
             with suppress(Exception):
                 await ws_hub.shutdown(code=1001)
+
+        with suppress(Exception):
+            await seatmap_hub.shutdown(code=1001)
         
         await dispose_database_engine()
         print("✅ Database engine disposed")
@@ -208,6 +212,7 @@ app.include_router(driverprofile_router)
 app.include_router(driver_kyc.router)
 app.include_router(driverprofileshow_router)
 app.include_router(passenger_route)
+app.include_router(passenger_seatmap_router)
 app.include_router(vehicle.router)
 app.include_router(scheduled_trip_router)
 app.include_router(current_trip_router)

@@ -338,7 +338,7 @@ class PassengerService:
 
         await self.db.flush()
 
-    async def _expire_stale_pending_bookings_for_trip(self, scheduled_trip_id: str) -> None:
+    async def _expire_stale_pending_bookings_for_trip(self, scheduled_trip_id: str) -> int:
         stmt = (
             select(TripBooking)
             .where(
@@ -355,6 +355,8 @@ class PassengerService:
 
         for stale_booking in stale_bookings:
             await self._expire_pending_booking_hold(stale_booking)
+
+        return len(stale_bookings)
 
     async def _get_profile_obj(self, user_id: str) -> PassengerProfile | None:
         stmt = select(PassengerProfile).where(PassengerProfile.user_id == user_id)
@@ -1372,6 +1374,26 @@ class PassengerService:
             message=message,
             data=data or {},
         )
+
+    async def _broadcast_seatmap_snapshots_for_trip(
+        self,
+        *,
+        scheduled_trip_id: str,
+        reason: str,
+    ) -> None:
+        try:
+            from app.passenger.seatmap_ws import (
+                broadcast_all_seatmap_snapshots_for_trip,
+            )
+
+            await broadcast_all_seatmap_snapshots_for_trip(
+                scheduled_trip_id=scheduled_trip_id,
+                reason=reason,
+            )
+        except Exception:
+            # Seatmap WS is best-effort; DB state remains the source of truth.
+            # Clients can still recover by manual REST refresh.
+            pass
 
     @staticmethod
     def _available_rfid_balance(account: RFIDCardAccount) -> Decimal:
@@ -4002,6 +4024,11 @@ class PassengerService:
 
             await self.db.commit()
 
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=trip.id,
+                reason="booking_created",
+            )
+
         except IntegrityError:
             await self.db.rollback()
 
@@ -4431,6 +4458,11 @@ class PassengerService:
 
         self.db.add(booking)
         await self.db.commit()
+
+        await self._broadcast_seatmap_snapshots_for_trip(
+            scheduled_trip_id=booking.scheduled_trip_id,
+            reason="booking_cancelled",
+        )
 
         booking = await self._get_booking_obj(
             booking_id=booking.id,
