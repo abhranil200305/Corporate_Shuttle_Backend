@@ -501,6 +501,8 @@ class RouteTripDiscoveryTripResponse(BaseModel):
     seat_capacity: int
     overlapping_active_bookings: int
     available_seats: int
+    occupied_seat_numbers: list[int]
+    available_seat_numbers: list[int]
     trip_bookable: bool
 
     vehicle: VehicleBriefResponse | None
