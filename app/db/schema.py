@@ -417,10 +417,10 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
-__table_args__ = (
-    UniqueConstraint("role", "email", name="uq_users_role_email"),
-    CheckConstraint("email <> ''", name="ck_users_email_nonempty"),
-)
+    __table_args__ = (
+        UniqueConstraint("role", "email", name="uq_users_role_email"),
+        CheckConstraint("email <> ''", name="ck_users_email_nonempty"),
+    )
 
 class OTPRequest(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "otp_requests"
