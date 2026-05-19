@@ -661,26 +661,21 @@ class RFIDScanService:
                     if open_ride is not None:
                         scan_type = schema.RFIDScanType.DROP
 
-            if active_context is not None and (
-                payload.scan_lat is None or payload.scan_lng is None
-            ):
-                rejection_reason = "scan_location_required"
-            elif active_context is not None:
-                distance_from_stop_meters = self._haversine_distance_meters(
-                    lat1=payload.scan_lat,
-                    lng1=payload.scan_lng,
-                    lat2=active_context.stop.lat,
-                    lng2=active_context.stop.lng,
-                )
+            if active_context is not None:
+                if payload.scan_lat is not None and payload.scan_lng is not None:
+                    distance_from_stop_meters = self._haversine_distance_meters(
+                        lat1=payload.scan_lat,
+                        lng1=payload.scan_lng,
+                        lat2=active_context.stop.lat,
+                        lng2=active_context.stop.lng,
+                    )
 
-                within_radius = (
-                    distance_from_stop_meters
-                    <= Decimal(active_context.stop.radius_meters or 0)
-                )
+                    within_radius = (
+                        distance_from_stop_meters
+                        <= Decimal(active_context.stop.radius_meters or 0)
+                    )
 
-                if not within_radius:
-                    rejection_reason = "not_within_active_stop_radius"
-                elif (
+                if (
                     scan_type == schema.RFIDScanType.DROP
                     and open_ride is not None
                     and active_context.route_stop.sequence_no
