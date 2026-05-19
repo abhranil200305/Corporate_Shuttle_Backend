@@ -176,7 +176,7 @@ class AuthService:
         email = self._validate_email(payload.email)
         self._ensure_signup_role_allowed(payload.role)
 
-        existing_user = await self.repo.get_user_by_email(email)
+        existing_user = await self.repo.get_user_by_email_and_role(email, payload.role)
         if existing_user is not None:
             raise UserAlreadyExistsError()
 
@@ -212,7 +212,7 @@ class AuthService:
         email = self._validate_email(payload.email)
         self._ensure_signup_role_allowed(payload.role)
 
-        existing_user = await self.repo.get_user_by_email(email)
+        existing_user = await self.repo.get_user_by_email_and_role(email, payload.role)
         if existing_user is not None:
             raise UserAlreadyExistsError()
 
