@@ -23,6 +23,7 @@ class Base(DeclarativeBase):
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    UniqueConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -299,7 +300,7 @@ class RFIDPayoutTransferReversalStatus(str, enum.Enum):
 class User(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "users"
 
-    email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    email: Mapped[str] = mapped_column(String(255), nullable=False)
     role: Mapped[UserRole] = mapped_column(
         enum_type(UserRole, "user_role"),
         nullable=False,
@@ -416,8 +417,10 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
-    __table_args__ = (CheckConstraint("email <> ''", name="ck_users_email_nonempty"),)
-
+__table_args__ = (
+    UniqueConstraint("role", "email", name="uq_users_role_email"),
+    CheckConstraint("email <> ''", name="ck_users_email_nonempty"),
+)
 
 class OTPRequest(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "otp_requests"
