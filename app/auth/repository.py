@@ -24,13 +24,7 @@ class AuthRepository:
     # ============================================================
     # users
     # ============================================================
-
-    async def get_user_by_email(self, email: str) -> User | None:
-        normalized_email = normalize_email(email)
-        stmt = select(User).where(User.email == normalized_email)
-        result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
-    
+ 
     async def get_user_by_email_and_role(
         self,
         email: str,
