@@ -305,8 +305,8 @@ async def register_vehicle(
             ".jpg",
             ".jpeg",
             ".webp",
-            ".avif",
-            ".pdf"
+            ".avif"
+#           ".pdf"
         }
 
         extension = (
