@@ -59,6 +59,7 @@ def _build_eta_by_stop_id(trip: ScheduledTrip) -> dict[str, object]:
 def _resolve_passenger_name(booking: TripBooking) -> str:
     if booking.passenger and booking.passenger.passenger_profile:
         full_name = (booking.passenger.passenger_profile.full_name or "").strip()
+
         if full_name:
             return full_name
 
@@ -79,9 +80,13 @@ def _resolve_fare_paid(booking: TripBooking) -> Decimal:
         return Decimal("0.00")
 
     paid_payments.sort(
-        key=lambda payment: (payment.updated_at, payment.created_at),
+        key=lambda payment: (
+            payment.updated_at,
+            payment.created_at,
+        ),
         reverse=True,
     )
+
     return _money(paid_payments[0].amount)
 
 
@@ -99,14 +104,20 @@ async def get_booking_details(
             selectinload(ScheduledTrip.route)
             .selectinload(Route.route_stops)
             .selectinload(RouteStop.stop),
+
             selectinload(ScheduledTrip.driver),
+
             selectinload(ScheduledTrip.vehicle),
+
             selectinload(ScheduledTrip.bookings)
             .selectinload(TripBooking.pickup_stop),
+
             selectinload(ScheduledTrip.bookings)
             .selectinload(TripBooking.dropoff_stop),
+
             selectinload(ScheduledTrip.bookings)
             .selectinload(TripBooking.payments),
+
             selectinload(ScheduledTrip.bookings)
             .selectinload(TripBooking.passenger)
             .selectinload(User.passenger_profile),
@@ -116,11 +127,17 @@ async def get_booking_details(
     trip = result.scalar_one_or_none()
 
     if not trip:
-        raise HTTPException(status_code=404, detail="Trip not found")
+        raise HTTPException(
+            status_code=404,
+            detail="Trip not found",
+        )
 
     # 🔒 Driver access check
     if trip.driver_user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not allowed")
+        raise HTTPException(
+            status_code=403,
+            detail="Not allowed",
+        )
 
     # 2️⃣ Build ETA map from route stop diffs
     eta_by_stop_id = _build_eta_by_stop_id(trip)
@@ -146,6 +163,7 @@ async def get_booking_details(
 
     # 4️⃣ Build booking list
     bookings_data = []
+
     total_fare = Decimal("0.00")
     total_fare_paid = Decimal("0.00")
 
@@ -159,23 +177,53 @@ async def get_booking_details(
         bookings_data.append(
             {
                 "booking_id": booking.id,
+
+                "seat_number": booking.seat_number,
+
                 "name": _resolve_passenger_name(booking),
-                "take_in": booking.pickup_stop.name if booking.pickup_stop else None,
-                "drop_off": booking.dropoff_stop.name if booking.dropoff_stop else None,
-                "estimated_pickup_time": eta_by_stop_id.get(booking.pickup_stop_id),
-                "estimated_drop_off_time": eta_by_stop_id.get(booking.dropoff_stop_id),
+
+                "take_in": (
+                    booking.pickup_stop.name
+                    if booking.pickup_stop
+                    else None
+                ),
+
+                "drop_off": (
+                    booking.dropoff_stop.name
+                    if booking.dropoff_stop
+                    else None
+                ),
+
+                "estimated_pickup_time": eta_by_stop_id.get(
+                    booking.pickup_stop_id
+                ),
+
+                "estimated_drop_off_time": eta_by_stop_id.get(
+                    booking.dropoff_stop_id
+                ),
+
                 "fare": fare,
+
                 "fare_paid": fare_paid,
+
                 "booking_status": booking.booking_status,
+
+                # optional extra useful fields
+                "boarded_at": booking.boarded_at,
+                "completed_at": booking.completed_at,
+                "otp": booking.otp,
             }
         )
 
     # 5️⃣ Final response
     return {
         "trip_id": trip.id,
+
         "status": trip.status,
+
         "planned_start": trip.planned_start_at,
         "planned_end": trip.planned_end_at,
+
         "actual_start": trip.actual_start_at,
         "actual_end": trip.actual_end_at,
 
@@ -197,7 +245,10 @@ async def get_booking_details(
         },
 
         "booking_count": len(bookings_data),
+
         "bookings": bookings_data,
+
         "total_fare": _money(total_fare),
+
         "total_fare_paid": _money(total_fare_paid),
     }
