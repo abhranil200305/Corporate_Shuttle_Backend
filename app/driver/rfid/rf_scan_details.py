@@ -114,6 +114,17 @@ async def get_driver_rfid_scan_details(
 
             schema.RFIDScanEvent.distance_from_stop_meters,
             schema.RFIDScanEvent.within_radius,
+
+            # ====================================================
+            # RFID fare details
+            # ====================================================
+
+            schema.RFIDTripRide.hold_amount,
+            schema.RFIDTripRide.fare_amount,
+            schema.RFIDTripRide.commission_amount,
+            schema.RFIDTripRide.driver_payout_amount,
+            schema.RFIDTripRide.platform_amount,
+            schema.RFIDTripRide.status.label("ride_status"),
         )
 
         # --------------------------------------------------------
@@ -249,6 +260,50 @@ async def get_driver_rfid_scan_details(
 
                 "accepted": row.accepted,
                 "rejection_reason": row.rejection_reason,
+
+                # =================================================
+                # RFID amount details
+                # =================================================
+
+                "ride_status": (
+                    row.ride_status.value
+                    if row.ride_status
+                    else None
+                ),
+
+                "hold_amount": (
+                    float(row.hold_amount)
+                    if row.hold_amount is not None
+                    else 0.0
+                ),
+
+                "fare_amount": (
+                    float(row.fare_amount)
+                    if row.fare_amount is not None
+                    else 0.0
+                ),
+
+                "commission_amount": (
+                    float(row.commission_amount)
+                    if row.commission_amount is not None
+                    else 0.0
+                ),
+
+                "driver_payout_amount": (
+                    float(row.driver_payout_amount)
+                    if row.driver_payout_amount is not None
+                    else 0.0
+                ),
+
+                "platform_amount": (
+                    float(row.platform_amount)
+                    if row.platform_amount is not None
+                    else 0.0
+                ),
+
+                # =================================================
+                # scan location
+                # =================================================
 
                 "scan_lat": (
                     float(row.scan_lat)
