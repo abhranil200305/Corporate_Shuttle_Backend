@@ -12,7 +12,7 @@ from app.auth.constants import (
     OTP_LENGTH,
     OTP_RESEND_COOLDOWN_SECONDS,
 )
-from app.db.schema import OTPPurpose
+from app.db.schema import OTPPurpose, UserRole
 
 
 def utcnow() -> datetime:
@@ -42,11 +42,13 @@ def hash_otp(
     otp: str,
     *,
     email: str,
+    role: UserRole | str,
     purpose: OTPPurpose | str,
 ) -> str:
     normalized_email = _normalize_email(email)
+    role_value = role.value if isinstance(role, UserRole) else str(role)
     purpose_value = purpose.value if isinstance(purpose, OTPPurpose) else str(purpose)
-    payload = f"{normalized_email}:{purpose_value}:{otp}".encode("utf-8")
+    payload = f"{normalized_email}:{role_value}:{purpose_value}:{otp}".encode("utf-8")
 
     return hmac.new(
         _get_otp_hash_secret(),
@@ -60,11 +62,13 @@ def verify_otp(
     stored_hash: str,
     *,
     email: str,
+    role: UserRole | str,
     purpose: OTPPurpose | str,
 ) -> bool:
     computed_hash = hash_otp(
         otp,
         email=email,
+        role=role,
         purpose=purpose,
     )
     return hmac.compare_digest(computed_hash, stored_hash)
