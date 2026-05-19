@@ -73,12 +73,14 @@ class AuthRepository:
         self,
         *,
         email: str,
+        role: UserRole,
         otp_code_hash: str,
         purpose: OTPPurpose,
         expires_at: datetime,
     ) -> OTPRequest:
         otp_request = OTPRequest(
             email=normalize_email(email),
+            role=role,
             otp_code_hash=otp_code_hash,
             purpose=purpose,
             expires_at=expires_at,
@@ -91,6 +93,7 @@ class AuthRepository:
         self,
         *,
         email: str,
+        role: UserRole,
         purpose: OTPPurpose,
     ) -> OTPRequest | None:
         normalized_email = normalize_email(email)
@@ -98,6 +101,7 @@ class AuthRepository:
             select(OTPRequest)
             .where(
                 OTPRequest.email == normalized_email,
+                OTPRequest.role == role,
                 OTPRequest.purpose == purpose,
             )
             .order_by(OTPRequest.created_at.desc())
@@ -110,6 +114,7 @@ class AuthRepository:
         self,
         *,
         email: str,
+        role: UserRole,
         purpose: OTPPurpose,
         now: datetime | None = None,
     ) -> OTPRequest | None:
@@ -119,6 +124,7 @@ class AuthRepository:
             select(OTPRequest)
             .where(
                 OTPRequest.email == normalized_email,
+                OTPRequest.role == role,
                 OTPRequest.purpose == purpose,
                 OTPRequest.used_at.is_(None),
                 OTPRequest.expires_at > current_time,
@@ -133,6 +139,7 @@ class AuthRepository:
         self,
         *,
         email: str,
+        role: UserRole,
         purpose: OTPPurpose,
         now: datetime | None = None,
     ) -> int:
@@ -142,6 +149,7 @@ class AuthRepository:
             select(func.count(OTPRequest.id))
             .where(
                 OTPRequest.email == normalized_email,
+                OTPRequest.role == role,
                 OTPRequest.purpose == purpose,
                 OTPRequest.used_at.is_(None),
                 OTPRequest.expires_at > current_time,
@@ -149,7 +157,7 @@ class AuthRepository:
         )
         result = await self.db.execute(stmt)
         return int(result.scalar_one())
-
+        
     async def mark_otp_request_used(
         self,
         otp_request: OTPRequest,
