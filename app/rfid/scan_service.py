@@ -308,6 +308,11 @@ class RFIDScanService:
         if not allocations:
             return []
 
+        # Payout transfers reference these allocation rows through a DB FK.
+        # The allocations may have been created in this same RFID scan transaction,
+        # so flush the parent rows before creating child transfer rows.
+        await self.db.flush()
+
         payout_details = await self._get_driver_payout_details(ride.driver_user_id)
 
         linked_account_id: str | None = None
