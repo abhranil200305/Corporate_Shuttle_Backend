@@ -118,10 +118,12 @@ class AuthService:
         self,
         *,
         email: str,
+        role: UserRole,
         purpose: OTPPurpose,
     ) -> OTPRequest:
         otp_request = await self.repo.get_latest_active_otp_request(
             email=email,
+            role=role,
             purpose=purpose,
             now=utcnow(),
         )
@@ -137,14 +139,22 @@ class AuthService:
         self,
         *,
         email: str,
+        role: UserRole,
         otp: str,
         purpose: OTPPurpose,
     ) -> OTPRequest:
         otp_request = await self._get_latest_active_otp_or_raise(
             email=email,
+            role=role,
             purpose=purpose,
         )
-        if not verify_otp(otp, otp_request.otp_code_hash, email=email, purpose=purpose):
+        if not verify_otp(
+            otp,
+            otp_request.otp_code_hash,
+            email=email,
+            role=role,
+            purpose=purpose,
+        ):
             raise InvalidOTPError()
         return otp_request
 
@@ -152,10 +162,12 @@ class AuthService:
         self,
         *,
         email: str,
+        role: UserRole,
         purpose: OTPPurpose,
     ) -> None:
         latest_request = await self.repo.get_latest_otp_request(
             email=email,
+            role=role,
             purpose=purpose,
         )
         if latest_request and not can_resend_otp(created_at=latest_request.created_at):
@@ -163,11 +175,182 @@ class AuthService:
 
         active_count = await self.repo.count_active_otp_requests(
             email=email,
+            role=role,
             purpose=purpose,
             now=utcnow(),
         )
         if active_count >= OTP_MAX_ACTIVE_PER_EMAIL_PER_PURPOSE:
             raise TooManyActiveOTPRequestsError()
+
+    # -----------------------------
+    # Signup
+    # -----------------------------
+    async def send_signup_otp(self, payload: SendSignupOTPRequest) -> MessageResponse:
+        email = self._validate_email(payload.email)
+        self._ensure_signup_role_allowed(payload.role)
+
+        existing_user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if existing_user is not None:
+            raise UserAlreadyExistsError()
+
+        await self._check_send_otp_preconditions(
+            email=email,
+            role=payload.role,
+            purpose=OTPPurpose.SIGNUP,
+        )
+
+        otp = generate_numeric_otp()
+        otp_hash = hash_otp(
+            otp,
+            email=email,
+            role=payload.role,
+            purpose=OTPPurpose.SIGNUP,
+        )
+        expires_at = get_otp_expiry()
+
+        await self.repo.create_otp_request(
+            email=email,
+            role=payload.role,
+            otp_code_hash=otp_hash,
+            purpose=OTPPurpose.SIGNUP,
+            expires_at=expires_at,
+        )
+
+        send_templated_mail(
+            to_email=email,
+            template_filename="otp_signup.html",
+            replacements={
+                "app_name": APP_NAME,
+                "otp": otp,
+                "expiry_minutes": OTP_EXPIRY_MINUTES,
+                "user_email": email,
+                "role": payload.role.value,
+            },
+        )
+
+        await self.db.commit()
+        return MessageResponse(message="Signup OTP sent successfully.")
+
+    async def verify_signup_otp(self, payload: VerifySignupOTPRequest) -> OTPVerifyResponse:
+        email = self._validate_email(payload.email)
+        self._ensure_signup_role_allowed(payload.role)
+
+        existing_user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if existing_user is not None:
+            raise UserAlreadyExistsError()
+
+        await self._validate_otp_or_raise(
+            email=email,
+            role=payload.role,
+            otp=payload.otp,
+            purpose=OTPPurpose.SIGNUP,
+        )
+        return OTPVerifyResponse(verified=True, message="Signup OTP verified successfully.")
+
+    async def signup(self, payload: SignupRequest) -> AuthTokenResponse:
+        email = self._validate_email(payload.email)
+        self._ensure_signup_role_allowed(payload.role)
+
+        existing_user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if existing_user is not None:
+            raise UserAlreadyExistsError()
+
+        otp_request = await self._validate_otp_or_raise(
+            email=email,
+            role=payload.role,
+            otp=payload.otp,
+            purpose=OTPPurpose.SIGNUP,
+        )
+        user = await self.repo.create_user(email=email, role=payload.role, is_active=True)
+        await self.repo.mark_otp_request_used(otp_request)
+
+        auth_response = await self._issue_session_for_user(user)
+        await self.db.commit()
+        return auth_response
+
+    # -----------------------------
+    # Login
+    # -----------------------------
+    async def send_login_otp(self, payload: SendLoginOTPRequest) -> MessageResponse:
+        email = self._validate_email(payload.email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if user is None:
+            raise UserNotFoundError()
+        if not user.is_active:
+            raise UserInactiveError()
+
+        await self._check_send_otp_preconditions(
+            email=email,
+            role=payload.role,
+            purpose=OTPPurpose.LOGIN,
+        )
+
+        otp = generate_numeric_otp()
+        otp_hash = hash_otp(
+            otp,
+            email=email,
+            role=payload.role,
+            purpose=OTPPurpose.LOGIN,
+        )
+        expires_at = get_otp_expiry()
+
+        await self.repo.create_otp_request(
+            email=email,
+            role=payload.role,
+            otp_code_hash=otp_hash,
+            purpose=OTPPurpose.LOGIN,
+            expires_at=expires_at,
+        )
+
+        send_templated_mail(
+            to_email=email,
+            template_filename="otp_login.html",
+            replacements={
+                "app_name": APP_NAME,
+                "otp": otp,
+                "expiry_minutes": OTP_EXPIRY_MINUTES,
+                "user_email": email,
+                "role": payload.role.value,
+            },
+        )
+        await self.db.commit()
+        return MessageResponse(message="Login OTP sent successfully.")
+
+    async def verify_login_otp(self, payload: VerifyLoginOTPRequest) -> OTPVerifyResponse:
+        email = self._validate_email(payload.email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if user is None:
+            raise UserNotFoundError()
+        if not user.is_active:
+            raise UserInactiveError()
+
+        await self._validate_otp_or_raise(
+            email=email,
+            role=payload.role,
+            otp=payload.otp,
+            purpose=OTPPurpose.LOGIN,
+        )
+        return OTPVerifyResponse(verified=True, message="Login OTP verified successfully.")
+
+    async def login(self, payload: LoginRequest) -> AuthTokenResponse:
+        email = self._validate_email(payload.email)
+        user = await self.repo.get_user_by_email_and_role(email, payload.role)
+        if user is None:
+            raise UserNotFoundError()
+        if not user.is_active:
+            raise UserInactiveError()
+
+        otp_request = await self._validate_otp_or_raise(
+            email=email,
+            role=payload.role,
+            otp=payload.otp,
+            purpose=OTPPurpose.LOGIN,
+        )
+        await self.repo.mark_otp_request_used(otp_request)
+
+        auth_response = await self._issue_session_for_user(user)
+        await self.db.commit()
+        return auth_response
 
     # -----------------------------
     # Signup
