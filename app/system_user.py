@@ -30,7 +30,14 @@ async def ensure_system_fine_register_user(
     system_email = get_system_fine_register_email()
 
     async with session_factory() as session:
-        stmt = select(User).where(User.email == system_email).limit(1)
+        stmt = (
+    select(User)
+    .where(
+        User.email == system_email,
+        User.role == UserRole.ADMIN,
+    )
+    .limit(1)
+)
         result = await session.execute(stmt)
         user = result.scalar_one_or_none()
 
@@ -68,7 +75,14 @@ async def get_system_fine_register_user_id(
 ) -> str:
     system_email = get_system_fine_register_email()
 
-    stmt = select(User.id).where(User.email == system_email).limit(1)
+    stmt = (
+    select(User.id)
+    .where(
+        User.email == system_email,
+        User.role == UserRole.ADMIN,
+    )
+    .limit(1)
+)
     result = await session.execute(stmt)
     user_id = result.scalar_one_or_none()
 
