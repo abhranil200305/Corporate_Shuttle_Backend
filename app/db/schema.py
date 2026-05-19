@@ -1294,8 +1294,8 @@ class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    board_lat: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
-    board_lng: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+    board_lat: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=True)
+    board_lng: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=True)
 
     dropoff_stop_id: Mapped[str | None] = mapped_column(
         String(36),

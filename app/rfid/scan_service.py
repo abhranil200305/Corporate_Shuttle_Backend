@@ -126,6 +126,19 @@ class RFIDScanService:
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
+    async def _get_card_account_for_update_by_account_id(
+        self,
+        account_id: str,
+    ) -> schema.RFIDCardAccount | None:
+        stmt = (
+            select(schema.RFIDCardAccount)
+            .where(schema.RFIDCardAccount.id == account_id)
+            .with_for_update()
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
     @staticmethod
     def _money(value: Decimal | int | str | None) -> Decimal:
         return Decimal(value or 0).quantize(Decimal("0.01"))
@@ -367,6 +380,223 @@ class RFIDScanService:
 
         return transfers
     
+    async def settle_unclosed_rfid_rides_for_scheduled_trip(
+        self,
+        *,
+        scheduled_trip_id: str,
+    ) -> dict[str, Any]:
+        trip_stmt = (
+            select(schema.ScheduledTrip)
+            .where(schema.ScheduledTrip.id == scheduled_trip_id)
+            .with_for_update()
+            .limit(1)
+        )
+        trip_result = await self.db.execute(trip_stmt)
+        scheduled_trip = trip_result.scalar_one_or_none()
+
+        if scheduled_trip is None:
+            raise ValueError("rfid_settlement_scheduled_trip_not_found")
+
+        route_stops_stmt = (
+            select(schema.RouteStop)
+            .where(schema.RouteStop.route_id == scheduled_trip.route_id)
+            .order_by(schema.RouteStop.sequence_no.asc())
+        )
+        route_stops_result = await self.db.execute(route_stops_stmt)
+        route_stops = list(route_stops_result.scalars().all())
+
+        if not route_stops:
+            raise ValueError("rfid_settlement_route_stops_not_found")
+
+        open_rides_stmt = (
+            select(schema.RFIDTripRide)
+            .where(
+                schema.RFIDTripRide.scheduled_trip_id == scheduled_trip_id,
+                schema.RFIDTripRide.status == schema.RFIDRideStatus.BOARDED,
+            )
+            .order_by(schema.RFIDTripRide.boarded_at.asc())
+            .with_for_update()
+        )
+        open_rides_result = await self.db.execute(open_rides_stmt)
+        open_rides = list(open_rides_result.scalars().all())
+
+        if not open_rides:
+            return {
+                "settled_count": 0,
+                "settled_amount": "0.00",
+                "settled_ride_ids": [],
+            }
+
+        now = schema.utcnow()
+        settled_count = 0
+        settled_amount = Decimal("0.00")
+        settled_ride_ids: list[str] = []
+
+        for ride in open_rides:
+            terminal_route_stop = next(
+                (
+                    route_stop
+                    for route_stop in reversed(route_stops)
+                    if route_stop.sequence_no > ride.pickup_sequence_no
+                ),
+                None,
+            )
+
+            if terminal_route_stop is None:
+                raise ValueError(
+                    "rfid_settlement_no_downstream_terminal_stop"
+                )
+
+            card_account = await self._get_card_account_for_update_by_account_id(
+                ride.account_id
+            )
+
+            if card_account is None:
+                raise ValueError("rfid_settlement_card_account_not_found")
+
+            hold_amount = self._money(ride.hold_amount)
+
+            if hold_amount <= Decimal("0.00"):
+                raise ValueError("rfid_settlement_hold_amount_invalid")
+
+            fare_amount = hold_amount
+            current_balance_before = self._money(card_account.current_balance)
+            held_balance_before = self._money(card_account.held_balance)
+
+            current_balance_after = self._money(
+                current_balance_before - fare_amount
+            )
+            held_balance_after = self._money(
+                held_balance_before - hold_amount
+            )
+
+            if current_balance_after < Decimal("0.00"):
+                raise ValueError(
+                    "rfid_settlement_card_balance_insufficient"
+                )
+
+            if held_balance_after < Decimal("0.00"):
+                raise ValueError(
+                    "rfid_settlement_held_balance_invalid"
+                )
+
+            funding_allocations = (
+                await self._allocate_rfid_fare_from_funding_lots(
+                    account_id=card_account.id,
+                    card_id=ride.card_id,
+                    passenger_user_id=ride.passenger_user_id,
+                    rfid_ride_id=ride.id,
+                    scheduled_trip_id=ride.scheduled_trip_id,
+                    route_id=ride.route_id,
+                    vehicle_id=ride.vehicle_id,
+                    driver_user_id=ride.driver_user_id,
+                    fare_amount=fare_amount,
+                )
+            )
+
+            if funding_allocations is None:
+                raise ValueError(
+                    "rfid_settlement_funding_lots_insufficient"
+                )
+
+            debit_entry = schema.RFIDLedgerEntry(
+                id=schema.new_id(),
+                account_id=card_account.id,
+                card_id=ride.card_id,
+                passenger_user_id=ride.passenger_user_id,
+                entry_type=schema.RFIDLedgerEntryType.FARE_DEBIT,
+                amount_delta=-fare_amount,
+                held_delta=Decimal("0.00"),
+                balance_after=current_balance_after,
+                held_balance_after=held_balance_before,
+                scheduled_trip_id=ride.scheduled_trip_id,
+                rfid_ride_id=ride.id,
+                stop_id=terminal_route_stop.stop_id,
+                note=(
+                    "RFID max fare auto-debited at trip end because "
+                    "passenger did not scan drop."
+                ),
+                created_at=now,
+            )
+
+            release_entry = schema.RFIDLedgerEntry(
+                id=schema.new_id(),
+                account_id=card_account.id,
+                card_id=ride.card_id,
+                passenger_user_id=ride.passenger_user_id,
+                entry_type=schema.RFIDLedgerEntryType.HOLD_RELEASE,
+                amount_delta=Decimal("0.00"),
+                held_delta=-hold_amount,
+                balance_after=current_balance_after,
+                held_balance_after=held_balance_after,
+                scheduled_trip_id=ride.scheduled_trip_id,
+                rfid_ride_id=ride.id,
+                stop_id=terminal_route_stop.stop_id,
+                note=(
+                    "RFID max fare hold released by trip-end "
+                    "auto settlement."
+                ),
+                created_at=now,
+            )
+
+            ride.dropoff_stop_id = terminal_route_stop.stop_id
+            ride.dropoff_sequence_no = terminal_route_stop.sequence_no
+            ride.drop_rfid_scan_event_id = None
+            ride.dropped_at = now
+            ride.drop_lat = None
+            ride.drop_lng = None
+            ride.status = schema.RFIDRideStatus.COMPLETED
+            ride.fare_amount = fare_amount
+            ride.commission_percent_snapshot = Decimal("0.00")
+            ride.commission_amount = Decimal("0.00")
+            ride.driver_payout_amount = fare_amount
+            ride.platform_amount = Decimal("0.00")
+            ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+            ride.transfer_ready_at = now
+
+            card_account.current_balance = current_balance_after
+            card_account.held_balance = held_balance_after
+
+            payout_transfers = (
+                await self._create_rfid_payout_transfers_for_allocations(
+                    allocations=funding_allocations,
+                    ride=ride,
+                )
+            )
+
+            has_ready_transfer = any(
+                transfer.status == schema.RFIDPayoutTransferStatus.READY
+                for transfer in payout_transfers
+            )
+            has_withheld_transfer = any(
+                transfer.status == schema.RFIDPayoutTransferStatus.WITHHELD
+                for transfer in payout_transfers
+            )
+
+            if has_ready_transfer:
+                ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+                ride.transfer_ready_at = now
+            elif has_withheld_transfer:
+                ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+                ride.transfer_ready_at = None
+
+            self.db.add(debit_entry)
+            self.db.add(release_entry)
+            self.db.add(ride)
+            self.db.add(card_account)
+
+            settled_count += 1
+            settled_amount = self._money(settled_amount + fare_amount)
+            settled_ride_ids.append(ride.id)
+
+        await self.db.flush()
+
+        return {
+            "settled_count": settled_count,
+            "settled_amount": str(settled_amount),
+            "settled_ride_ids": settled_ride_ids,
+        }
+
     @staticmethod
     def serialize_payout_transfer_reversal(
         reversal: schema.RFIDPayoutTransferReversal,
