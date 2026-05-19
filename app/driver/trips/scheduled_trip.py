@@ -28,8 +28,9 @@ from app.db.schema import (
     PlatformSettings,          
     VehicleVerificationStatus  
 )
-from app.db.schema import RFIDTripRide, RFIDRideStatus
+#from app.db.schema import RFIDTripRide, RFIDRideStatus
 from app.db.schema import ScanType  
+from app.rfid.scan_service import RFIDScanService
 from app.db.schema import EmergencyStopRequestStatus
 from app.auth.dependencies import get_current_user
 
@@ -889,52 +890,17 @@ async def end_trip(
         )
 
     # =====================================================
-    # RFID PASSENGER CHECK
+    # RFID PASSENGER SETTLEMENT
     # =====================================================
-    #
-    # Prevent trip end if:
-    #
-    # - RFID passenger still boarded
-    # - RFID DROP scan missing
-    # - RFID ride not completed
-    #
-    # This prevents:
-    #
-    # - open RFID rides
-    # - stuck held balances
-    # - payout settlement mismatch
-    # - unfinished wallet deductions
-    #
+    # Missing RFID drop scans are settled after all trip-end
+    # validations pass, so failed end attempts do not mutate
+    # RFID wallets/rides.
     # =====================================================
-
-    rfid_active_rides_result = await session.execute(
-        select(RFIDTripRide).where(
-            RFIDTripRide.scheduled_trip_id == trip_id,
-            RFIDTripRide.status == RFIDRideStatus.BOARDED,
-        )
-    )
-
-    active_rfid_rides = (
-        rfid_active_rides_result.scalars().all()
-    )
-
-    active_rfid_count = len(active_rfid_rides)
-
-    if active_rfid_count > 0:
-
-        active_rfid_ride_ids = [
-            ride.id
-            for ride in active_rfid_rides
-        ]
-
-        raise HTTPException(
-            400,
-            (
-                f"{active_rfid_count} RFID passenger(s) "
-                f"still active inside bus. "
-                f"DROP scan pending."
-            )
-        )
+    rfid_settlement_summary = {
+        "settled_count": 0,
+        "settled_amount": "0.00",
+        "settled_ride_ids": [],
+    }
 
     # =========================
     # TIME CHECK (STRICT)
@@ -1012,6 +978,24 @@ async def end_trip(
             )
         )
 
+    # =====================================================
+    # SETTLE RFID RIDES MISSING DROP SCAN
+    # =====================================================
+    try:
+        rfid_settlement_summary = (
+            await RFIDScanService(
+                session
+            ).settle_unclosed_rfid_rides_for_scheduled_trip(
+                scheduled_trip_id=trip_id,
+            )
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        ) from exc
+
     # =========================
     # UPDATE TRIP
     # =========================
@@ -1045,7 +1029,17 @@ async def end_trip(
         },
 
         "rfid_passenger_check": {
-            "active_rfid_rides": active_rfid_count
+            "auto_settled_missing_drop_rides": (
+                rfid_settlement_summary["settled_count"]
+            ),
+
+            "auto_settled_amount": (
+                rfid_settlement_summary["settled_amount"]
+            ),
+
+            "auto_settled_ride_ids": (
+                rfid_settlement_summary["settled_ride_ids"]
+            ),
         },
 
         "stops_checked": len(trip_events)
