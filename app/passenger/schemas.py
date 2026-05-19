@@ -634,8 +634,8 @@ class PassengerRFIDRideResponse(BaseModel):
     pickup_stop_id: str
     pickup_sequence_no: int
     boarded_at: datetime
-    board_lat: Decimal
-    board_lng: Decimal
+    board_lat: Decimal | None
+    board_lng: Decimal | None
 
     dropoff_stop_id: str | None
     dropoff_sequence_no: int | None

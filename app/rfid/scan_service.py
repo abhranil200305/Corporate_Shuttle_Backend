@@ -1262,8 +1262,11 @@ class RFIDScanService:
                         self.db.add(scan_event)
         if device is not None:
             device.last_seen_at = schema.utcnow()
-            device.last_seen_lat = payload.scan_lat
-            device.last_seen_lng = payload.scan_lng
+
+            if payload.scan_lat is not None and payload.scan_lng is not None:
+                device.last_seen_lat = payload.scan_lat
+                device.last_seen_lng = payload.scan_lng
+
             self.db.add(device)
 
         await self.db.flush()

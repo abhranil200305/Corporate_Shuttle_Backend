@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 def _clean_optional_text(value: str | None) -> str | None:
@@ -36,6 +36,12 @@ class RFIDScanRequest(BaseModel):
     @classmethod
     def validate_required_text(cls, value: str) -> str:
         return _clean_required_text(value)
+    
+    @model_validator(mode="after")
+    def validate_scan_location_pair(self) -> "RFIDScanRequest":
+        if (self.scan_lat is None) != (self.scan_lng is None):
+            raise ValueError("scan_lat and scan_lng must be provided together.")
+        return self
 
 
 class RFIDScanResponse(BaseModel):

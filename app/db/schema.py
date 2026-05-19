@@ -1309,8 +1309,8 @@ class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    board_lat: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=True)
-    board_lng: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=True)
+    board_lat: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
+    board_lng: Mapped[Decimal | None] = mapped_column(Numeric(9, 6), nullable=True)
 
     dropoff_stop_id: Mapped[str | None] = mapped_column(
         String(36),
@@ -1430,11 +1430,11 @@ class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
             name="ck_rfid_trip_rides_drop_after_pickup",
         ),
         CheckConstraint(
-            "board_lat >= -90 AND board_lat <= 90",
+            "board_lat IS NULL OR (board_lat >= -90 AND board_lat <= 90)",
             name="ck_rfid_trip_rides_board_lat_range",
         ),
         CheckConstraint(
-            "board_lng >= -180 AND board_lng <= 180",
+            "board_lng IS NULL OR (board_lng >= -180 AND board_lng <= 180)",
             name="ck_rfid_trip_rides_board_lng_range",
         ),
         CheckConstraint(
