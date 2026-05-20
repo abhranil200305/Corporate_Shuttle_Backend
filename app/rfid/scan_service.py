@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
 
@@ -140,11 +140,138 @@ class RFIDScanService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    def _money(value: Decimal | int | str | None) -> Decimal:
-        return Decimal(value or 0).quantize(Decimal("0.01"))
+    def _quantize_money(value: Decimal | int | str | None) -> Decimal:
+        return Decimal(value or 0).quantize(
+            Decimal("0.01"),
+            rounding=ROUND_HALF_UP,
+        )
+
+    @classmethod
+    def _money(cls, value: Decimal | int | str | None) -> Decimal:
+        return cls._quantize_money(value)
 
     def _available_balance(self, account: schema.RFIDCardAccount) -> Decimal:
         return self._money(account.current_balance) - self._money(account.held_balance)
+
+    async def _get_platform_settings_obj(self) -> schema.PlatformSettings | None:
+        stmt = (
+            select(schema.PlatformSettings)
+            .where(schema.PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        settings = result.scalar_one_or_none()
+
+        if settings is not None:
+            return settings
+
+        fallback_stmt = (
+            select(schema.PlatformSettings)
+            .order_by(
+                schema.PlatformSettings.updated_at.desc(),
+                schema.PlatformSettings.created_at.desc(),
+            )
+            .limit(1)
+        )
+        fallback_result = await self.db.execute(fallback_stmt)
+        return fallback_result.scalar_one_or_none()
+
+    async def _get_current_commission_percent(self) -> Decimal:
+        settings = await self._get_platform_settings_obj()
+
+        if settings is None or settings.commission_percent is None:
+            return Decimal("0.00")
+
+        return self._money(settings.commission_percent)
+
+    def _build_rfid_commission_snapshot(
+        self,
+        *,
+        fare_amount: Decimal,
+        commission_percent: Decimal,
+    ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+        normalized_fare = self._money(fare_amount)
+        normalized_commission_percent = self._money(commission_percent)
+
+        commission_amount = self._money(
+            (normalized_fare * normalized_commission_percent) / Decimal("100")
+        )
+
+        if commission_amount > normalized_fare:
+            commission_amount = normalized_fare
+
+        driver_payout_amount = self._money(normalized_fare - commission_amount)
+        platform_amount = commission_amount
+
+        return (
+            normalized_commission_percent,
+            commission_amount,
+            driver_payout_amount,
+            platform_amount,
+        )
+
+    def _build_rfid_payout_amounts_by_allocation(
+        self,
+        *,
+        allocations: list[schema.RFIDRechargeFundingAllocation],
+        fare_amount: Decimal,
+        driver_payout_amount: Decimal,
+    ) -> dict[str, Decimal]:
+        if not allocations:
+            return {}
+
+        normalized_fare = self._money(fare_amount)
+        allocation_amounts = {
+            allocation.id: self._money(allocation.amount)
+            for allocation in allocations
+        }
+        allocation_total = self._money(
+            sum(allocation_amounts.values(), Decimal("0.00"))
+        )
+
+        payable_total = self._money(driver_payout_amount)
+
+        if normalized_fare <= Decimal("0.00"):
+            return {}
+
+        if allocation_total <= Decimal("0.00"):
+            return {}
+
+        if payable_total <= Decimal("0.00"):
+            return {}
+
+        if payable_total > allocation_total:
+            payable_total = allocation_total
+
+        eligible_allocations = [
+            allocation
+            for allocation in allocations
+            if allocation_amounts[allocation.id] > Decimal("0.00")
+        ]
+
+        payout_amounts: dict[str, Decimal] = {}
+        remaining_payable = payable_total
+
+        for index, allocation in enumerate(eligible_allocations):
+            if remaining_payable <= Decimal("0.00"):
+                break
+
+            if index == len(eligible_allocations) - 1:
+                payout_amount = remaining_payable
+            else:
+                payout_amount = self._money(
+                    (allocation_amounts[allocation.id] * payable_total)
+                    / allocation_total
+                )
+
+                if payout_amount > remaining_payable:
+                    payout_amount = remaining_payable
+
+            if payout_amount > Decimal("0.00"):
+                payout_amounts[allocation.id] = payout_amount
+                remaining_payable = self._money(remaining_payable - payout_amount)
+
+        return payout_amounts
     
     async def _get_max_downstream_fare_from_stop(
         self,
@@ -326,6 +453,17 @@ class RFIDScanService:
         # so flush the parent rows before creating child transfer rows.
         await self.db.flush()
 
+        payout_amounts_by_allocation_id = (
+            self._build_rfid_payout_amounts_by_allocation(
+                allocations=allocations,
+                fare_amount=ride.fare_amount,
+                driver_payout_amount=ride.driver_payout_amount,
+            )
+        )
+
+        if not payout_amounts_by_allocation_id:
+            return []
+
         payout_details = await self._get_driver_payout_details(ride.driver_user_id)
 
         linked_account_id: str | None = None
@@ -345,6 +483,11 @@ class RFIDScanService:
         transfers: list[schema.RFIDPayoutTransfer] = []
 
         for allocation in allocations:
+            transfer_amount = payout_amounts_by_allocation_id.get(allocation.id)
+
+            if transfer_amount is None or transfer_amount <= Decimal("0.00"):
+                continue
+
             has_source_payment = bool(allocation.source_razorpay_payment_id)
 
             transfer_status = (
@@ -370,7 +513,7 @@ class RFIDScanService:
                 source_funding_allocation_id=allocation.id,
                 source_razorpay_payment_id=allocation.source_razorpay_payment_id,
                 linked_account_id=linked_account_id if linked_account_is_usable else None,
-                amount=allocation.amount,
+                amount=transfer_amount,
                 status=transfer_status,
                 failure_reason=failure_reason,
             )
@@ -546,13 +689,31 @@ class RFIDScanService:
             ride.drop_lat = None
             ride.drop_lng = None
             ride.status = schema.RFIDRideStatus.COMPLETED
+            commission_percent = await self._get_current_commission_percent()
+            (
+                commission_percent_snapshot,
+                commission_amount,
+                driver_payout_amount,
+                platform_amount,
+            ) = self._build_rfid_commission_snapshot(
+                fare_amount=fare_amount,
+                commission_percent=commission_percent,
+            )
+
             ride.fare_amount = fare_amount
-            ride.commission_percent_snapshot = Decimal("0.00")
-            ride.commission_amount = Decimal("0.00")
-            ride.driver_payout_amount = fare_amount
-            ride.platform_amount = Decimal("0.00")
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
-            ride.transfer_ready_at = now
+            ride.commission_percent_snapshot = commission_percent_snapshot
+            ride.commission_amount = commission_amount
+            ride.driver_payout_amount = driver_payout_amount
+            ride.platform_amount = platform_amount
+
+            if driver_payout_amount > Decimal("0.00"):
+                ride.transfer_status = schema.TransferStatus.READY
+                ride.transfer_ready_at = now
+                ride.transfer_processed_at = None
+            else:
+                ride.transfer_status = schema.TransferStatus.TRANSFERRED
+                ride.transfer_ready_at = None
+                ride.transfer_processed_at = now
 
             card_account.current_balance = current_balance_after
             card_account.held_balance = held_balance_after
@@ -574,10 +735,10 @@ class RFIDScanService:
             )
 
             if has_ready_transfer:
-                ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+                ride.transfer_status = schema.TransferStatus.READY
                 ride.transfer_ready_at = now
             elif has_withheld_transfer:
-                ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+                ride.transfer_status = schema.TransferStatus.WITHHELD
                 ride.transfer_ready_at = None
 
             self.db.add(debit_entry)
@@ -1080,7 +1241,7 @@ class RFIDScanService:
                 driver_payout_reversed_amount=Decimal("0.00"),
                 platform_amount=Decimal("0.00"),
                 platform_amount_reversed=Decimal("0.00"),
-                transfer_status=schema.RFIDPayoutTransferStatus.WITHHELD,
+                transfer_status=schema.TransferStatus.NOT_READY,
             )
 
             self.db.add(ride)
@@ -1216,13 +1377,33 @@ class RFIDScanService:
                         open_ride.drop_lat = payload.scan_lat
                         open_ride.drop_lng = payload.scan_lng
                         open_ride.status = schema.RFIDRideStatus.COMPLETED
+                        commission_percent = await self._get_current_commission_percent()
+                        (
+                            commission_percent_snapshot,
+                            commission_amount,
+                            driver_payout_amount,
+                            platform_amount,
+                        ) = self._build_rfid_commission_snapshot(
+                            fare_amount=fare_amount,
+                            commission_percent=commission_percent,
+                        )
+
                         open_ride.fare_amount = fare_amount
-                        open_ride.commission_percent_snapshot = Decimal("0.00")
-                        open_ride.commission_amount = Decimal("0.00")
-                        open_ride.driver_payout_amount = fare_amount
-                        open_ride.platform_amount = Decimal("0.00")
-                        open_ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
-                        open_ride.transfer_ready_at = now
+                        open_ride.commission_percent_snapshot = (
+                            commission_percent_snapshot
+                        )
+                        open_ride.commission_amount = commission_amount
+                        open_ride.driver_payout_amount = driver_payout_amount
+                        open_ride.platform_amount = platform_amount
+
+                        if driver_payout_amount > Decimal("0.00"):
+                            open_ride.transfer_status = schema.TransferStatus.READY
+                            open_ride.transfer_ready_at = now
+                            open_ride.transfer_processed_at = None
+                        else:
+                            open_ride.transfer_status = schema.TransferStatus.TRANSFERRED
+                            open_ride.transfer_ready_at = None
+                            open_ride.transfer_processed_at = now
 
                         card_account.current_balance = current_balance_after
                         card_account.held_balance = held_balance_after
@@ -1245,14 +1426,10 @@ class RFIDScanService:
                         )
 
                         if has_ready_transfer:
-                            open_ride.transfer_status = (
-                                schema.RFIDPayoutTransferStatus.READY
-                            )
+                            open_ride.transfer_status = schema.TransferStatus.READY
                             open_ride.transfer_ready_at = now
                         elif has_withheld_transfer:
-                            open_ride.transfer_status = (
-                                schema.RFIDPayoutTransferStatus.WITHHELD
-                            )
+                            open_ride.transfer_status = schema.TransferStatus.WITHHELD
                             open_ride.transfer_ready_at = None
 
                         self.db.add(debit_entry)

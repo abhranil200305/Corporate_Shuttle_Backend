@@ -412,12 +412,18 @@ class RFIDTripRideResponse(BaseModel):
     hold_amount: Decimal
     fare_amount: Decimal
     fare_reversed_amount: Decimal
+    fare_net_amount: Decimal
+
     commission_percent_snapshot: Decimal
     commission_amount: Decimal
+
     driver_payout_amount: Decimal
     driver_payout_reversed_amount: Decimal
+    driver_payout_net_amount: Decimal
+
     platform_amount: Decimal
     platform_amount_reversed: Decimal
+    platform_net_amount: Decimal
     transfer_status: str
     transfer_ready_at: datetime | None
     transfer_processed_at: datetime | None
@@ -441,9 +447,20 @@ class RFIDPayoutTransferResponse(BaseModel):
     source_funding_allocation_id: str | None
     source_razorpay_payment_id: str | None
     linked_account_id: str | None
+
+    # Backward-compatible field.
+    # This is now the driver payout transfer amount, not passenger fare.
     amount: Decimal
+
+    # Explicit driver-payout money fields after RFID commission split.
+    driver_payout_amount: Decimal
+    driver_payout_reversed_amount: Decimal
+    driver_payout_payable_amount: Decimal
+
+    # Backward-compatible aliases.
     reversed_amount: Decimal
     payable_amount: Decimal
+
     provider_reversed_amount: Decimal = Decimal("0.00")
     has_reversals: bool = False
     reversal_count: int = 0
@@ -536,7 +553,12 @@ class RFIDPayoutTransferReversalResponse(BaseModel):
     scheduled_trip_id: str
     route_id: str
     vehicle_id: str
+    # Backward-compatible field.
+    # This is the driver payout reversal amount, not passenger fare.
     amount: Decimal
+
+    driver_payout_reversal_amount: Decimal
+
     status: str
     razorpay_reversal_id: str | None
     failure_reason: str | None
@@ -610,13 +632,25 @@ class RFIDRideMoneyDetailResponse(BaseModel):
 class RFIDPayoutOperationsSummaryResponse(BaseModel):
     payout_transfer_total: int
     payout_transfer_counts_by_status: dict[str, int]
+    # Backward-compatible fields.
+    # These are driver payout transfer amounts, not passenger fare.
     payout_transfer_amount_by_status: dict[str, Decimal]
     payout_transfer_reversed_amount_by_status: dict[str, Decimal]
     payout_transfer_payable_amount_by_status: dict[str, Decimal]
 
+    # Explicit driver-payout money fields after RFID commission split.
+    driver_payout_transfer_amount_by_status: dict[str, Decimal]
+    driver_payout_transfer_reversed_amount_by_status: dict[str, Decimal]
+    driver_payout_transfer_payable_amount_by_status: dict[str, Decimal]
+
     provider_reversal_total: int
     provider_reversal_counts_by_status: dict[str, int]
+
+    # Backward-compatible field.
+    # These provider reversals are driver payout transfer reversals.
     provider_reversal_amount_by_status: dict[str, Decimal]
+
+    driver_payout_provider_reversal_amount_by_status: dict[str, Decimal]
 
     ready_transfer_count: int
     created_transfer_count: int

@@ -959,6 +959,16 @@ class RoutePayoutService:
         await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
         await self.db.flush()
 
+        driver_payout_amount = self._quantize_money(
+            Decimal(transfer.amount or 0)
+        )
+        driver_payout_reversed_amount = self._quantize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        driver_payout_payable_amount = self._quantize_money(
+            driver_payout_amount - driver_payout_reversed_amount
+        )
+
         return {
             "message": "RFID payout transfer reversed successfully.",
             "transfer_id": transfer.id,
@@ -966,9 +976,21 @@ class RoutePayoutService:
             "reversal_id": reversal.id,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "razorpay_reversal_id": reversal.razorpay_reversal_id,
+
+            # Backward-compatible field.
+            # This is the driver payout reversal amount, not passenger fare.
             "reversal_amount": provider_reversed_amount,
-            "transfer_amount": transfer.amount,
-            "transfer_reversed_amount": transfer.reversed_amount,
+
+            "driver_payout_reversal_amount": provider_reversed_amount,
+            "driver_payout_amount": driver_payout_amount,
+            "driver_payout_reversed_amount": driver_payout_reversed_amount,
+            "driver_payout_payable_amount": driver_payout_payable_amount,
+
+            # Backward-compatible aliases.
+            "transfer_amount": driver_payout_amount,
+            "transfer_reversed_amount": driver_payout_reversed_amount,
+            "remaining_reversible_amount": driver_payout_payable_amount,
+
             "transfer_status": transfer.status,
             "reversal_status": reversal.status,
             "provider_response": provider_response,
@@ -1086,26 +1108,30 @@ class RoutePayoutService:
 
         now = utcnow()
 
-        if all(status == RFIDPayoutTransferStatus.PROCESSED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.PROCESSED
-            ride.transfer_processed_at = ride.transfer_processed_at or now
-
-        elif any(status == RFIDPayoutTransferStatus.FAILED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.FAILED
-
-        elif any(status == RFIDPayoutTransferStatus.CREATED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.CREATED
-
-        elif any(status == RFIDPayoutTransferStatus.READY for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.READY
-            ride.transfer_ready_at = ride.transfer_ready_at or now
-
-        elif any(status == RFIDPayoutTransferStatus.WITHHELD for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.WITHHELD
+        if all(status == RFIDPayoutTransferStatus.REVERSED for status in statuses):
+            ride.transfer_status = TransferStatus.REVERSED
             ride.transfer_ready_at = None
 
-        elif all(status == RFIDPayoutTransferStatus.REVERSED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.REVERSED
+        elif any(status == RFIDPayoutTransferStatus.FAILED for status in statuses):
+            ride.transfer_status = TransferStatus.FAILED
+
+        elif any(status == RFIDPayoutTransferStatus.WITHHELD for status in statuses):
+            ride.transfer_status = TransferStatus.WITHHELD
+            ride.transfer_ready_at = None
+
+        elif any(
+            status in {
+                RFIDPayoutTransferStatus.READY,
+                RFIDPayoutTransferStatus.CREATED,
+            }
+            for status in statuses
+        ):
+            ride.transfer_status = TransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
+        elif any(status == RFIDPayoutTransferStatus.PROCESSED for status in statuses):
+            ride.transfer_status = TransferStatus.TRANSFERRED
+            ride.transfer_processed_at = ride.transfer_processed_at or now
 
         self.db.add(ride)
 
@@ -1115,6 +1141,16 @@ class RoutePayoutService:
     ) -> dict[str, Any]:
         transfer = await self._get_rfid_payout_transfer_for_update(transfer_id)
 
+        driver_payout_amount = self._quantize_money(
+            Decimal(transfer.amount or 0)
+        )
+        driver_payout_reversed_amount = self._quantize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        driver_payout_payable_amount = self._quantize_money(
+            driver_payout_amount - driver_payout_reversed_amount
+        )
+
         if transfer.status == RFIDPayoutTransferStatus.PROCESSED:
             return {
                 "message": "RFID payout transfer already processed.",
@@ -1122,7 +1158,19 @@ class RoutePayoutService:
                 "rfid_ride_id": transfer.rfid_ride_id,
                 "razorpay_transfer_id": transfer.razorpay_transfer_id,
                 "status": transfer.status,
-                "amount": transfer.amount,
+
+                # Backward-compatible field.
+                # This is the driver payout transfer amount, not passenger fare.
+                "amount": driver_payout_amount,
+
+                "driver_payout_amount": driver_payout_amount,
+                "driver_payout_reversed_amount": driver_payout_reversed_amount,
+                "driver_payout_payable_amount": driver_payout_payable_amount,
+
+                # Backward-compatible aliases.
+                "reversed_amount": driver_payout_reversed_amount,
+                "payable_amount": driver_payout_payable_amount,
+
                 "processed_at": transfer.processed_at,
             }
 
@@ -1166,11 +1214,7 @@ class RoutePayoutService:
                 "failure_reason": transfer.failure_reason,
             }
 
-        payable_amount = self._quantize_money(
-            Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
-        )
-
-        if payable_amount <= Decimal("0.00"):
+        if driver_payout_payable_amount <= Decimal("0.00"):
             transfer.status = RFIDPayoutTransferStatus.REVERSED
             transfer.reversed_at = transfer.reversed_at or utcnow()
             transfer.failure_reason = None
@@ -1184,12 +1228,21 @@ class RoutePayoutService:
                 "transfer_id": transfer.id,
                 "rfid_ride_id": transfer.rfid_ride_id,
                 "status": transfer.status,
-                "amount": transfer.amount,
-                "reversed_amount": transfer.reversed_amount,
-                "payable_amount": payable_amount,
+
+                # Backward-compatible field.
+                # This is the driver payout transfer amount, not passenger fare.
+                "amount": driver_payout_amount,
+
+                "driver_payout_amount": driver_payout_amount,
+                "driver_payout_reversed_amount": driver_payout_reversed_amount,
+                "driver_payout_payable_amount": driver_payout_payable_amount,
+
+                # Backward-compatible aliases.
+                "reversed_amount": driver_payout_reversed_amount,
+                "payable_amount": driver_payout_payable_amount,
             }
 
-        amount_subunits = self._to_subunits(payable_amount)
+        amount_subunits = self._to_subunits(driver_payout_payable_amount)
         try:
             provider_response = await self._create_rfid_transfer_from_payment(
                 razorpay_payment_id=transfer.source_razorpay_payment_id,
@@ -1251,9 +1304,17 @@ class RoutePayoutService:
             "rfid_ride_id": transfer.rfid_ride_id,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "status": transfer.status,
-            "amount": transfer.amount,
-            "reversed_amount": transfer.reversed_amount,
-            "payable_amount": payable_amount,
+            # Backward-compatible field.
+            # This is the driver payout transfer amount, not passenger fare.
+            "amount": driver_payout_amount,
+
+            "driver_payout_amount": driver_payout_amount,
+            "driver_payout_reversed_amount": driver_payout_reversed_amount,
+            "driver_payout_payable_amount": driver_payout_payable_amount,
+
+            # Backward-compatible aliases.
+            "reversed_amount": driver_payout_reversed_amount,
+            "payable_amount": driver_payout_payable_amount,
             "linked_account_id": transfer.linked_account_id,
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "processed_at": transfer.processed_at,
