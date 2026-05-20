@@ -17,6 +17,7 @@ from app.db.schema import (
     UserRole,
     DriverProfile,
     VehicleOwnershipType,
+    VehicleInspectionStatus,
     DriverVerificationStatus
 )
 from app.driver.schemas import VehicleOut
@@ -275,20 +276,35 @@ async def register_vehicle(
         )
 
     # ---------------------------
-    # DUPLICATE CHECK
+    # EXISTING VEHICLE CHECK
     # ---------------------------
     result = await session.execute(
         select(Vehicle).where(
-            Vehicle.registration_number
-            == registration_number
+            Vehicle.driver_user_id
+            == current_driver.id
         )
     )
 
-    if result.scalar_one_or_none():
-        raise HTTPException(
-            status_code=400,
-            detail="Vehicle already exists"
-        )
+    existing_vehicle = (
+        result.scalar_one_or_none()
+    )
+
+    # ---------------------------
+    # BLOCK NON-DRAFT VEHICLES
+    # ---------------------------
+    if existing_vehicle:
+
+        if existing_vehicle.verification_status in [
+            VehicleVerificationStatus.PENDING,
+            VehicleVerificationStatus.VERIFIED,
+        ]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Vehicle already submitted "
+                    "or verified"
+                )
+            )
 
     # ---------------------------
     # FILE SAVE HELPER
@@ -390,6 +406,103 @@ async def register_vehicle(
         "aadhaar"
     )
 
+    # ============================================================
+    # UPDATE EXISTING DRAFT / REJECTED VEHICLE
+    # ============================================================
+    if existing_vehicle:
+
+        existing_vehicle.registration_number = (
+            registration_number
+        )
+
+        existing_vehicle.registration_valid_till = (
+            registration_valid_till_dt
+        )
+
+        existing_vehicle.vehicle_name = (
+            vehicle_name
+        )
+
+        existing_vehicle.vehicle_model = (
+            vehicle_model
+        )
+
+        existing_vehicle.color = color
+
+        existing_vehicle.seat_count = seat_count
+
+        existing_vehicle.default_rfid_reserved_seat_count = (
+            default_rfid_reserved_seat_count
+        )
+
+        existing_vehicle.has_ac = has_ac
+
+        existing_vehicle.ownership_type = (
+            ownership_enum
+        )
+
+        existing_vehicle.owner_name = owner_name
+
+        # ---------------------------
+        # FILES
+        # ---------------------------
+        existing_vehicle.rc_file_path = rc_path
+
+        existing_vehicle.rear_photo_file_path = (
+            rear_path
+        )
+
+        existing_vehicle.authentication_file_path = (
+            auth_path
+        )
+
+        existing_vehicle.front_photo_file_path = (
+            front_path
+        )
+
+        existing_vehicle.interior_photo_file_path = (
+            interior_path
+        )
+
+        existing_vehicle.left_side_file_path = (
+            left_path
+        )
+
+        existing_vehicle.right_side_file_path = (
+            right_path
+        )
+
+        existing_vehicle.insurance_document = (
+            insurance_path
+        )
+
+        existing_vehicle.pollution_document = (
+            pollution_path
+        )
+
+        existing_vehicle.owner_aadhaar_card = (
+            aadhaar_path
+        )
+
+        # ---------------------------
+        # RESET REJECTION
+        # ---------------------------
+        existing_vehicle.rejection_reason = None
+
+        existing_vehicle.verification_status = (
+            VehicleVerificationStatus.DRAFT
+        )
+
+        session.add(existing_vehicle)
+
+        await session.commit()
+
+        await session.refresh(
+            existing_vehicle
+        )
+
+        return existing_vehicle
+
     # ---------------------------
     # CREATE VEHICLE
     # ---------------------------
@@ -415,7 +528,6 @@ async def register_vehicle(
 
         has_ac=has_ac,
 
-        # existing
         rc_file_path=rc_path,
         rear_photo_file_path=rear_path,
 
@@ -441,6 +553,7 @@ async def register_vehicle(
     session.add(vehicle)
 
     await session.commit()
+
     await session.refresh(vehicle)
 
     return vehicle
@@ -613,29 +726,55 @@ async def update_vehicle(
     # ---------------------------
     # STATUS CHECK
     # ---------------------------
-    if vehicle.verification_status in [
-        VehicleVerificationStatus.PENDING,
-        VehicleVerificationStatus.VERIFIED
-    ]:
+
+    # ❌ Block while verification pending
+    if (
+        vehicle.verification_status
+        == VehicleVerificationStatus.PENDING
+    ):
         raise HTTPException(
             status_code=403,
             detail=(
-                "Cannot update after submission. "
-                "Wait for admin or rejection."
+                "Vehicle verification is pending."
             )
         )
 
+    # ❌ Fully locked after final approval
+    if (
+        vehicle.verification_status
+        == VehicleVerificationStatus.VERIFIED
+        and vehicle.inspection_status
+        == VehicleInspectionStatus.APPROVED
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Vehicle already fully approved. "
+                "Updates are locked."
+            )
+        )
+
+    # ✅ Allow update after rejection
     if (
         vehicle.verification_status
         == VehicleVerificationStatus.REJECTED
+        or vehicle.inspection_status
+        == VehicleInspectionStatus.REJECTED
     ):
+
+        # reset verification cycle
         vehicle.verification_status = (
             VehicleVerificationStatus.DRAFT
         )
 
-    # ---------------------------
-    # FILE SAVE HELPER
-    # ---------------------------
+        vehicle.rejection_reason = None
+
+        # reset inspection cycle
+        vehicle.inspection_status = None
+        vehicle.inspection_reason = None
+        vehicle.inspection_created_at = None
+        vehicle.inspection_reviewed_at = None
+
     # ---------------------------
     # FILE SAVE HELPER
     # ---------------------------
@@ -652,7 +791,7 @@ async def update_vehicle(
             ".jpeg",
             ".webp",
             ".avif",
-            ".pdf"
+#           ".pdf"
         }
 
         extension = (
@@ -709,8 +848,6 @@ async def update_vehicle(
                 )
             )
 
-        # 🔥 Only validate RFID seats
-        # if feature enabled
         if allow_driver_rfid_seat_reservation:
 
             if (
@@ -732,7 +869,6 @@ async def update_vehicle(
     # ---------------------------
     if not allow_driver_rfid_seat_reservation:
 
-        # 🔥 Force disable RFID seats
         vehicle.default_rfid_reserved_seat_count = 0
 
     # ---------------------------
@@ -781,7 +917,6 @@ async def update_vehicle(
 
     else:
 
-        # 🔥 Always force 0
         vehicle.default_rfid_reserved_seat_count = 0
 
     # ---------------------------
