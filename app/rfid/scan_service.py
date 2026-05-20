@@ -707,7 +707,7 @@ class RFIDScanService:
             ride.platform_amount = platform_amount
 
             if driver_payout_amount > Decimal("0.00"):
-                ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+                ride.transfer_status = schema.TransferStatus.READY
                 ride.transfer_ready_at = now
                 ride.transfer_processed_at = None
             else:
@@ -735,10 +735,10 @@ class RFIDScanService:
             )
 
             if has_ready_transfer:
-                ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
+                ride.transfer_status = schema.TransferStatus.READY
                 ride.transfer_ready_at = now
             elif has_withheld_transfer:
-                ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+                ride.transfer_status = schema.TransferStatus.WITHHELD
                 ride.transfer_ready_at = None
 
             self.db.add(debit_entry)
@@ -1241,7 +1241,7 @@ class RFIDScanService:
                 driver_payout_reversed_amount=Decimal("0.00"),
                 platform_amount=Decimal("0.00"),
                 platform_amount_reversed=Decimal("0.00"),
-                transfer_status=schema.RFIDPayoutTransferStatus.WITHHELD,
+                transfer_status=schema.TransferStatus.NOT_READY,
             )
 
             self.db.add(ride)
@@ -1397,9 +1397,7 @@ class RFIDScanService:
                         open_ride.platform_amount = platform_amount
 
                         if driver_payout_amount > Decimal("0.00"):
-                            open_ride.transfer_status = (
-                                schema.RFIDPayoutTransferStatus.READY
-                            )
+                            open_ride.transfer_status = schema.TransferStatus.READY
                             open_ride.transfer_ready_at = now
                             open_ride.transfer_processed_at = None
                         else:
@@ -1428,14 +1426,10 @@ class RFIDScanService:
                         )
 
                         if has_ready_transfer:
-                            open_ride.transfer_status = (
-                                schema.RFIDPayoutTransferStatus.READY
-                            )
+                            open_ride.transfer_status = schema.TransferStatus.READY
                             open_ride.transfer_ready_at = now
                         elif has_withheld_transfer:
-                            open_ride.transfer_status = (
-                                schema.RFIDPayoutTransferStatus.WITHHELD
-                            )
+                            open_ride.transfer_status = schema.TransferStatus.WITHHELD
                             open_ride.transfer_ready_at = None
 
                         self.db.add(debit_entry)
