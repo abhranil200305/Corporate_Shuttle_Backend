@@ -26,7 +26,8 @@ from app.db.schema import (
     UserRole,
     TripScanEvent,
     PlatformSettings,          
-    VehicleVerificationStatus  
+    VehicleVerificationStatus,
+    VehicleInspectionStatus,  
 )
 #from app.db.schema import RFIDTripRide, RFIDRideStatus
 from app.db.schema import ScanType  
@@ -69,7 +70,6 @@ def is_within_radius(stop: Stop, lat: float, lng: float, radius=150) -> bool:
 # ============================================================
 # CREATE TRIP (WITH AC/NON-AC VALIDATION)
 # ============================================================
-
 @router.post("/create")
 async def create_trip(
     route_name: str = Form(...),
@@ -77,7 +77,6 @@ async def create_trip(
     planned_start_at: datetime = Form(...),
     planned_end_at: datetime = Form(...),
 
-    # ✅ OPTIONAL RFID RESERVED SEATS
     rfid_reserved_seat_count: int | None = Form(None),
 
     session: AsyncSession = Depends(get_async_session),
@@ -157,6 +156,23 @@ async def create_trip(
         raise HTTPException(
             status_code=400,
             detail="Vehicle is not verified"
+        )
+
+    # ---------------------------------------------------
+    # ✅ VEHICLE INSPECTION APPROVAL CHECK
+    # Driver can create trip only if
+    # inspection_status == APPROVED
+    # ---------------------------------------------------
+    if (
+        vehicle.inspection_status
+        != VehicleInspectionStatus.APPROVED
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Vehicle inspection is not approved. "
+                "Trip creation is not allowed"
+            )
         )
 
     # ---------------------------------------------------
