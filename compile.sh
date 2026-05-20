@@ -24,6 +24,8 @@ echo "🛠️ Compiling $APP_ENTRYPOINT with Nuitka..."
   --remove-output \
   --nofollow-import-to=tests \
   --include-package=app \
+  --include-module=_json \
+  --include-data-dir="$PWD/app/auth/templates=app/auth/templates" \
   --static-libpython=yes \
   --clang
 
