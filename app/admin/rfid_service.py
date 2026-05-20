@@ -2579,13 +2579,13 @@ class AdminRFIDService:
                 transfer
             )
 
-            if remaining_transfer_amount <= Decimal("0.00"):
-                continue
-
             available_driver_amount = Decimal("0.00")
             mode: str | None = None
 
             if self._is_rfid_payout_transfer_locally_reversible(transfer):
+                if remaining_transfer_amount <= Decimal("0.00"):
+                    continue
+
                 available_driver_amount = self._normalize_money(
                     min(
                         remaining_transfer_amount,
@@ -2606,7 +2606,6 @@ class AdminRFIDService:
                 available_driver_amount = self._normalize_money(
                     min(
                         provider_reversed_available,
-                        remaining_transfer_amount,
                         remaining_allocation_driver_capacity,
                     )
                 )
