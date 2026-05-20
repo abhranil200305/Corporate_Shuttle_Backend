@@ -7,34 +7,10 @@ cd /root/Corporate_Shuttle_Backend || exit 1
 APP_BINARY="./shuttlebe"
 APP_ENTRYPOINT="run_shuttlebe.py"
 
-if [ -x "./venv/bin/nuitka" ]; then
-  if [ ! -f "$APP_BINARY" ]; then
-    echo "🛠️ Compiling $APP_ENTRYPOINT using venv Nuitka..."
-
-    ./venv/bin/python3 -m nuitka "$APP_ENTRYPOINT" \
-      --standalone \
-      --onefile \
-      --output-filename=shuttlebe \
-      --output-dir=. \
-      --remove-output \
-      --nofollow-import-to=tests \
-      --include-package=app \
-      --static-libpython=yes \
-      --clang \
-      --lto=yes
-
-    if [ -f "./shuttlebe.bin" ] && [ ! -f "$APP_BINARY" ]; then
-      mv ./shuttlebe.bin "$APP_BINARY"
-    fi
-  fi
-else
-  echo "❌ Nuitka not found in venv. Skipping compile."
-fi
-
 if [ -x "$APP_BINARY" ]; then
   echo "🟢 Running compiled Shuttle backend binary..."
   exec "$APP_BINARY"
-else
-  echo "🟡 Running Shuttle backend via Python script in venv..."
-  exec ./venv/bin/python3 "$APP_ENTRYPOINT"
 fi
+
+echo "🟡 Compiled binary not found. Running Shuttle backend via Python script in venv..."
+exec ./venv/bin/python3 "$APP_ENTRYPOINT"
