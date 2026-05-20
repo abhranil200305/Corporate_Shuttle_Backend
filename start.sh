@@ -11,7 +11,7 @@ if [ -x "./venv/bin/nuitka" ]; then
   if [ ! -f "$APP_BINARY" ]; then
     echo "🛠️ Compiling $APP_ENTRYPOINT using venv Nuitka..."
 
-    ./venv/bin/nuitka "$APP_ENTRYPOINT" \
+    ./venv/bin/python3 -m nuitka "$APP_ENTRYPOINT" \
       --standalone \
       --onefile \
       --output-filename=shuttlebe \
@@ -19,14 +19,6 @@ if [ -x "./venv/bin/nuitka" ]; then
       --remove-output \
       --nofollow-import-to=tests \
       --include-package=app \
-      --include-package=uvicorn \
-      --include-package=fastapi \
-      --include-package=starlette \
-      --include-package=pydantic \
-      --include-package=sqlalchemy \
-      --include-package=asyncpg \
-      --include-package=socketio \
-      --include-package=engineio \
       --static-libpython=yes \
       --clang \
       --lto=yes
