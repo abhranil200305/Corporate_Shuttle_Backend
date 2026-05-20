@@ -121,10 +121,19 @@ async def get_driver_rfid_scan_details(
 
             schema.RFIDTripRide.hold_amount,
             schema.RFIDTripRide.fare_amount,
+            schema.RFIDTripRide.fare_reversed_amount,
+
             schema.RFIDTripRide.commission_amount,
+
             schema.RFIDTripRide.driver_payout_amount,
+            schema.RFIDTripRide.driver_payout_reversed_amount,
+
             schema.RFIDTripRide.platform_amount,
+            schema.RFIDTripRide.platform_amount_reversed,
+
             schema.RFIDTripRide.status.label("ride_status"),
+
+            schema.RFIDTripRide.transfer_status,
         )
 
         # --------------------------------------------------------
@@ -283,6 +292,21 @@ async def get_driver_rfid_scan_details(
                     else 0.0
                 ),
 
+                "fare_reversed_amount": (
+                    float(row.fare_reversed_amount)
+                    if row.fare_reversed_amount is not None
+                    else 0.0
+                ),
+
+                "fare_net_amount": (
+                    float(
+                        (row.fare_amount or 0)
+                        - (row.fare_reversed_amount or 0)
+                    )
+                    if row.fare_amount is not None
+                    else 0.0
+                ),
+
                 "commission_amount": (
                     float(row.commission_amount)
                     if row.commission_amount is not None
@@ -295,10 +319,46 @@ async def get_driver_rfid_scan_details(
                     else 0.0
                 ),
 
+                "driver_payout_reversed_amount": (
+                    float(row.driver_payout_reversed_amount)
+                    if row.driver_payout_reversed_amount is not None
+                    else 0.0
+                ),
+
+                "driver_payout_net_amount": (
+                    float(
+                        (row.driver_payout_amount or 0)
+                        - (row.driver_payout_reversed_amount or 0)
+                    )
+                    if row.driver_payout_amount is not None
+                    else 0.0
+                ),
+
                 "platform_amount": (
                     float(row.platform_amount)
                     if row.platform_amount is not None
                     else 0.0
+                ),
+
+                "platform_amount_reversed": (
+                    float(row.platform_amount_reversed)
+                    if row.platform_amount_reversed is not None
+                    else 0.0
+                ),
+
+                "platform_net_amount": (
+                    float(
+                        (row.platform_amount or 0)
+                        - (row.platform_amount_reversed or 0)
+                    )
+                    if row.platform_amount is not None
+                    else 0.0
+                ),
+
+                "transfer_status": (
+                    row.transfer_status.value
+                    if row.transfer_status
+                    else None
                 ),
 
                 # =================================================
