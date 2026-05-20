@@ -1086,26 +1086,30 @@ class RoutePayoutService:
 
         now = utcnow()
 
-        if all(status == RFIDPayoutTransferStatus.PROCESSED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.PROCESSED
-            ride.transfer_processed_at = ride.transfer_processed_at or now
-
-        elif any(status == RFIDPayoutTransferStatus.FAILED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.FAILED
-
-        elif any(status == RFIDPayoutTransferStatus.CREATED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.CREATED
-
-        elif any(status == RFIDPayoutTransferStatus.READY for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.READY
-            ride.transfer_ready_at = ride.transfer_ready_at or now
-
-        elif any(status == RFIDPayoutTransferStatus.WITHHELD for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.WITHHELD
+        if all(status == RFIDPayoutTransferStatus.REVERSED for status in statuses):
+            ride.transfer_status = TransferStatus.REVERSED
             ride.transfer_ready_at = None
 
-        elif all(status == RFIDPayoutTransferStatus.REVERSED for status in statuses):
-            ride.transfer_status = RFIDPayoutTransferStatus.REVERSED
+        elif any(status == RFIDPayoutTransferStatus.FAILED for status in statuses):
+            ride.transfer_status = TransferStatus.FAILED
+
+        elif any(status == RFIDPayoutTransferStatus.WITHHELD for status in statuses):
+            ride.transfer_status = TransferStatus.WITHHELD
+            ride.transfer_ready_at = None
+
+        elif any(
+            status in {
+                RFIDPayoutTransferStatus.READY,
+                RFIDPayoutTransferStatus.CREATED,
+            }
+            for status in statuses
+        ):
+            ride.transfer_status = TransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
+        elif any(status == RFIDPayoutTransferStatus.PROCESSED for status in statuses):
+            ride.transfer_status = TransferStatus.TRANSFERRED
+            ride.transfer_processed_at = ride.transfer_processed_at or now
 
         self.db.add(ride)
 
