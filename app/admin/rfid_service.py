@@ -3305,7 +3305,7 @@ class AdminRFIDService:
     ) -> tuple[list[schema.RFIDTripRide], int]:
         filters = [
             schema.RFIDTripRide.status == schema.RFIDRideStatus.COMPLETED,
-            schema.RFIDTripRide.transfer_status == schema.RFIDPayoutTransferStatus.READY,
+            schema.RFIDTripRide.transfer_status == schema.TransferStatus.READY,
             schema.RFIDTripRide.driver_payout_amount > Decimal("0.00"),
         ]
 
