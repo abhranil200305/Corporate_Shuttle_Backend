@@ -1470,12 +1470,24 @@ class AdminRFIDService:
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
             "fare_reversed_amount": ride.fare_reversed_amount,
+            "fare_net_amount": self._normalize_money(
+                Decimal(ride.fare_amount or 0)
+                - Decimal(ride.fare_reversed_amount or 0)
+            ),
             "commission_percent_snapshot": ride.commission_percent_snapshot,
             "commission_amount": ride.commission_amount,
             "driver_payout_amount": ride.driver_payout_amount,
             "driver_payout_reversed_amount": ride.driver_payout_reversed_amount,
+            "driver_payout_net_amount": self._normalize_money(
+                Decimal(ride.driver_payout_amount or 0)
+                - Decimal(ride.driver_payout_reversed_amount or 0)
+            ),
             "platform_amount": ride.platform_amount,
             "platform_amount_reversed": ride.platform_amount_reversed,
+            "platform_net_amount": self._normalize_money(
+                Decimal(ride.platform_amount or 0)
+                - Decimal(ride.platform_amount_reversed or 0)
+            ),
             "transfer_status": ride.transfer_status,
             "transfer_ready_at": ride.transfer_ready_at,
             "transfer_processed_at": ride.transfer_processed_at,
@@ -1560,12 +1572,24 @@ class AdminRFIDService:
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
             "fare_reversed_amount": ride.fare_reversed_amount,
+            "fare_net_amount": AdminRFIDService._normalize_money(
+                Decimal(ride.fare_amount or 0)
+                - Decimal(ride.fare_reversed_amount or 0)
+            ),
             "commission_percent_snapshot": ride.commission_percent_snapshot,
             "commission_amount": ride.commission_amount,
             "driver_payout_amount": ride.driver_payout_amount,
             "driver_payout_reversed_amount": ride.driver_payout_reversed_amount,
+            "driver_payout_net_amount": AdminRFIDService._normalize_money(
+                Decimal(ride.driver_payout_amount or 0)
+                - Decimal(ride.driver_payout_reversed_amount or 0)
+            ),
             "platform_amount": ride.platform_amount,
             "platform_amount_reversed": ride.platform_amount_reversed,
+            "platform_net_amount": AdminRFIDService._normalize_money(
+                Decimal(ride.platform_amount or 0)
+                - Decimal(ride.platform_amount_reversed or 0)
+            ),
             "transfer_status": ride.transfer_status,
             "transfer_ready_at": ride.transfer_ready_at,
             "transfer_processed_at": ride.transfer_processed_at,
