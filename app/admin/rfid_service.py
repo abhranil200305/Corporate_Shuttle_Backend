@@ -3251,6 +3251,8 @@ class AdminRFIDService:
                 payout_transfer_counts_by_status.values()
             ),
             "payout_transfer_counts_by_status": payout_transfer_counts_by_status,
+            # Backward-compatible fields.
+            # These are driver payout transfer amounts, not passenger fare.
             "payout_transfer_amount_by_status": payout_transfer_amount_by_status,
             "payout_transfer_reversed_amount_by_status": (
                 payout_transfer_reversed_amount_by_status
@@ -3258,13 +3260,32 @@ class AdminRFIDService:
             "payout_transfer_payable_amount_by_status": (
                 payout_transfer_payable_amount_by_status
             ),
+
+            # Explicit driver-payout money fields after RFID commission split.
+            "driver_payout_transfer_amount_by_status": (
+                payout_transfer_amount_by_status
+            ),
+            "driver_payout_transfer_reversed_amount_by_status": (
+                payout_transfer_reversed_amount_by_status
+            ),
+            "driver_payout_transfer_payable_amount_by_status": (
+                payout_transfer_payable_amount_by_status
+            ),
+
             "provider_reversal_total": sum(
                 provider_reversal_counts_by_status.values()
             ),
             "provider_reversal_counts_by_status": (
                 provider_reversal_counts_by_status
             ),
+
+            # Backward-compatible field.
+            # These provider reversals are driver payout transfer reversals.
             "provider_reversal_amount_by_status": (
+                provider_reversal_amount_by_status
+            ),
+
+            "driver_payout_provider_reversal_amount_by_status": (
                 provider_reversal_amount_by_status
             ),
             "ready_transfer_count": payout_transfer_counts_by_status[

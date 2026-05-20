@@ -632,13 +632,25 @@ class RFIDRideMoneyDetailResponse(BaseModel):
 class RFIDPayoutOperationsSummaryResponse(BaseModel):
     payout_transfer_total: int
     payout_transfer_counts_by_status: dict[str, int]
+    # Backward-compatible fields.
+    # These are driver payout transfer amounts, not passenger fare.
     payout_transfer_amount_by_status: dict[str, Decimal]
     payout_transfer_reversed_amount_by_status: dict[str, Decimal]
     payout_transfer_payable_amount_by_status: dict[str, Decimal]
 
+    # Explicit driver-payout money fields after RFID commission split.
+    driver_payout_transfer_amount_by_status: dict[str, Decimal]
+    driver_payout_transfer_reversed_amount_by_status: dict[str, Decimal]
+    driver_payout_transfer_payable_amount_by_status: dict[str, Decimal]
+
     provider_reversal_total: int
     provider_reversal_counts_by_status: dict[str, int]
+
+    # Backward-compatible field.
+    # These provider reversals are driver payout transfer reversals.
     provider_reversal_amount_by_status: dict[str, Decimal]
+
+    driver_payout_provider_reversal_amount_by_status: dict[str, Decimal]
 
     ready_transfer_count: int
     created_transfer_count: int
