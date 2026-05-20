@@ -152,10 +152,31 @@ def _serialize_admin_rfid_ride(
 		"dropped_at": ride.dropped_at,
 		"fare_amount": float(ride.fare_amount or 0),
 		"fare_reversed_amount": float(ride.fare_reversed_amount or 0),
+		"fare_net_amount": float(
+			(ride.fare_amount or 0) - (ride.fare_reversed_amount or 0)
+		),
+
+		"commission_percent_snapshot": float(
+			ride.commission_percent_snapshot or 0
+		),
+		"commission_amount": float(ride.commission_amount or 0),
+
 		"driver_payout_amount": float(ride.driver_payout_amount or 0),
 		"driver_payout_reversed_amount": float(
 			ride.driver_payout_reversed_amount or 0
 		),
+		"driver_payout_net_amount": float(
+			(ride.driver_payout_amount or 0)
+			- (ride.driver_payout_reversed_amount or 0)
+		),
+
+		"platform_amount": float(ride.platform_amount or 0),
+		"platform_amount_reversed": float(ride.platform_amount_reversed or 0),
+		"platform_net_amount": float(
+			(ride.platform_amount or 0)
+			- (ride.platform_amount_reversed or 0)
+		),
+
 		"transfer_status": ride.transfer_status,
 	}
 
