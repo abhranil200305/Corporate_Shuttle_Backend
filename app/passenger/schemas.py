@@ -647,6 +647,7 @@ class PassengerRFIDRideResponse(BaseModel):
     hold_amount: Decimal
     fare_amount: Decimal
     fare_reversed_amount: Decimal
+    fare_net_amount: Decimal
 
     transfer_status: str
     transfer_ready_at: datetime | None

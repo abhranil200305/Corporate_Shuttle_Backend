@@ -412,12 +412,18 @@ class RFIDTripRideResponse(BaseModel):
     hold_amount: Decimal
     fare_amount: Decimal
     fare_reversed_amount: Decimal
+    fare_net_amount: Decimal
+
     commission_percent_snapshot: Decimal
     commission_amount: Decimal
+
     driver_payout_amount: Decimal
     driver_payout_reversed_amount: Decimal
+    driver_payout_net_amount: Decimal
+
     platform_amount: Decimal
     platform_amount_reversed: Decimal
+    platform_net_amount: Decimal
     transfer_status: str
     transfer_ready_at: datetime | None
     transfer_processed_at: datetime | None

@@ -1528,6 +1528,10 @@ class PassengerService:
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
             "fare_reversed_amount": ride.fare_reversed_amount,
+            "fare_net_amount": self._quantize_money(
+                Decimal(ride.fare_amount or 0)
+                - Decimal(ride.fare_reversed_amount or 0)
+            ),
             "transfer_status": ride.transfer_status,
             "transfer_ready_at": ride.transfer_ready_at,
             "transfer_processed_at": ride.transfer_processed_at,
