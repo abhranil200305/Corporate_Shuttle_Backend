@@ -1847,41 +1847,38 @@ class AdminRFIDService:
             status == schema.RFIDPayoutTransferStatus.REVERSED
             for status in statuses
         ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.REVERSED
+            ride.transfer_status = schema.TransferStatus.REVERSED
             ride.transfer_ready_at = None
-
-        elif all(
-            status == schema.RFIDPayoutTransferStatus.PROCESSED
-            for status in statuses
-        ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.PROCESSED
-            ride.transfer_processed_at = ride.transfer_processed_at or now
 
         elif any(
             status == schema.RFIDPayoutTransferStatus.FAILED
             for status in statuses
         ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.FAILED
-
-        elif any(
-            status == schema.RFIDPayoutTransferStatus.CREATED
-            for status in statuses
-        ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.CREATED
-
-        elif any(
-            status == schema.RFIDPayoutTransferStatus.READY
-            for status in statuses
-        ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.READY
-            ride.transfer_ready_at = ride.transfer_ready_at or now
+            ride.transfer_status = schema.TransferStatus.FAILED
 
         elif any(
             status == schema.RFIDPayoutTransferStatus.WITHHELD
             for status in statuses
         ):
-            ride.transfer_status = schema.RFIDPayoutTransferStatus.WITHHELD
+            ride.transfer_status = schema.TransferStatus.WITHHELD
             ride.transfer_ready_at = None
+
+        elif any(
+            status in {
+                schema.RFIDPayoutTransferStatus.READY,
+                schema.RFIDPayoutTransferStatus.CREATED,
+            }
+            for status in statuses
+        ):
+            ride.transfer_status = schema.TransferStatus.READY
+            ride.transfer_ready_at = ride.transfer_ready_at or now
+
+        elif any(
+            status == schema.RFIDPayoutTransferStatus.PROCESSED
+            for status in statuses
+        ):
+            ride.transfer_status = schema.TransferStatus.TRANSFERRED
+            ride.transfer_processed_at = ride.transfer_processed_at or now
 
         self.db.add(ride)
 
