@@ -959,6 +959,16 @@ class RoutePayoutService:
         await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
         await self.db.flush()
 
+        driver_payout_amount = self._quantize_money(
+            Decimal(transfer.amount or 0)
+        )
+        driver_payout_reversed_amount = self._quantize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        driver_payout_payable_amount = self._quantize_money(
+            driver_payout_amount - driver_payout_reversed_amount
+        )
+
         return {
             "message": "RFID payout transfer reversed successfully.",
             "transfer_id": transfer.id,
@@ -966,9 +976,21 @@ class RoutePayoutService:
             "reversal_id": reversal.id,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "razorpay_reversal_id": reversal.razorpay_reversal_id,
+
+            # Backward-compatible field.
+            # This is the driver payout reversal amount, not passenger fare.
             "reversal_amount": provider_reversed_amount,
-            "transfer_amount": transfer.amount,
-            "transfer_reversed_amount": transfer.reversed_amount,
+
+            "driver_payout_reversal_amount": provider_reversed_amount,
+            "driver_payout_amount": driver_payout_amount,
+            "driver_payout_reversed_amount": driver_payout_reversed_amount,
+            "driver_payout_payable_amount": driver_payout_payable_amount,
+
+            # Backward-compatible aliases.
+            "transfer_amount": driver_payout_amount,
+            "transfer_reversed_amount": driver_payout_reversed_amount,
+            "remaining_reversible_amount": driver_payout_payable_amount,
+
             "transfer_status": transfer.status,
             "reversal_status": reversal.status,
             "provider_response": provider_response,
