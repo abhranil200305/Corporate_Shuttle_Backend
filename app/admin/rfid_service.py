@@ -2238,6 +2238,10 @@ class AdminRFIDService:
     def serialize_payout_transfer_reversal(
         reversal: schema.RFIDPayoutTransferReversal,
     ) -> dict[str, Any]:
+        driver_payout_reversal_amount = AdminRFIDService._normalize_money(
+            Decimal(reversal.amount or 0)
+        )
+
         return {
             "id": reversal.id,
             "rfid_payout_transfer_id": reversal.rfid_payout_transfer_id,
@@ -2246,7 +2250,12 @@ class AdminRFIDService:
             "scheduled_trip_id": reversal.scheduled_trip_id,
             "route_id": reversal.route_id,
             "vehicle_id": reversal.vehicle_id,
-            "amount": reversal.amount,
+
+            # Backward-compatible field.
+            # This is the driver payout reversal amount, not passenger fare.
+            "amount": driver_payout_reversal_amount,
+
+            "driver_payout_reversal_amount": driver_payout_reversal_amount,
             "status": reversal.status,
             "razorpay_reversal_id": reversal.razorpay_reversal_id,
             "failure_reason": reversal.failure_reason,

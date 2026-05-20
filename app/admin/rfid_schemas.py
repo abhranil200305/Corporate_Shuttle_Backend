@@ -553,7 +553,12 @@ class RFIDPayoutTransferReversalResponse(BaseModel):
     scheduled_trip_id: str
     route_id: str
     vehicle_id: str
+    # Backward-compatible field.
+    # This is the driver payout reversal amount, not passenger fare.
     amount: Decimal
+
+    driver_payout_reversal_amount: Decimal
+
     status: str
     razorpay_reversal_id: str | None
     failure_reason: str | None
