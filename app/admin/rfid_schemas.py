@@ -441,9 +441,20 @@ class RFIDPayoutTransferResponse(BaseModel):
     source_funding_allocation_id: str | None
     source_razorpay_payment_id: str | None
     linked_account_id: str | None
+
+    # Backward-compatible field.
+    # This is now the driver payout transfer amount, not passenger fare.
     amount: Decimal
+
+    # Explicit driver-payout money fields after RFID commission split.
+    driver_payout_amount: Decimal
+    driver_payout_reversed_amount: Decimal
+    driver_payout_payable_amount: Decimal
+
+    # Backward-compatible aliases.
     reversed_amount: Decimal
     payable_amount: Decimal
+
     provider_reversed_amount: Decimal = Decimal("0.00")
     has_reversals: bool = False
     reversal_count: int = 0
