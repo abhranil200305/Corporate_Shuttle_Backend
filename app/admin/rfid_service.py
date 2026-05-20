@@ -1482,31 +1482,6 @@ class AdminRFIDService:
             "created_at": ride.created_at,
             "updated_at": ride.updated_at,
         }
-
-    def serialize_payout_transfer(
-        self,
-        transfer: schema.RFIDPayoutTransfer,
-    ) -> dict[str, Any]:
-        return {
-            "id": transfer.id,
-            "rfid_ride_id": transfer.rfid_ride_id,
-            "driver_user_id": transfer.driver_user_id,
-            "scheduled_trip_id": transfer.scheduled_trip_id,
-            "route_id": transfer.route_id,
-            "vehicle_id": transfer.vehicle_id,
-            "source_recharge_id": transfer.source_recharge_id,
-            "source_funding_allocation_id": transfer.source_funding_allocation_id,
-            "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
-            "linked_account_id": transfer.linked_account_id,
-            "amount": transfer.amount,
-            "status": transfer.status,
-            "razorpay_transfer_id": transfer.razorpay_transfer_id,
-            "failure_reason": transfer.failure_reason,
-            "processed_at": transfer.processed_at,
-            "reversed_at": transfer.reversed_at,
-            "created_at": transfer.created_at,
-            "updated_at": transfer.updated_at,
-        }
     
     async def list_rfid_payout_transfers(
         self,
@@ -1602,6 +1577,29 @@ class AdminRFIDService:
     def serialize_payout_transfer(
         transfer: schema.RFIDPayoutTransfer,
     ) -> dict[str, Any]:
+        driver_payout_amount = AdminRFIDService._normalize_money(
+            Decimal(transfer.amount or 0)
+        )
+        driver_payout_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(transfer.reversed_amount or 0)
+        )
+        driver_payout_payable_amount = AdminRFIDService._normalize_money(
+            driver_payout_amount - driver_payout_reversed_amount
+        )
+        provider_reversed_amount = AdminRFIDService._normalize_money(
+            Decimal(
+                getattr(
+                    transfer,
+                    "_rfid_provider_reversed_amount",
+                    Decimal("0.00"),
+                )
+                or 0
+            )
+        )
+        reversal_count = int(
+            getattr(transfer, "_rfid_reversal_count", 0) or 0
+        )
+
         return {
             "id": transfer.id,
             "rfid_ride_id": transfer.rfid_ride_id,
@@ -1613,28 +1611,23 @@ class AdminRFIDService:
             "source_funding_allocation_id": transfer.source_funding_allocation_id,
             "source_razorpay_payment_id": transfer.source_razorpay_payment_id,
             "linked_account_id": transfer.linked_account_id,
-            "amount": transfer.amount,
-            "reversed_amount": transfer.reversed_amount,
-            "payable_amount": AdminRFIDService._normalize_money(
-                Decimal(transfer.amount or 0) - Decimal(transfer.reversed_amount or 0)
-            ),
-            "provider_reversed_amount": AdminRFIDService._normalize_money(
-                Decimal(
-                    getattr(
-                        transfer,
-                        "_rfid_provider_reversed_amount",
-                        Decimal("0.00"),
-                    )
-                    or 0
-                )
-            ),
-            "has_reversals": int(
-                getattr(transfer, "_rfid_reversal_count", 0) or 0
-            )
-            > 0,
-            "reversal_count": int(
-                getattr(transfer, "_rfid_reversal_count", 0) or 0
-            ),
+
+            # Backward-compatible field. This is the driver payout transfer amount,
+            # not the passenger-facing RFID fare.
+            "amount": driver_payout_amount,
+
+            # Explicit money meaning after RFID commission split.
+            "driver_payout_amount": driver_payout_amount,
+            "driver_payout_reversed_amount": driver_payout_reversed_amount,
+            "driver_payout_payable_amount": driver_payout_payable_amount,
+
+            # Backward-compatible aliases.
+            "reversed_amount": driver_payout_reversed_amount,
+            "payable_amount": driver_payout_payable_amount,
+
+            "provider_reversed_amount": provider_reversed_amount,
+            "has_reversals": reversal_count > 0,
+            "reversal_count": reversal_count,
             "status": transfer.status,
             "razorpay_transfer_id": transfer.razorpay_transfer_id,
             "failure_reason": transfer.failure_reason,
@@ -1935,147 +1928,299 @@ class AdminRFIDService:
                 },
             )
 
-        account = await self._get_card_account_for_update_or_404(ride.card_id)
-        transfers = await self._get_rfid_payout_transfers_for_ride_for_update(
-            ride.id
+        remaining_driver_payout_amount = self._normalize_money(
+            Decimal(ride.driver_payout_amount or 0)
+            - Decimal(ride.driver_payout_reversed_amount or 0)
+        )
+        remaining_platform_amount = self._normalize_money(
+            Decimal(ride.platform_amount or 0)
+            - Decimal(ride.platform_amount_reversed or 0)
+        )
+        remaining_snapshot_amount = self._normalize_money(
+            max(remaining_driver_payout_amount, Decimal("0.00"))
+            + max(remaining_platform_amount, Decimal("0.00"))
         )
 
-        if not transfers:
+        if reversal_amount > remaining_snapshot_amount:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "error": "rfid_payout_transfers_not_found",
-                    "message": "RFID payout transfer rows were not found for this ride, so reversal cannot safely preserve payout lineage.",
+                    "error": "rfid_reversal_exceeds_remaining_snapshot_amount",
+                    "message": "Cannot reverse more than the remaining unreversed driver/platform snapshot amount.",
+                    "requested_reversal_amount": str(reversal_amount),
+                    "remaining_snapshot_amount": str(remaining_snapshot_amount),
+                    "remaining_driver_payout_amount": str(remaining_driver_payout_amount),
+                    "remaining_platform_amount": str(remaining_platform_amount),
+                },
+            )
+
+        driver_reversal_amount, platform_reversal_amount = (
+            self._split_rfid_fare_reversal_by_snapshot(
+                ride=ride,
+                reversal_amount=reversal_amount,
+            )
+        )
+
+        account = await self._get_card_account_for_update_or_404(ride.card_id)
+
+        allocations = await self._get_rfid_funding_allocations_for_ride_for_update(
+            ride.id
+        )
+
+        if not allocations:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_allocations_not_found",
+                    "message": "RFID funding allocation rows were not found for this ride, so reversal cannot safely restore funding lineage.",
                     "rfid_ride_id": ride.id,
                 },
             )
 
-        reversal_sources: list[dict[str, Any]] = []
-        blocked_provider_transfers: list[dict[str, Any]] = []
-        total_available_for_fare_reversal = Decimal("0.00")
-
-        for transfer in transfers:
-            if transfer.source_funding_allocation_id is None:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "rfid_transfer_missing_funding_allocation",
-                        "message": "RFID payout transfer is missing its funding allocation link.",
-                        "transfer_id": transfer.id,
-                    },
-                )
-
-            allocation = await self._get_rfid_funding_allocation_for_update_or_404(
-                transfer.source_funding_allocation_id
+        total_available_for_funding_restore = self._normalize_money(
+            sum(
+                self._remaining_funding_allocation_amount(allocation)
+                for allocation in allocations
             )
+        )
 
-            remaining_allocation_amount = self._remaining_funding_allocation_amount(
-                allocation
-            )
-
-            if remaining_allocation_amount <= Decimal("0.00"):
-                continue
-
-            remaining_transfer_amount = self._remaining_payout_transfer_amount(
-                transfer
-            )
-
-            if self._is_rfid_payout_transfer_locally_reversible(transfer):
-                if remaining_transfer_amount <= Decimal("0.00"):
-                    continue
-
-                available_amount = self._normalize_money(
-                    min(remaining_transfer_amount, remaining_allocation_amount)
-                )
-
-                if available_amount > Decimal("0.00"):
-                    reversal_sources.append(
-                        {
-                            "mode": "local",
-                            "transfer": transfer,
-                            "allocation": allocation,
-                            "available_amount": available_amount,
-                        }
-                    )
-                    total_available_for_fare_reversal = self._normalize_money(
-                        total_available_for_fare_reversal + available_amount
-                    )
-
-                continue
-
-            if self._is_rfid_payout_transfer_provider_side_state(transfer):
-                available_amount = (
-                    self._provider_reversed_amount_available_for_fare_reversal(
-                        transfer=transfer,
-                        allocation=allocation,
-                    )
-                )
-
-                if available_amount > Decimal("0.00"):
-                    reversal_sources.append(
-                        {
-                            "mode": "provider_reversed",
-                            "transfer": transfer,
-                            "allocation": allocation,
-                            "available_amount": available_amount,
-                        }
-                    )
-                    total_available_for_fare_reversal = self._normalize_money(
-                        total_available_for_fare_reversal + available_amount
-                    )
-                else:
-                    blocked_provider_transfers.append(
-                        {
-                            "transfer_id": transfer.id,
-                            "status": transfer.status.value,
-                            "remaining_payable_amount": str(
-                                remaining_transfer_amount
-                            ),
-                            "transfer_reversed_amount": str(
-                                self._normalize_money(
-                                    Decimal(transfer.reversed_amount or 0)
-                                )
-                            ),
-                            "allocation_reversed_amount": str(
-                                self._normalize_money(
-                                    Decimal(allocation.reversed_amount or 0)
-                                )
-                            ),
-                            "razorpay_transfer_id": transfer.razorpay_transfer_id,
-                        }
-                    )
-
-        if reversal_amount > total_available_for_fare_reversal:
+        if reversal_amount > total_available_for_funding_restore:
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "error": "rfid_reversal_exceeds_available_reversal_sources",
-                    "message": "Cannot reverse this fare amount yet. Reverse provider-side payout transfers first, or choose an amount covered by local/provider-reversed sources.",
+                    "error": "rfid_reversal_exceeds_available_funding_allocations",
+                    "message": "Cannot reverse more than the remaining unreversed RFID funding allocations.",
                     "requested_reversal_amount": str(reversal_amount),
-                    "available_for_fare_reversal": str(
-                        total_available_for_fare_reversal
+                    "available_for_funding_restore": str(
+                        total_available_for_funding_restore
                     ),
-                    "blocked_provider_transfers": blocked_provider_transfers,
                 },
             )
 
-        remaining_to_reverse = reversal_amount
+        transfers = await self._get_rfid_payout_transfers_for_ride_for_update(
+            ride.id
+        )
+
+        allocation_by_id = {allocation.id: allocation for allocation in allocations}
+        driver_sources: list[dict[str, Any]] = []
+        blocked_provider_transfers: list[dict[str, Any]] = []
+        total_available_for_driver_reversal = Decimal("0.00")
+
+        if driver_reversal_amount > Decimal("0.00"):
+            if not transfers:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "rfid_payout_transfers_not_found",
+                        "message": "RFID payout transfer rows were not found for this ride, but this reversal needs driver payout reversal.",
+                        "rfid_ride_id": ride.id,
+                        "driver_reversal_amount": str(driver_reversal_amount),
+                    },
+                )
+
+            for transfer in transfers:
+                if transfer.source_funding_allocation_id is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "rfid_transfer_missing_funding_allocation",
+                            "message": "RFID payout transfer is missing its funding allocation link.",
+                            "transfer_id": transfer.id,
+                        },
+                    )
+
+                allocation = allocation_by_id.get(transfer.source_funding_allocation_id)
+
+                if allocation is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "rfid_transfer_funding_allocation_not_found",
+                            "message": "RFID payout transfer references a funding allocation that was not found for this ride.",
+                            "transfer_id": transfer.id,
+                            "funding_allocation_id": transfer.source_funding_allocation_id,
+                        },
+                    )
+
+                remaining_allocation_amount = self._remaining_funding_allocation_amount(
+                    allocation
+                )
+
+                if remaining_allocation_amount <= Decimal("0.00"):
+                    continue
+
+                allocation_remaining_driver_component = (
+                    self._rfid_driver_payout_component_for_fare_amount(
+                        ride=ride,
+                        fare_amount=remaining_allocation_amount,
+                    )
+                )
+
+                if allocation_remaining_driver_component <= Decimal("0.00"):
+                    continue
+
+                remaining_transfer_amount = self._remaining_payout_transfer_amount(
+                    transfer
+                )
+
+                if self._is_rfid_payout_transfer_locally_reversible(transfer):
+                    available_driver_amount = self._normalize_money(
+                        min(
+                            remaining_transfer_amount,
+                            allocation_remaining_driver_component,
+                        )
+                    )
+
+                    if available_driver_amount > Decimal("0.00"):
+                        driver_sources.append(
+                            {
+                                "mode": "local",
+                                "transfer": transfer,
+                                "allocation": allocation,
+                                "available_driver_amount": available_driver_amount,
+                            }
+                        )
+                        total_available_for_driver_reversal = self._normalize_money(
+                            total_available_for_driver_reversal
+                            + available_driver_amount
+                        )
+
+                    continue
+
+                if self._is_rfid_payout_transfer_provider_side_state(transfer):
+                    available_driver_amount = (
+                        self._provider_reversed_driver_amount_available_for_fare_reversal(
+                            ride=ride,
+                            transfer=transfer,
+                            allocation=allocation,
+                        )
+                    )
+
+                    available_driver_amount = self._normalize_money(
+                        min(
+                            available_driver_amount,
+                            allocation_remaining_driver_component,
+                        )
+                    )
+
+                    if available_driver_amount > Decimal("0.00"):
+                        driver_sources.append(
+                            {
+                                "mode": "provider_reversed",
+                                "transfer": transfer,
+                                "allocation": allocation,
+                                "available_driver_amount": available_driver_amount,
+                            }
+                        )
+                        total_available_for_driver_reversal = self._normalize_money(
+                            total_available_for_driver_reversal
+                            + available_driver_amount
+                        )
+                    else:
+                        blocked_provider_transfers.append(
+                            {
+                                "transfer_id": transfer.id,
+                                "status": transfer.status.value,
+                                "remaining_payable_amount": str(
+                                    remaining_transfer_amount
+                                ),
+                                "transfer_reversed_amount": str(
+                                    self._normalize_money(
+                                        Decimal(transfer.reversed_amount or 0)
+                                    )
+                                ),
+                                "allocation_reversed_amount": str(
+                                    self._normalize_money(
+                                        Decimal(allocation.reversed_amount or 0)
+                                    )
+                                ),
+                                "razorpay_transfer_id": transfer.razorpay_transfer_id,
+                            }
+                        )
+
+            if driver_reversal_amount > total_available_for_driver_reversal:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "rfid_driver_reversal_exceeds_available_sources",
+                        "message": "Cannot reverse this fare amount yet. Reverse provider-side payout transfers first, or choose an amount covered by local/provider-reversed driver payout sources.",
+                        "requested_driver_reversal_amount": str(
+                            driver_reversal_amount
+                        ),
+                        "available_for_driver_reversal": str(
+                            total_available_for_driver_reversal
+                        ),
+                        "requested_fare_reversal_amount": str(reversal_amount),
+                        "platform_reversal_amount": str(platform_reversal_amount),
+                        "blocked_provider_transfers": blocked_provider_transfers,
+                    },
+                )
+
+        remaining_funding_to_restore = reversal_amount
+        funding_restore_items: list[dict[str, Any]] = []
+
+        for allocation in allocations:
+            if remaining_funding_to_restore <= Decimal("0.00"):
+                break
+
+            allocation_available_amount = self._remaining_funding_allocation_amount(
+                allocation
+            )
+
+            if allocation_available_amount <= Decimal("0.00"):
+                continue
+
+            amount_from_allocation = self._normalize_money(
+                min(allocation_available_amount, remaining_funding_to_restore)
+            )
+
+            if amount_from_allocation <= Decimal("0.00"):
+                continue
+
+            funding_lot = await self._restore_rfid_funding_allocation_amount(
+                allocation=allocation,
+                amount=amount_from_allocation,
+            )
+
+            funding_restore_items.append(
+                {
+                    "funding_allocation_id": allocation.id,
+                    "funding_lot_id": funding_lot.id,
+                    "restored_amount": amount_from_allocation,
+                }
+            )
+
+            remaining_funding_to_restore = self._normalize_money(
+                remaining_funding_to_restore - amount_from_allocation
+            )
+
+        if remaining_funding_to_restore > Decimal("0.00"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rfid_funding_restore_incomplete",
+                    "message": "RFID reversal could not be fully restored across funding allocations.",
+                    "remaining_funding_to_restore": str(remaining_funding_to_restore),
+                },
+            )
+
+        remaining_driver_to_reverse = driver_reversal_amount
         transfer_reversal_items: list[dict[str, Any]] = []
         now = schema.utcnow()
 
-        for source in reversal_sources:
-            if remaining_to_reverse <= Decimal("0.00"):
+        for source in driver_sources:
+            if remaining_driver_to_reverse <= Decimal("0.00"):
                 break
 
             source_available_amount = self._normalize_money(
-                source["available_amount"]
+                source["available_driver_amount"]
             )
 
-            amount_from_source = self._normalize_money(
-                min(source_available_amount, remaining_to_reverse)
+            driver_amount_from_source = self._normalize_money(
+                min(source_available_amount, remaining_driver_to_reverse)
             )
 
-            if amount_from_source <= Decimal("0.00"):
+            if driver_amount_from_source <= Decimal("0.00"):
                 continue
 
             mode = source["mode"]
@@ -2084,14 +2229,9 @@ class AdminRFIDService:
 
             old_transfer_status = transfer.status
 
-            await self._restore_rfid_funding_allocation_amount(
-                allocation=allocation,
-                amount=amount_from_source,
-            )
-
             if mode == "local":
                 transfer.reversed_amount = self._normalize_money(
-                    Decimal(transfer.reversed_amount or 0) + amount_from_source
+                    Decimal(transfer.reversed_amount or 0) + driver_amount_from_source
                 )
 
             remaining_after_transfer_reversal = (
@@ -2114,24 +2254,24 @@ class AdminRFIDService:
                     "mode": mode,
                     "old_status": old_transfer_status,
                     "new_status": transfer.status,
-                    "reversed_amount": amount_from_source,
+                    "driver_payout_reversed_amount": driver_amount_from_source,
                     "remaining_payable_amount": remaining_after_transfer_reversal,
                     "funding_allocation_id": allocation.id,
                     "funding_lot_id": allocation.funding_lot_id,
                 }
             )
 
-            remaining_to_reverse = self._normalize_money(
-                remaining_to_reverse - amount_from_source
+            remaining_driver_to_reverse = self._normalize_money(
+                remaining_driver_to_reverse - driver_amount_from_source
             )
 
-        if remaining_to_reverse > Decimal("0.00"):
+        if remaining_driver_to_reverse > Decimal("0.00"):
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "error": "rfid_reversal_incomplete",
-                    "message": "RFID reversal could not be fully allocated across available reversal sources.",
-                    "remaining_to_reverse": str(remaining_to_reverse),
+                    "error": "rfid_driver_reversal_incomplete",
+                    "message": "RFID driver payout reversal could not be fully allocated across available payout sources.",
+                    "remaining_driver_to_reverse": str(remaining_driver_to_reverse),
                 },
             )
 
@@ -2149,7 +2289,12 @@ class AdminRFIDService:
             already_reversed_amount + reversal_amount
         )
         ride.driver_payout_reversed_amount = self._normalize_money(
-            Decimal(ride.driver_payout_reversed_amount or 0) + reversal_amount
+            Decimal(ride.driver_payout_reversed_amount or 0)
+            + driver_reversal_amount
+        )
+        ride.platform_amount_reversed = self._normalize_money(
+            Decimal(ride.platform_amount_reversed or 0)
+            + platform_reversal_amount
         )
 
         ledger_note_parts = [
@@ -2177,7 +2322,8 @@ class AdminRFIDService:
             created_at=now,
         )
 
-        await self._refresh_rfid_ride_transfer_status_from_rows(ride, transfers)
+        if transfers:
+            await self._refresh_rfid_ride_transfer_status_from_rows(ride, transfers)
 
         self.db.add(account)
         self.db.add(ride)
@@ -2191,11 +2337,16 @@ class AdminRFIDService:
             "account_id": account.id,
             "passenger_user_id": ride.passenger_user_id,
             "reversal_amount": reversal_amount,
+            "driver_payout_reversal_amount": driver_reversal_amount,
+            "platform_reversal_amount": platform_reversal_amount,
             "fare_amount": fare_amount,
             "fare_reversed_amount": ride.fare_reversed_amount,
+            "driver_payout_reversed_amount": ride.driver_payout_reversed_amount,
+            "platform_amount_reversed": ride.platform_amount_reversed,
             "balance_before": current_balance_before,
             "balance_after": current_balance_after,
             "ledger_entry_id": ledger_entry.id,
+            "funding_restores": funding_restore_items,
             "transfer_reversals": transfer_reversal_items,
             "ride_transfer_status": ride.transfer_status,
         }
@@ -2340,34 +2491,133 @@ class AdminRFIDService:
             ]
     
     @staticmethod
-    def _provider_reversed_amount_available_for_fare_reversal(
+    def _rfid_driver_payout_component_for_fare_amount(
         *,
+        ride: schema.RFIDTripRide,
+        fare_amount: Decimal,
+    ) -> Decimal:
+        normalized_fare_amount = AdminRFIDService._normalize_money(fare_amount)
+        ride_fare_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.fare_amount or 0)
+        )
+        ride_driver_payout_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.driver_payout_amount or 0)
+        )
+
+        if normalized_fare_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if ride_fare_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if ride_driver_payout_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        driver_component = AdminRFIDService._normalize_money(
+            (normalized_fare_amount * ride_driver_payout_amount)
+            / ride_fare_amount
+        )
+
+        if driver_component > ride_driver_payout_amount:
+            return ride_driver_payout_amount
+
+        return driver_component
+
+    @staticmethod
+    def _split_rfid_fare_reversal_by_snapshot(
+        *,
+        ride: schema.RFIDTripRide,
+        reversal_amount: Decimal,
+    ) -> tuple[Decimal, Decimal]:
+        normalized_reversal_amount = AdminRFIDService._normalize_money(
+            reversal_amount
+        )
+
+        remaining_driver_payout_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.driver_payout_amount or 0)
+            - Decimal(ride.driver_payout_reversed_amount or 0)
+        )
+        remaining_platform_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.platform_amount or 0)
+            - Decimal(ride.platform_amount_reversed or 0)
+        )
+
+        if remaining_driver_payout_amount < Decimal("0.00"):
+            remaining_driver_payout_amount = Decimal("0.00")
+
+        if remaining_platform_amount < Decimal("0.00"):
+            remaining_platform_amount = Decimal("0.00")
+
+        if normalized_reversal_amount <= Decimal("0.00"):
+            return Decimal("0.00"), Decimal("0.00")
+
+        if remaining_driver_payout_amount <= Decimal("0.00"):
+            return Decimal("0.00"), normalized_reversal_amount
+
+        if remaining_platform_amount <= Decimal("0.00"):
+            return normalized_reversal_amount, Decimal("0.00")
+
+        driver_reversal_amount = (
+            AdminRFIDService._rfid_driver_payout_component_for_fare_amount(
+                ride=ride,
+                fare_amount=normalized_reversal_amount,
+            )
+        )
+
+        if driver_reversal_amount > remaining_driver_payout_amount:
+            driver_reversal_amount = remaining_driver_payout_amount
+
+        platform_reversal_amount = AdminRFIDService._normalize_money(
+            normalized_reversal_amount - driver_reversal_amount
+        )
+
+        if platform_reversal_amount > remaining_platform_amount:
+            platform_reversal_amount = remaining_platform_amount
+            driver_reversal_amount = AdminRFIDService._normalize_money(
+                normalized_reversal_amount - platform_reversal_amount
+            )
+
+        return driver_reversal_amount, platform_reversal_amount
+
+    async def _get_rfid_funding_allocations_for_ride_for_update(
+        self,
+        rfid_ride_id: str,
+    ) -> list[schema.RFIDRechargeFundingAllocation]:
+        stmt = (
+            select(schema.RFIDRechargeFundingAllocation)
+            .where(schema.RFIDRechargeFundingAllocation.rfid_ride_id == rfid_ride_id)
+            .order_by(schema.RFIDRechargeFundingAllocation.allocated_at.asc())
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    def _provider_reversed_driver_amount_available_for_fare_reversal(
+        *,
+        ride: schema.RFIDTripRide,
         transfer: schema.RFIDPayoutTransfer,
         allocation: schema.RFIDRechargeFundingAllocation,
     ) -> Decimal:
         transfer_reversed_amount = AdminRFIDService._normalize_money(
             Decimal(transfer.reversed_amount or 0)
         )
-        allocation_reversed_amount = AdminRFIDService._normalize_money(
-            Decimal(allocation.reversed_amount or 0)
-        )
-        allocation_remaining_amount = AdminRFIDService._remaining_funding_allocation_amount(
-            allocation
+
+        allocation_driver_component_already_restored = (
+            AdminRFIDService._rfid_driver_payout_component_for_fare_amount(
+                ride=ride,
+                fare_amount=Decimal(allocation.reversed_amount or 0),
+            )
         )
 
-        provider_reversed_not_restored = AdminRFIDService._normalize_money(
-            transfer_reversed_amount - allocation_reversed_amount
+        available_driver_amount = AdminRFIDService._normalize_money(
+            transfer_reversed_amount - allocation_driver_component_already_restored
         )
 
-        if provider_reversed_not_restored <= Decimal("0.00"):
+        if available_driver_amount <= Decimal("0.00"):
             return Decimal("0.00")
 
-        if allocation_remaining_amount <= Decimal("0.00"):
-            return Decimal("0.00")
-
-        return AdminRFIDService._normalize_money(
-            min(provider_reversed_not_restored, allocation_remaining_amount)
-        )
+        return available_driver_amount
 
     @staticmethod
     def _is_rfid_payout_transfer_provider_side_state(
