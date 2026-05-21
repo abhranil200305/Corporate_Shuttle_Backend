@@ -16,3 +16,18 @@ venv/
 forUpload/
 tree.txt
 uploads
+
+# Nuitka / compiled runtime artifacts
+*.build/
+*.dist/
+*.onefile-build/
+*.onefile-dist/
+*.bin
+
+.nuitka-build/
+shuttlebe
+shuttlebe.*
+shuttlebe.compiled
+shuttlebe.compiled/
+.compiled-releases/
+*compiled*
