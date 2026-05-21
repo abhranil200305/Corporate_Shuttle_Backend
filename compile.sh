@@ -5,21 +5,21 @@ set -euo pipefail
 cd /root/Corporate_Shuttle_Backend
 
 APP_ENTRYPOINT="run_shuttlebe.py"
-FINAL_BINARY="./shuttlebe"
-BUILD_DIR="./.nuitka-build"
-TEMP_BINARY_NAME="shuttlebe.new"
-TEMP_BINARY="$BUILD_DIR/$TEMP_BINARY_NAME"
+BINARY_NAME="shuttlebe"
 
-echo "🧹 Cleaning old Nuitka build residue..."
-rm -rf "$BUILD_DIR"
+RELEASE_ROOT="/root/Corporate_Shuttle_Backend/.compiled-releases"
+BUILD_ID="$(date +%Y%m%d_%H%M%S)"
+BUILD_DIR="$RELEASE_ROOT/$BUILD_ID"
+CURRENT_LINK="/root/Corporate_Shuttle_Backend/shuttlebe.compiled"
+
+echo "🧹 Preparing standalone Nuitka release directory..."
 mkdir -p "$BUILD_DIR"
 
-echo "🛠️ Compiling $APP_ENTRYPOINT with Nuitka..."
+echo "🛠️ Compiling $APP_ENTRYPOINT with Nuitka standalone mode..."
 
 ./venv/bin/python3 -m nuitka "$APP_ENTRYPOINT" \
   --standalone \
-  --onefile \
-  --output-filename="$TEMP_BINARY_NAME" \
+  --output-filename="$BINARY_NAME" \
   --output-dir="$BUILD_DIR" \
   --remove-output \
   --nofollow-import-to=tests \
@@ -29,21 +29,23 @@ echo "🛠️ Compiling $APP_ENTRYPOINT with Nuitka..."
   --static-libpython=yes \
   --clang
 
-if [ ! -f "$TEMP_BINARY" ]; then
-  echo "❌ Expected binary was not created: $TEMP_BINARY"
+DIST_DIR="$BUILD_DIR/run_shuttlebe.dist"
+DIST_BINARY="$DIST_DIR/$BINARY_NAME"
+
+if [ ! -x "$DIST_BINARY" ]; then
+  echo "❌ Expected compiled binary was not created or is not executable:"
+  echo "$DIST_BINARY"
   exit 1
 fi
 
-chmod +x "$TEMP_BINARY"
+echo "✅ Build completed:"
+echo "$DIST_BINARY"
 
-echo "✅ Build completed."
-echo "🔁 Replacing runtime binary atomically..."
+echo "🔁 Updating compiled runtime symlink atomically..."
+ln -sfn "$DIST_DIR" "$CURRENT_LINK"
 
-mv "$TEMP_BINARY" "$FINAL_BINARY"
-chmod +x "$FINAL_BINARY"
-
-echo "🟢 Compiled Shuttle backend binary is ready at:"
-echo "$FINAL_BINARY"
+echo "🟢 Compiled Shuttle backend release is now active for next restart:"
+echo "$CURRENT_LINK/$BINARY_NAME"
 echo
-echo "Restart service when you want systemd to use it:"
+echo "Restart when ready:"
 echo "systemctl restart shuttlebe.service"

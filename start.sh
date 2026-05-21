@@ -4,13 +4,13 @@ set -u
 
 cd /root/Corporate_Shuttle_Backend || exit 1
 
-APP_BINARY="./shuttlebe"
+COMPILED_BINARY="./shuttlebe.compiled/shuttlebe"
 APP_ENTRYPOINT="run_shuttlebe.py"
 
-if [ -x "$APP_BINARY" ]; then
-  echo "🟢 Running compiled Shuttle backend binary..."
-  exec "$APP_BINARY"
+if [ -x "$COMPILED_BINARY" ]; then
+  echo "🟢 Running compiled standalone Shuttle backend binary..."
+  exec "$COMPILED_BINARY"
 fi
 
-echo "🟡 Compiled binary not found. Running Shuttle backend via Python script in venv..."
+echo "🟡 Compiled standalone binary not found. Running Shuttle backend via Python script in venv..."
 exec ./venv/bin/python3 "$APP_ENTRYPOINT"
