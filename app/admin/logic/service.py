@@ -1148,11 +1148,15 @@ class AdminService:
 		vehicle_id: str,
 		status: schema.VehicleInspectionStatus,
 		reason: str | None = None,
-	) -> None:
+	) -> tuple[str, dict[str, object]] | None:
 		"""
-		Updates the physical inspection status and sets the
-		inspection_created_at to the current time of resolution.
+		Updates the physical inspection status and creates a driver notification
+		in the same DB transaction. The caller commits and then pushes the
+		notification live.
 		"""
+		status_value = status.value
+		status_label = status_value.replace("_", " ").title()
+
 		values = {
 			"inspection_status": status,
 			"inspection_reason": reason,
@@ -1163,8 +1167,56 @@ class AdminService:
 			update(schema.Vehicle)
 			.where(schema.Vehicle.id == vehicle_id)
 			.values(**values)
+			.returning(
+				schema.Vehicle.driver_user_id,
+				schema.Vehicle.registration_number,
+			)
 		)
-		await self.db.execute(stmt)
+
+		result = await self.db.execute(stmt)
+		row = result.one_or_none()
+
+		if row is None:
+			return None
+
+		driver_user_id = row.driver_user_id
+		registration_number = row.registration_number
+
+		if status == schema.VehicleInspectionStatus.APPROVED:
+			title = "Vehicle physical inspection approved"
+			message = (
+				f"Your vehicle {registration_number} has passed physical inspection."
+			)
+		elif status == schema.VehicleInspectionStatus.REJECTED:
+			title = "Vehicle physical inspection rejected"
+			message = (
+				f"Your vehicle {registration_number} physical inspection was rejected."
+			)
+			if reason:
+				message = f"{message} Reason: {reason}"
+		else:
+			title = "Vehicle physical inspection updated"
+			message = (
+				f"Your vehicle {registration_number} physical inspection status "
+				f"is now {status_label}."
+			)
+
+		payload = await self.notifications.notify_user(
+			user_id=driver_user_id,
+			title=title,
+			message=message,
+			data={
+				"type": "vehicle_physical_inspection_update",
+				"vehicle_id": vehicle_id,
+				"registration_number": registration_number,
+				"inspection_status": status_value,
+				"reason": reason,
+				"refresh": ["driver_vehicle", "notifications"],
+			},
+			commit=False,
+		)
+
+		return driver_user_id, payload
 
 	def _serialize_vehicle_inspection_status(self, vehicle):
 		driver = vehicle.driver

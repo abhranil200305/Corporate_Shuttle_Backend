@@ -1775,30 +1775,38 @@ async def verify_vehicle(
 async def resolve_vehicle_inspection(
 	vehicle_id: str,
 	data: VehicleInspectionUpdate,
+	request: Request,
 	db: AsyncSession = Depends(get_async_session),
 ):
-	service = AdminService(db)
+	ws_hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=ws_hub)
 
-	# 1. Check if vehicle exists
-	vehicle = await service.fetch_vehicle_by_id(vehicle_id)
-	if not vehicle:
-		raise HTTPException(status_code=404, detail="Vehicle record not found")
-
-	# 2. Perform the update via service
-	# This automatically sets the inspection_created_at to now
-	await service.update_physical_inspection(
-		vehicle_id=vehicle_id, status=data.status, reason=data.reason
+	notification_target = await service.update_physical_inspection(
+		vehicle_id=vehicle_id,
+		status=data.status,
+		reason=data.reason,
 	)
 
-	# 3. Commit the transaction
+	if notification_target is None:
+		raise HTTPException(status_code=404, detail="Vehicle record not found")
+
 	await db.commit()
+
+	notification_user_id, notification_payload = notification_target
+
+	try:
+		await service.notifications.push_payload_to_user(
+			user_id=notification_user_id,
+			payload=notification_payload,
+		)
+	except Exception as e:
+		print(f"Vehicle physical inspection notification push failed: {e}")
 
 	return {
 		"status": "success",
 		"message": f"Vehicle physical inspection has been {data.status}",
 		"vehicle_id": vehicle_id,
 	}
-
 
 # -----------------------------
 # Admin:  Check Which Drivers Data has been Verified by Admin
