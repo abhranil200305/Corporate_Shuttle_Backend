@@ -59,7 +59,6 @@ from app.auth.schemas import (
     AdminDeviceUserPaginationResponse,
     AdminDeviceUserSummaryResponse,
     AdminUserDeviceListResponse,
-    UserSession,
     DriverDeviceSettingsResponse,
     DriverDeviceSettingsUpdateRequest,
 )
