@@ -475,6 +475,13 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
         foreign_keys=[user_id],
     )
 
+    device_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    device_family: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    platform: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    browser: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
     __table_args__ = (
         Index("ix_user_sessions_user_id_expires_at", "user_id", "expires_at"),
     )
@@ -2440,10 +2447,21 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
         server_default=text("true"),
     )
 
+    driver_max_active_sessions: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=2,
+        server_default=text("2"),
+    )
+
     __table_args__ = (
         CheckConstraint(
             "commission_percent >= 0 AND commission_percent <= 100",
             name="ck_platform_settings_commission_percent_range",
+        ),
+        CheckConstraint(
+            "driver_max_active_sessions >= 1",
+            name="ck_platform_settings_driver_max_active_sessions_positive",
         ),
     )
 
