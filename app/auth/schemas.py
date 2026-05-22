@@ -91,6 +91,7 @@ class AdminDeviceUserSummaryResponse(BaseModel):
     role: UserRole
     is_active: bool
     name: str | None = None
+    profile_picture_path: str | None = None
     active_login_count: int
     last_login_at: datetime | None = None
     last_used_at: datetime | None = None
@@ -116,6 +117,7 @@ class AdminUserDeviceListResponse(BaseModel):
     role: UserRole
     is_active: bool
     name: str | None = None
+    profile_picture_path: str | None = None
     active_login_count: int
     devices: list[DeviceSessionResponse]
 

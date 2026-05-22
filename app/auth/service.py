@@ -156,6 +156,16 @@ class AuthService:
             return user.passenger_profile.full_name
 
         return None
+    
+    @staticmethod
+    def _profile_picture_path_for_user(user: User) -> str | None:
+        if user.role == UserRole.DRIVER and user.driver_profile is not None:
+            return user.driver_profile.profile_picture_path
+
+        if user.role == UserRole.PASSENGER and user.passenger_profile is not None:
+            return user.passenger_profile.profile_picture_path
+
+        return None
 
     async def _issue_session_for_user(
         self,
@@ -603,6 +613,7 @@ class AuthService:
                     role=user.role,
                     is_active=user.is_active,
                     name=self._profile_name_for_user(user),
+                    profile_picture_path=self._profile_picture_path_for_user(user),
                     active_login_count=int(active_login_count or 0),
                     last_login_at=last_login_at,
                     last_used_at=last_used_at,
@@ -657,6 +668,7 @@ class AuthService:
             role=user.role,
             is_active=user.is_active,
             name=self._profile_name_for_user(user),
+            profile_picture_path=self._profile_picture_path_for_user(user),
             active_login_count=len(sessions),
             devices=[
                 DeviceSessionResponse(
