@@ -6,7 +6,14 @@ from datetime import datetime, timezone
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.schema import OTPPurpose, OTPRequest, User, UserRole, UserSession
+from app.db.schema import (
+    OTPPurpose,
+    OTPRequest,
+    PlatformSettings,
+    User,
+    UserRole,
+    UserSession,
+)
 
 
 def utcnow() -> datetime:
@@ -173,15 +180,106 @@ class AuthRepository:
         user_id: str,
         token_hash: str,
         expires_at: datetime,
+        device_name: str | None = None,
+        device_family: str | None = None,
+        platform: str | None = None,
+        browser: str | None = None,
+        user_agent: str | None = None,
+        ip_address: str | None = None,
     ) -> UserSession:
         session = UserSession(
             user_id=user_id,
             token_hash=token_hash,
             expires_at=expires_at,
+            device_name=device_name,
+            device_family=device_family,
+            platform=platform,
+            browser=browser,
+            user_agent=user_agent,
+            ip_address=ip_address,
         )
         self.db.add(session)
         await self.db.flush()
         return session
+    
+    async def get_driver_max_active_sessions(self) -> int:
+        stmt = (
+            select(PlatformSettings)
+            .where(PlatformSettings.settings_key == "default")
+            .limit(1)
+        )
+        result = await self.db.execute(stmt)
+        settings = result.scalar_one_or_none()
+
+        if settings is None:
+            return 2
+
+        return max(1, int(settings.driver_max_active_sessions or 2))
+
+    async def count_current_user_sessions(
+        self,
+        *,
+        user_id: str,
+        now: datetime | None = None,
+    ) -> int:
+        current_time = now or utcnow()
+        stmt = (
+            select(func.count(UserSession.id))
+            .where(
+                UserSession.user_id == user_id,
+                UserSession.expires_at > current_time,
+            )
+        )
+        result = await self.db.execute(stmt)
+        return int(result.scalar_one())
+
+    async def list_current_user_sessions_by_user_id(
+        self,
+        *,
+        user_id: str,
+        now: datetime | None = None,
+    ) -> list[UserSession]:
+        current_time = now or utcnow()
+        stmt = (
+            select(UserSession)
+            .where(
+                UserSession.user_id == user_id,
+                UserSession.expires_at > current_time,
+            )
+            .order_by(
+                UserSession.last_used_at.desc().nullslast(),
+                UserSession.created_at.desc(),
+            )
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def delete_expired_user_sessions_by_user_id(
+        self,
+        *,
+        user_id: str,
+        now: datetime | None = None,
+    ) -> int:
+        current_time = now or utcnow()
+        stmt = delete(UserSession).where(
+            UserSession.user_id == user_id,
+            UserSession.expires_at <= current_time,
+        )
+        result = await self.db.execute(stmt)
+        return int(result.rowcount or 0)
+
+    async def delete_user_session_by_id_for_user(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+    ) -> int:
+        stmt = delete(UserSession).where(
+            UserSession.id == session_id,
+            UserSession.user_id == user_id,
+        )
+        result = await self.db.execute(stmt)
+        return int(result.rowcount or 0)
 
     async def get_user_session_by_token_hash(
         self,
