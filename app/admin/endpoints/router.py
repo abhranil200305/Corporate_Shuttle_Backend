@@ -86,11 +86,13 @@ from app.auth.schemas import (
     MessageResponse,
 )
 from app.auth.service import AuthService
+from app.auth.exceptions import AuthError
 from app.auth.dependencies import (
 	get_auth_service,
 	get_current_active_user,
 	get_current_admin,
 	get_current_user,
+	to_http_exception,
 )
 from app.db import schema
 from app.db.database import get_async_session
@@ -123,11 +125,14 @@ async def list_admin_device_users(
 	page_size: int = Query(default=25, ge=1, le=100),
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> AdminDeviceUserListResponse:
-	return await auth_service.list_admin_device_users(
-		role=role,
-		page=page,
-		page_size=page_size,
-	)
+	try:
+		return await auth_service.list_admin_device_users(
+			role=role,
+			page=page,
+			page_size=page_size,
+		)
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 
 @router.get("/users/{user_id}/devices", response_model=AdminUserDeviceListResponse)
@@ -135,7 +140,10 @@ async def list_admin_user_devices(
 	user_id: str = Path(...),
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> AdminUserDeviceListResponse:
-	return await auth_service.list_admin_user_devices(user_id=user_id)
+	try:
+		return await auth_service.list_admin_user_devices(user_id=user_id)
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 
 @router.delete("/users/{user_id}/devices/{session_id}", response_model=MessageResponse)
@@ -144,10 +152,13 @@ async def remove_admin_user_device(
 	session_id: str = Path(...),
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
-	return await auth_service.remove_admin_user_device(
-		user_id=user_id,
-		session_id=session_id,
-	)
+	try:
+		return await auth_service.remove_admin_user_device(
+			user_id=user_id,
+			session_id=session_id,
+		)
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 
 @router.delete("/users/{user_id}/devices", response_model=MessageResponse)
@@ -155,13 +166,19 @@ async def remove_all_admin_user_devices(
 	user_id: str = Path(...),
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
-	return await auth_service.remove_all_admin_user_devices(user_id=user_id)
+	try:
+		return await auth_service.remove_all_admin_user_devices(user_id=user_id)
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 @router.get("/device-settings", response_model=DriverDeviceSettingsResponse)
 async def get_driver_device_settings(
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> DriverDeviceSettingsResponse:
-	return await auth_service.get_driver_device_settings()
+	try:
+		return await auth_service.get_driver_device_settings()
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 
 @router.patch("/device-settings", response_model=DriverDeviceSettingsResponse)
@@ -169,7 +186,10 @@ async def update_driver_device_settings(
 	payload: DriverDeviceSettingsUpdateRequest,
 	auth_service: AuthService = Depends(get_auth_service),
 ) -> DriverDeviceSettingsResponse:
-	return await auth_service.update_driver_device_settings(payload)
+	try:
+		return await auth_service.update_driver_device_settings(payload)
+	except AuthError as exc:
+		raise to_http_exception(exc) from exc
 
 def _serialize_admin_rfid_device(device: schema.RFIDDevice) -> dict:
 	return {
