@@ -19,11 +19,17 @@ class VerifySignupOTPRequest(BaseModel):
     otp: str = Field(..., min_length=4, max_length=10)
     role: UserRole
 
+class DeviceMetadataInput(BaseModel):
+    device_name: str | None = Field(default=None, max_length=255)
+    device_family: str | None = Field(default=None, max_length=120)
+    platform: str | None = Field(default=None, max_length=120)
+    browser: str | None = Field(default=None, max_length=120)
 
 class SignupRequest(BaseModel):
     email: str = Field(..., max_length=255)
     otp: str = Field(..., min_length=4, max_length=10)
     role: UserRole
+    device: DeviceMetadataInput | None = None
 
 
 class SendLoginOTPRequest(BaseModel):
@@ -41,6 +47,7 @@ class LoginRequest(BaseModel):
     email: str = Field(..., max_length=255)
     otp: str = Field(..., min_length=4, max_length=10)
     role: UserRole
+    device: DeviceMetadataInput | None = None
 
 
 class LogoutRequest(BaseModel):

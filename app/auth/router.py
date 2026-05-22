@@ -36,6 +36,12 @@ def _empty_auth_probe_response(status_code: int) -> Response:
         },
     )
 
+def _clean_optional_header_text(value: str | None, max_length: int) -> str | None:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return None
+    return cleaned[:max_length]
+
 def _client_ip_from_request(request: Request) -> str | None:
     forwarded_for = request.headers.get("x-forwarded-for")
     if forwarded_for:
@@ -53,16 +59,32 @@ def _client_ip_from_request(request: Request) -> str | None:
     return request.client.host[:64]
 
 
-def _device_metadata_from_request(request: Request) -> dict[str, str | None]:
+def _device_metadata_from_request(
+    request: Request,
+    device,
+) -> dict[str, str | None]:
     user_agent = (request.headers.get("user-agent") or "").strip()
 
-    device_name = user_agent[:255] if user_agent else None
+    fallback_device_name = user_agent[:255] if user_agent else None
 
     return {
-        "device_name": device_name,
-        "device_family": None,
-        "platform": None,
-        "browser": None,
+        "device_name": _clean_optional_header_text(
+            None if device is None else device.device_name,
+            255,
+        )
+        or fallback_device_name,
+        "device_family": _clean_optional_header_text(
+            None if device is None else device.device_family,
+            120,
+        ),
+        "platform": _clean_optional_header_text(
+            None if device is None else device.platform,
+            120,
+        ),
+        "browser": _clean_optional_header_text(
+            None if device is None else device.browser,
+            120,
+        ),
         "user_agent": user_agent or None,
         "ip_address": _client_ip_from_request(request),
     }
@@ -101,7 +123,7 @@ async def signup(
     try:
         return await auth_service.signup(
             payload,
-            **_device_metadata_from_request(request),
+            **_device_metadata_from_request(request, payload.device),
         )
     except AuthError as exc:
         raise to_http_exception(exc) from exc
@@ -141,7 +163,7 @@ async def login(
     try:
         return await auth_service.login(
             payload,
-            **_device_metadata_from_request(request),
+            **_device_metadata_from_request(request, payload.device),
         )
     except AuthError as exc:
         raise to_http_exception(exc) from exc
