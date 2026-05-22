@@ -88,3 +88,13 @@ class SessionExpiredError(AuthError):
     default_message = "Session has expired."
     status_code = 401
     error_code = "session_expired"
+
+class DriverDeviceLimitReachedError(AuthError):
+    default_message = "Driver device limit reached. Remove one active login and try again."
+    status_code = 409
+    error_code = "driver_device_limit_reached"
+
+class DeviceSessionNotFoundError(AuthError):
+    default_message = "Device login not found."
+    status_code = 404
+    error_code = "device_session_not_found"

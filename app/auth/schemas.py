@@ -60,6 +60,64 @@ class AuthTokenResponse(BaseModel):
     expires_at: datetime
     user: AuthUserResponse
 
+class DeviceSessionResponse(BaseModel):
+    session_id: str
+    device_name: str | None = None
+    device_family: str | None = None
+    platform: str | None = None
+    browser: str | None = None
+    ip_address: str | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+    expires_at: datetime
+    logged_in_for_seconds: int
+    is_current_session: bool
+
+
+class DeviceSessionListResponse(BaseModel):
+    active_login_count: int
+    devices: list[DeviceSessionResponse]
+
+class AdminDeviceUserSummaryResponse(BaseModel):
+    user_id: str
+    email: str
+    role: UserRole
+    is_active: bool
+    name: str | None = None
+    active_login_count: int
+    last_login_at: datetime | None = None
+    last_used_at: datetime | None = None
+
+
+class AdminDeviceUserPaginationResponse(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    total_pages: int
+    has_next: bool
+    has_previous: bool
+
+
+class AdminDeviceUserListResponse(BaseModel):
+    items: list[AdminDeviceUserSummaryResponse]
+    pagination: AdminDeviceUserPaginationResponse
+
+
+class AdminUserDeviceListResponse(BaseModel):
+    user_id: str
+    email: str
+    role: UserRole
+    is_active: bool
+    name: str | None = None
+    active_login_count: int
+    devices: list[DeviceSessionResponse]
+
+class DriverDeviceSettingsResponse(BaseModel):
+    driver_max_active_sessions: int
+
+
+class DriverDeviceSettingsUpdateRequest(BaseModel):
+    driver_max_active_sessions: int = Field(..., ge=1)
 
 class OTPVerifyResponse(BaseModel):
     verified: bool

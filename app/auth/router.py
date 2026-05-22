@@ -20,6 +20,7 @@ from app.auth.schemas import (
     VerifyLoginOTPRequest,
     VerifySignupOTPRequest,
     OTPVerifyResponse,
+    DeviceSessionListResponse,
 )
 from app.auth.service import AuthService
 from app.auth.session_utils import extract_bearer_token
@@ -34,6 +35,37 @@ def _empty_auth_probe_response(status_code: int) -> Response:
             "Pragma": "no-cache",
         },
     )
+
+def _client_ip_from_request(request: Request) -> str | None:
+    forwarded_for = request.headers.get("x-forwarded-for")
+    if forwarded_for:
+        first_ip = forwarded_for.split(",", 1)[0].strip()
+        if first_ip:
+            return first_ip[:64]
+
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip and real_ip.strip():
+        return real_ip.strip()[:64]
+
+    if request.client is None:
+        return None
+
+    return request.client.host[:64]
+
+
+def _device_metadata_from_request(request: Request) -> dict[str, str | None]:
+    user_agent = (request.headers.get("user-agent") or "").strip()
+
+    device_name = user_agent[:255] if user_agent else None
+
+    return {
+        "device_name": device_name,
+        "device_family": None,
+        "platform": None,
+        "browser": None,
+        "user_agent": user_agent or None,
+        "ip_address": _client_ip_from_request(request),
+    }
 
 # -----------------------------
 # Signup Endpoints
@@ -63,10 +95,14 @@ async def verify_signup_otp(
 @router.post("/signup", response_model=AuthTokenResponse)
 async def signup(
     payload: SignupRequest,
+    request: Request,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthTokenResponse:
     try:
-        return await auth_service.signup(payload)
+        return await auth_service.signup(
+            payload,
+            **_device_metadata_from_request(request),
+        )
     except AuthError as exc:
         raise to_http_exception(exc) from exc
 
@@ -99,10 +135,14 @@ async def verify_login_otp(
 @router.post("/login", response_model=AuthTokenResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthTokenResponse:
     try:
-        return await auth_service.login(payload)
+        return await auth_service.login(
+            payload,
+            **_device_metadata_from_request(request),
+        )
     except AuthError as exc:
         raise to_http_exception(exc) from exc
 
@@ -117,6 +157,38 @@ async def logout(
 ) -> MessageResponse:
     try:
         return await auth_service.logout(token)
+    except AuthError as exc:
+        raise to_http_exception(exc) from exc
+    
+# -----------------------------
+# Current User Devices
+# -----------------------------
+@router.get("/devices", response_model=DeviceSessionListResponse)
+async def list_my_devices(
+    token: str = Depends(get_bearer_token_from_request),
+    current_user: User = Depends(get_current_active_user),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> DeviceSessionListResponse:
+    try:
+        return await auth_service.list_current_user_devices(
+            user=current_user,
+            current_token=token,
+        )
+    except AuthError as exc:
+        raise to_http_exception(exc) from exc
+
+
+@router.delete("/devices/{session_id}", response_model=MessageResponse)
+async def remove_my_device(
+    session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+    try:
+        return await auth_service.remove_current_user_device(
+            user=current_user,
+            session_id=session_id,
+        )
     except AuthError as exc:
         raise to_http_exception(exc) from exc
     

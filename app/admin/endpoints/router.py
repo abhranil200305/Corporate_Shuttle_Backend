@@ -78,7 +78,16 @@ from app.admin.structs.dto import (
 	VerificationUpdate,
 	AdminVehicleInspectionStatusListResponse,
 )
+from app.auth.schemas import (
+    AdminDeviceUserListResponse,
+    AdminUserDeviceListResponse,
+    DriverDeviceSettingsResponse,
+    DriverDeviceSettingsUpdateRequest,
+    MessageResponse,
+)
+from app.auth.service import AuthService
 from app.auth.dependencies import (
+	get_auth_service,
 	get_current_active_user,
 	get_current_admin,
 	get_current_user,
@@ -103,6 +112,64 @@ router = APIRouter(
 
 def get_ws_hub(request: Request) -> WSHub:
 	return request.app.state.ws_hub
+
+# -----------------------------
+# Admin: Devices / Current Logins
+# -----------------------------
+@router.get("/devices", response_model=AdminDeviceUserListResponse)
+async def list_admin_device_users(
+	role: schema.UserRole | None = Query(default=None),
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=100),
+	auth_service: AuthService = Depends(get_auth_service),
+) -> AdminDeviceUserListResponse:
+	return await auth_service.list_admin_device_users(
+		role=role,
+		page=page,
+		page_size=page_size,
+	)
+
+
+@router.get("/users/{user_id}/devices", response_model=AdminUserDeviceListResponse)
+async def list_admin_user_devices(
+	user_id: str = Path(...),
+	auth_service: AuthService = Depends(get_auth_service),
+) -> AdminUserDeviceListResponse:
+	return await auth_service.list_admin_user_devices(user_id=user_id)
+
+
+@router.delete("/users/{user_id}/devices/{session_id}", response_model=MessageResponse)
+async def remove_admin_user_device(
+	user_id: str = Path(...),
+	session_id: str = Path(...),
+	auth_service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+	return await auth_service.remove_admin_user_device(
+		user_id=user_id,
+		session_id=session_id,
+	)
+
+
+@router.delete("/users/{user_id}/devices", response_model=MessageResponse)
+async def remove_all_admin_user_devices(
+	user_id: str = Path(...),
+	auth_service: AuthService = Depends(get_auth_service),
+) -> MessageResponse:
+	return await auth_service.remove_all_admin_user_devices(user_id=user_id)
+
+@router.get("/device-settings", response_model=DriverDeviceSettingsResponse)
+async def get_driver_device_settings(
+	auth_service: AuthService = Depends(get_auth_service),
+) -> DriverDeviceSettingsResponse:
+	return await auth_service.get_driver_device_settings()
+
+
+@router.patch("/device-settings", response_model=DriverDeviceSettingsResponse)
+async def update_driver_device_settings(
+	payload: DriverDeviceSettingsUpdateRequest,
+	auth_service: AuthService = Depends(get_auth_service),
+) -> DriverDeviceSettingsResponse:
+	return await auth_service.update_driver_device_settings(payload)
 
 def _serialize_admin_rfid_device(device: schema.RFIDDevice) -> dict:
 	return {
