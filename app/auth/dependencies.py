@@ -1,6 +1,10 @@
 # app/auth/dependencies.py
 from __future__ import annotations
+
+import logging
 from typing import AsyncGenerator
+
+logger = logging.getLogger(__name__)
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -46,7 +50,18 @@ async def get_auth_service(
 def to_http_exception(exc: AuthError) -> HTTPException:
     """
     Converts a custom AuthError into a FastAPI HTTPException.
+
+    Server log intentionally includes only the safe auth error contract:
+    status code, machine error code, and human message.
+    It does not log email, OTP, bearer token, or request body.
     """
+    logger.warning(
+        "auth_error status=%s code=%s message=%s",
+        exc.status_code,
+        exc.error_code,
+        exc.message,
+    )
+
     return HTTPException(
         status_code=exc.status_code,
         detail={
