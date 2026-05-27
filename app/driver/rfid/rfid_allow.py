@@ -8,8 +8,8 @@ from app.auth.dependencies import get_current_active_user, get_db
 from app.db.schema import (
     PlatformSettings,
     RFIDDevice,
-    User,
     Vehicle,
+    User,
 )
 from app.driver.rfid.schemas import (
     DriverRFIDReservationSettingResponse,
@@ -39,23 +39,10 @@ async def get_driver_rfid_seat_reservation_setting(
     result = await db.execute(stmt)
     settings = result.scalar_one_or_none()
 
-    # ============================================================
-    # DEFAULT FALLBACK
-    # ============================================================
     allow_driver_rfid_seat_reservation = True
-
     if settings is not None:
         allow_driver_rfid_seat_reservation = (
             settings.allow_driver_rfid_seat_reservation
-        )
-
-    # ============================================================
-    # IF FEATURE DISABLED
-    # ============================================================
-    if not allow_driver_rfid_seat_reservation:
-        return DriverRFIDReservationSettingResponse(
-            allow_driver_rfid_seat_reservation=False,
-            rfid_device_serial_number=None,
         )
 
     # ============================================================
@@ -68,36 +55,31 @@ async def get_driver_rfid_seat_reservation_setting(
     vehicle_result = await db.execute(vehicle_stmt)
     vehicle = vehicle_result.scalar_one_or_none()
 
+    rfid_serial_number = None
+
     # ============================================================
-    # IF DRIVER HAS NO VEHICLE
+    # FETCH RFID DEVICE (ONLY IF VEHICLE EXISTS)
     # ============================================================
-    if vehicle is None:
-        return DriverRFIDReservationSettingResponse(
-            allow_driver_rfid_seat_reservation=True,
-            rfid_device_serial_number=None,
+    if vehicle is not None:
+        device_stmt = (
+            select(RFIDDevice)
+            .where(
+                RFIDDevice.vehicle_id == vehicle.id,
+                RFIDDevice.is_active.is_(True),
+            )
+            .limit(1)
         )
 
-    # ============================================================
-    # FETCH RFID DEVICE
-    # ============================================================
-    device_stmt = (
-        select(RFIDDevice)
-        .where(
-            RFIDDevice.vehicle_id == vehicle.id,
-            RFIDDevice.is_active.is_(True),
-        )
-        .limit(1)
-    )
+        device_result = await db.execute(device_stmt)
+        device = device_result.scalar_one_or_none()
 
-    device_result = await db.execute(device_stmt)
-    device = device_result.scalar_one_or_none()
+        if device:
+            rfid_serial_number = device.serial_number
 
     # ============================================================
-    # RESPONSE
+    # RESPONSE (IMPORTANT CHANGE HERE)
     # ============================================================
     return DriverRFIDReservationSettingResponse(
-        allow_driver_rfid_seat_reservation=True,
-        rfid_device_serial_number=(
-            device.serial_number if device else None
-        ),
+        allow_driver_rfid_seat_reservation=allow_driver_rfid_seat_reservation,
+        rfid_device_serial_number=rfid_serial_number,
     )
