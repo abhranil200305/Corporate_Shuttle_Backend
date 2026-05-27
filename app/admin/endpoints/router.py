@@ -700,39 +700,71 @@ async def get_passenger_details(
 	if not p:
 		return {"error": "Passenger not found"}
 
+	def stop_with_bus_timing(stop, sequence, trip_event):
+		return {
+			"id": stop.id if stop else None,
+			"name": stop.name if stop else None,
+			"sequence": sequence,
+			"bus_arrived_at": trip_event.arrival_time if trip_event else None,
+			"bus_departed_at": trip_event.departure_time if trip_event else None,
+		}
+
 	bookings_data = []
+
 	for booking in p.passenger_bookings:
-		# Find the drop scan event
 		drop_scan = None
 		for scan in booking.scan_events:
 			if scan.scan_type == schema.ScanType.DROP:
 				drop_scan = scan
 				break
 
+		trip_events = (
+			booking.scheduled_trip.trip_events
+			if booking.scheduled_trip
+			else []
+		)
+
+		trip_event_by_stop_id = {
+			str(event.stop_id): event
+			for event in trip_events
+		}
+
+		pickup_trip_event = trip_event_by_stop_id.get(
+			str(booking.pickup_stop_id)
+		)
+
+		dropoff_trip_event = trip_event_by_stop_id.get(
+			str(booking.dropoff_stop_id)
+		)
+
 		booking_info = {
 			"booking_id": booking.id,
 			"status": booking.booking_status,
 			"fare": float(booking.fare_amount),
 			"created_at": booking.created_at,
-			"pickup_stop": {
-				"id": booking.pickup_stop.id,
-				"name": booking.pickup_stop.name,
-				"sequence": booking.pickup_sequence_no_snapshot,
-			},
-			"dropoff_stop": {
-				"id": booking.dropoff_stop.id,
-				"name": booking.dropoff_stop.name,
-				"sequence": booking.dropoff_sequence_no_snapshot,
-			},
-			# NEW: Actual drop information (where they actually got off)
-			"actual_drop_stop_id": drop_scan.matched_stop_id
-			if drop_scan
-			else None,
-			"actual_drop_stop_name": drop_scan.matched_stop.name
-			if drop_scan and drop_scan.matched_stop
-			else None,
+			"pickup_stop": stop_with_bus_timing(
+				stop=booking.pickup_stop,
+				sequence=booking.pickup_sequence_no_snapshot,
+				trip_event=pickup_trip_event,
+			),
+			"dropoff_stop": stop_with_bus_timing(
+				stop=booking.dropoff_stop,
+				sequence=booking.dropoff_sequence_no_snapshot,
+				trip_event=dropoff_trip_event,
+			),
+			"actual_drop_stop_id": (
+				drop_scan.matched_stop_id
+				if drop_scan
+				else None
+			),
+			"actual_drop_stop_name": (
+				drop_scan.matched_stop.name
+				if drop_scan and drop_scan.matched_stop
+				else None
+			),
 			"actual_dropped_at": drop_scan.created_at if drop_scan else None,
 		}
+
 		bookings_data.append(booking_info)
 
 	return {
@@ -741,19 +773,22 @@ async def get_passenger_details(
 		"joined_at": p.created_at,
 		"is_active": p.is_active,
 		"profile": {
-			"full_name": p.passenger_profile.full_name
-			if p.passenger_profile
-			else "Not Set",
-			"avatar": p.passenger_profile.profile_picture_path
-			if p.passenger_profile
-			else None,
+			"full_name": (
+				p.passenger_profile.full_name
+				if p.passenger_profile
+				else "Not Set"
+			),
+			"avatar": (
+				p.passenger_profile.profile_picture_path
+				if p.passenger_profile
+				else None
+			),
 		},
 		"booking_history": {
 			"total_count": len(p.passenger_bookings),
 			"bookings": bookings_data,
 		},
 	}
-
 
 # -----------------------------
 # Admin: Specific Vehicals Details Using Vehicle_id
