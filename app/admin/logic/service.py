@@ -576,12 +576,12 @@ class AdminService:
 					"email": passenger.email,
 					"full_name": (
 						None
-						if passenger.passenger_profile is None
+						if passenger.passenger_profile.full_name is None
 						else passenger.passenger_profile.full_name
 					),
 					"phone": (
 						None
-						if passenger.passenger_profile is None
+						if passenger.passenger_profile.phone is None
 						else passenger.passenger_profile.phone
 					),
 				},
@@ -623,12 +623,12 @@ class AdminService:
 				"email": passenger.email,
 				"full_name": (
 					None
-					if passenger.passenger_profile is None
+					if passenger.passenger_profile.full_name is None
 					else passenger.passenger_profile.full_name
 				),
 				"phone": (
 					None
-					if passenger.passenger_profile is None
+					if passenger.passenger_profile.phone is None
 					else passenger.passenger_profile.phone
 				),
 			},
