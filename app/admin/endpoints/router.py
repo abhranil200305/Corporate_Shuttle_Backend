@@ -701,6 +701,14 @@ async def get_admin_passenger_current_trip(
 
 	return await service.get_passenger_current_trip_detail(user_id)
 
+@router.get("/bookings/{booking_id}/trip-detail")
+async def get_admin_booking_trip_detail(
+	booking_id: str = Path(...),
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+	return await service.get_booking_trip_detail(booking_id)
+
 
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
