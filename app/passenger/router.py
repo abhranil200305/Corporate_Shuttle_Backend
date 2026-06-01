@@ -163,6 +163,7 @@ async def delete_traveller_profile(
 ) -> PassengerTravellerProfileMutationResponse:
     return await service.delete_traveller_profile(current_user, profile_id)
 
+
 @router.get("/rfid/summary", response_model=PassengerRFIDSummaryResponse)
 async def get_rfid_summary(
     current_user: User = Depends(get_current_active_user),
