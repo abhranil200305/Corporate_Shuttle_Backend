@@ -347,6 +347,68 @@ class PassengerService:
 
         await self.db.flush()
 
+    async def _expire_pending_booking_session(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+        payments: list[BookingSessionPayment],
+    ) -> None:
+        now = utcnow()
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            return
+
+        booking_session.status = BookingSessionStatus.EXPIRED
+        booking_session.expired_at = booking_session.expired_at or now
+        booking_session.payment_hold_expires_at = None
+        self.db.add(booking_session)
+
+        for booking in bookings:
+            if booking.booking_status == BookingStatus.PENDING_PAYMENT:
+                booking.booking_status = BookingStatus.CANCELLED
+                booking.cancelled_at = booking.cancelled_at or now
+                booking.payment_hold_expires_at = None
+                self.db.add(booking)
+
+        for payment in payments:
+            if payment.status == BookingPaymentStatus.CREATED:
+                payment.status = BookingPaymentStatus.FAILED
+                self.db.add(payment)
+
+        await self.db.flush()
+
+    async def _cancel_pending_booking_session(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+        payments: list[BookingSessionPayment],
+    ) -> None:
+        now = utcnow()
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            return
+
+        booking_session.status = BookingSessionStatus.CANCELLED
+        booking_session.cancelled_at = booking_session.cancelled_at or now
+        booking_session.payment_hold_expires_at = None
+        self.db.add(booking_session)
+
+        for booking in bookings:
+            if booking.booking_status == BookingStatus.PENDING_PAYMENT:
+                booking.booking_status = BookingStatus.CANCELLED
+                booking.cancelled_at = booking.cancelled_at or now
+                booking.payment_hold_expires_at = None
+                self.db.add(booking)
+
+        for payment in payments:
+            if payment.status == BookingPaymentStatus.CREATED:
+                payment.status = BookingPaymentStatus.FAILED
+                self.db.add(payment)
+
+        await self.db.flush()
+
     async def _expire_stale_pending_bookings_for_trip(self, scheduled_trip_id: str) -> int:
         stmt = (
             select(TripBooking)
@@ -4907,6 +4969,112 @@ class PassengerService:
 
         return {
             "message": "Payment verified successfully.",
+            "booking_session": self._serialize_booking_session(booking_session),
+        }
+
+    async def cancel_booking_session(
+        self,
+        current_user: User,
+        booking_session_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking_session = await self._get_booking_session_for_update_or_404(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        payments = await self._list_booking_session_payments_for_update(
+            booking_session.id
+        )
+        bookings = await self._list_booking_session_bookings_for_update(
+            booking_session.id
+        )
+
+        if not bookings:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_empty",
+                    "message": "Booking session has no seat bookings.",
+                },
+            )
+
+        if booking_session.status == BookingSessionStatus.CANCELLED:
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Booking session is already cancelled.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        if booking_session.status == BookingSessionStatus.EXPIRED:
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Booking session is already expired.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        if booking_session.status == BookingSessionStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "confirmed_booking_session_cannot_be_cancelled_here",
+                    "message": "Confirmed booking sessions require paid cancellation/refund flow.",
+                },
+            )
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_not_cancellable",
+                    "message": "This booking session cannot be cancelled.",
+                    "status": booking_session.status.value,
+                },
+            )
+
+        await self._cancel_pending_booking_session(
+            booking_session=booking_session,
+            bookings=bookings,
+            payments=payments,
+        )
+
+        await self.db.commit()
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+
+        await self._broadcast_seatmap_snapshots_for_trip(
+            scheduled_trip_id=booking_session.scheduled_trip_id,
+            reason="booking_session_cancelled",
+        )
+
+        await self._notify_user(
+            user_id=current_user.id,
+            title="Booking session cancelled",
+            message="Your selected seats were released.",
+            data={
+                "type": "booking_session_cancelled",
+                "booking_session_id": booking_session.id,
+                "scheduled_trip_id": booking_session.scheduled_trip_id,
+                "refresh": [
+                    "bookings_list",
+                    "booking_session_detail",
+                    "seatmap",
+                ],
+            },
+        )
+
+        return {
+            "message": "Booking session cancelled successfully.",
             "booking_session": self._serialize_booking_session(booking_session),
         }
 

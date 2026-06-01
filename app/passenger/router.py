@@ -410,6 +410,20 @@ async def verify_booking_session_payment(
         payload,
     )
 
+@router.post(
+    "/booking-sessions/{booking_session_id}/cancel",
+    response_model=BookingSessionMutationResponse,
+)
+async def cancel_booking_session(
+    booking_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionMutationResponse:
+    return await service.cancel_booking_session(
+        current_user,
+        booking_session_id,
+    )
+
 @router.get(
     "/booking-sessions",
     response_model=BookingSessionListResponse,
