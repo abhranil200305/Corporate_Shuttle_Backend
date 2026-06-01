@@ -1321,8 +1321,17 @@ class PassengerService:
             "booking_session_id": payment.booking_session_id,
             "razorpay_order_id": payment.razorpay_order_id,
             "razorpay_payment_id": payment.razorpay_payment_id,
+            "razorpay_refund_id": payment.razorpay_refund_id,
             "status": payment.status,
+            "effective_status": self._get_booking_session_payment_effective_status(
+                payment
+            ),
             "amount": payment.amount,
+            "refund_requested_at": payment.refund_requested_at,
+            "refund_processed_at": payment.refund_processed_at,
+            "refund_retry_after": payment.refund_retry_after,
+            "refund_attempt_count": payment.refund_attempt_count,
+            "refund_failure_reason": payment.refund_failure_reason,
             "created_at": payment.created_at,
             "updated_at": payment.updated_at,
         }
@@ -1394,6 +1403,111 @@ class PassengerService:
             "created_at": booking_session.created_at,
             "updated_at": booking_session.updated_at,
         }
+
+    @staticmethod
+    def _get_booking_session_payment_effective_status(
+        payment: BookingSessionPayment,
+    ) -> str:
+        if payment.status == BookingPaymentStatus.REFUNDED:
+            return "refunded"
+
+        if (
+            payment.status == BookingPaymentStatus.PAID
+            and payment.refund_requested_at is not None
+            and payment.refund_processed_at is None
+        ):
+            return "refund_pending"
+
+        return payment.status.value
+    
+    def _get_paid_booking_session_payment(
+        self,
+        payments: list[BookingSessionPayment],
+    ) -> BookingSessionPayment | None:
+        paid_payments = [
+            payment
+            for payment in payments
+            if payment.status == BookingPaymentStatus.PAID
+        ]
+
+        if not paid_payments:
+            return None
+
+        paid_payments.sort(key=lambda item: item.created_at, reverse=True)
+        return paid_payments[0]
+    
+    async def _ensure_confirmed_booking_session_cancellable(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+    ) -> None:
+        trip = await self._get_trip_obj_for_booking_update(
+            booking_session.scheduled_trip_id
+        )
+
+        if trip.actual_start_at is not None or trip.planned_start_at <= utcnow():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "trip_already_started",
+                    "message": "Confirmed booking sessions can only be cancelled before the trip starts.",
+                },
+            )
+
+        non_cancellable_bookings = [
+            booking
+            for booking in bookings
+            if booking.booking_status
+            not in (
+                BookingStatus.BOOKED,
+                BookingStatus.CANCELLED,
+            )
+        ]
+
+        if non_cancellable_bookings:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_contains_non_cancellable_seats",
+                    "message": "This booking session contains seats that can no longer be cancelled through whole-session cancellation.",
+                    "booking_ids": [
+                        booking.id
+                        for booking in non_cancellable_bookings
+                    ],
+                },
+            )
+
+    async def _cancel_confirmed_booking_session_and_request_refund(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+        payment: BookingSessionPayment,
+    ) -> None:
+        now = utcnow()
+
+        booking_session.status = BookingSessionStatus.CANCELLED
+        booking_session.cancelled_at = booking_session.cancelled_at or now
+        booking_session.payment_hold_expires_at = None
+        self.db.add(booking_session)
+
+        for booking in bookings:
+            if booking.booking_status == BookingStatus.BOOKED:
+                booking.booking_status = BookingStatus.CANCELLED
+                booking.cancelled_at = booking.cancelled_at or now
+                booking.payment_hold_expires_at = None
+                booking.refund_retry_after = booking.refund_retry_after or now
+                booking.refund_attempt_count = booking.refund_attempt_count or 0
+                self.db.add(booking)
+
+        payment.refund_requested_at = payment.refund_requested_at or now
+        payment.refund_retry_after = payment.refund_retry_after or now
+        payment.refund_attempt_count = payment.refund_attempt_count or 0
+        payment.refund_failure_reason = None
+        self.db.add(payment)
+
+        await self.db.flush()
     
     async def _serialize_current_booking(self, booking: TripBooking) -> dict[str, Any]:
         return {
@@ -5021,13 +5135,60 @@ class PassengerService:
             }
 
         if booking_session.status == BookingSessionStatus.CONFIRMED:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "confirmed_booking_session_cannot_be_cancelled_here",
-                    "message": "Confirmed booking sessions require paid cancellation/refund flow.",
+            await self._ensure_confirmed_booking_session_cancellable(
+                booking_session=booking_session,
+                bookings=bookings,
+            )
+
+            paid_payment = self._get_paid_booking_session_payment(payments)
+
+            if paid_payment is None:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "paid_booking_session_payment_not_found",
+                        "message": "Confirmed booking session does not have a paid session payment.",
+                    },
+                )
+
+            await self._cancel_confirmed_booking_session_and_request_refund(
+                booking_session=booking_session,
+                bookings=bookings,
+                payment=paid_payment,
+            )
+
+            await self.db.commit()
+
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason="confirmed_booking_session_cancelled",
+            )
+
+            await self._notify_user(
+                user_id=current_user.id,
+                title="Booking session cancelled",
+                message="Your booking session was cancelled. Refund has been requested.",
+                data={
+                    "type": "confirmed_booking_session_cancelled",
+                    "booking_session_id": booking_session.id,
+                    "scheduled_trip_id": booking_session.scheduled_trip_id,
+                    "refresh": [
+                        "bookings_list",
+                        "booking_session_detail",
+                        "seatmap",
+                    ],
                 },
             )
+
+            return {
+                "message": "Booking session cancelled successfully. Refund has been requested.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
 
         if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
             raise HTTPException(

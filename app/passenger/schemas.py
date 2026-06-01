@@ -345,8 +345,15 @@ class BookingSessionPaymentResponse(BaseModel):
     booking_session_id: str
     razorpay_order_id: str
     razorpay_payment_id: str | None
+    razorpay_refund_id: str | None
     status: str
+    effective_status: str
     amount: Decimal
+    refund_requested_at: datetime | None
+    refund_processed_at: datetime | None
+    refund_retry_after: datetime | None
+    refund_attempt_count: int | None
+    refund_failure_reason: str | None
     created_at: datetime
     updated_at: datetime
 

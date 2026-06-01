@@ -3169,6 +3169,31 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
     )
     razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
+    razorpay_refund_id: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    refund_requested_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    refund_processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    refund_retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    refund_attempt_count: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    refund_failure_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
     status: Mapped[BookingPaymentStatus] = mapped_column(
@@ -3188,10 +3213,23 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
             "amount > 0",
             name="ck_booking_session_payments_amount_positive",
         ),
+        CheckConstraint(
+            "refund_attempt_count IS NULL OR refund_attempt_count >= 0",
+            name="ck_booking_session_payments_refund_attempt_nonnegative",
+        ),
         Index(
             "ix_booking_session_payments_session_status",
             "booking_session_id",
             "status",
+        ),
+        Index(
+            "ix_booking_session_payments_refund_retry",
+            "status",
+            "refund_retry_after",
+        ),
+        Index(
+            "ix_booking_session_payments_razorpay_refund",
+            "razorpay_refund_id",
         ),
     )
 
