@@ -52,6 +52,10 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeVerifyPaymentRequest,
     PassengerRFIDSummaryResponse,
     PassengerRFIDRouteTripDiscoveryResponse,
+    PassengerTravellerProfileCreateRequest,
+    PassengerTravellerProfileListResponse,
+    PassengerTravellerProfileMutationResponse,
+    PassengerTravellerProfileUpdateRequest,
 )
 
 from app.passenger.service import PassengerService
@@ -103,6 +107,61 @@ async def upsert_profile_picture(
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
     return await service.upsert_profile_picture(current_user, file)
+
+@router.get(
+    "/traveller-profiles",
+    response_model=PassengerTravellerProfileListResponse,
+)
+async def list_traveller_profiles(
+    active_only: bool = Query(default=True),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerTravellerProfileListResponse:
+    return await service.list_traveller_profiles(
+        current_user,
+        active_only=active_only,
+    )
+
+
+@router.post(
+    "/traveller-profiles",
+    response_model=PassengerTravellerProfileMutationResponse,
+)
+async def create_traveller_profile(
+    payload: PassengerTravellerProfileCreateRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerTravellerProfileMutationResponse:
+    return await service.create_traveller_profile(current_user, payload)
+
+
+@router.patch(
+    "/traveller-profiles/{profile_id}",
+    response_model=PassengerTravellerProfileMutationResponse,
+)
+async def patch_traveller_profile(
+    profile_id: str,
+    payload: PassengerTravellerProfileUpdateRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerTravellerProfileMutationResponse:
+    return await service.patch_traveller_profile(
+        current_user,
+        profile_id,
+        payload,
+    )
+
+
+@router.delete(
+    "/traveller-profiles/{profile_id}",
+    response_model=PassengerTravellerProfileMutationResponse,
+)
+async def delete_traveller_profile(
+    profile_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> PassengerTravellerProfileMutationResponse:
+    return await service.delete_traveller_profile(current_user, profile_id)
 
 @router.get("/rfid/summary", response_model=PassengerRFIDSummaryResponse)
 async def get_rfid_summary(

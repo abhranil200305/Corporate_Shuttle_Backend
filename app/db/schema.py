@@ -321,6 +321,13 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         uselist=False,
     )
 
+    traveller_profiles: Mapped[list["PassengerTravellerProfile"]] = relationship(
+        back_populates="owner",
+        foreign_keys="PassengerTravellerProfile.owner_user_id",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
     driver_profile: Mapped["DriverProfile | None"] = relationship(
         back_populates="user",
         foreign_keys="DriverProfile.user_id",
@@ -547,6 +554,58 @@ class PassengerProfile(UUIDPKMixin, TimestampMixin, Base):
     __table_args__ = (
         CheckConstraint(
             "full_name <> ''", name="ck_passenger_profiles_full_name_nonempty"
+        ),
+    )
+
+class PassengerTravellerProfile(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "passenger_traveller_profiles"
+
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    full_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    phone: Mapped[str] = mapped_column(String(20), nullable=False)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    relationship_label: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    is_self: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=False,
+        server_default=text("false"),
+    )
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
+    owner: Mapped["User"] = relationship(
+        back_populates="traveller_profiles",
+        foreign_keys=[owner_user_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "full_name <> ''",
+            name="ck_passenger_traveller_profiles_full_name_nonempty",
+        ),
+        CheckConstraint(
+            "phone <> ''",
+            name="ck_passenger_traveller_profiles_phone_nonempty",
+        ),
+        Index(
+            "ix_passenger_traveller_profiles_owner_active",
+            "owner_user_id",
+            "is_active",
+        ),
+        Index(
+            "ix_passenger_traveller_profiles_owner_self",
+            "owner_user_id",
+            "is_self",
         ),
     )
 

@@ -25,6 +25,7 @@ from app.db.schema import (
     BookingRating,
     BookingStatus,
     PassengerProfile,
+    PassengerTravellerProfile,
     PlatformSettings,
     Route,
     RouteFare,
@@ -62,6 +63,8 @@ from app.passenger.schemas import (
     FarePreviewRequest,
     LegAvailableSeatsRequest,
     PassengerProfileUpsertRequest,
+    PassengerTravellerProfileCreateRequest,
+    PassengerTravellerProfileUpdateRequest,
     VerifyBookingPaymentRequest,
     PassengerRFIDRechargeCreateOrderRequest,
     PassengerRFIDRechargeVerifyPaymentRequest,
@@ -362,6 +365,81 @@ class PassengerService:
         stmt = select(PassengerProfile).where(PassengerProfile.user_id == user_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
+    
+    @staticmethod
+    def _clean_optional_text(value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @staticmethod
+    def _clean_required_text(
+        value: str,
+        *,
+        field_name: str,
+        max_length: int,
+    ) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"invalid_{field_name}",
+                    "message": f"{field_name.replace('_', ' ').capitalize()} cannot be empty.",
+                },
+            )
+        if len(cleaned) > max_length:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": f"invalid_{field_name}",
+                    "message": f"{field_name.replace('_', ' ').capitalize()} is too long.",
+                    "max_length": max_length,
+                },
+            )
+        return cleaned
+
+    def _serialize_traveller_profile(
+        self,
+        profile: PassengerTravellerProfile,
+    ) -> dict[str, Any]:
+        return {
+            "id": profile.id,
+            "owner_user_id": profile.owner_user_id,
+            "full_name": profile.full_name,
+            "phone": profile.phone,
+            "email": profile.email,
+            "relationship_label": profile.relationship_label,
+            "is_self": profile.is_self,
+            "is_active": profile.is_active,
+            "created_at": profile.created_at,
+            "updated_at": profile.updated_at,
+        }
+
+    async def _get_traveller_profile_for_owner_or_404(
+        self,
+        *,
+        owner_user_id: str,
+        profile_id: str,
+    ) -> PassengerTravellerProfile:
+        stmt = select(PassengerTravellerProfile).where(
+            PassengerTravellerProfile.id == profile_id,
+            PassengerTravellerProfile.owner_user_id == owner_user_id,
+        )
+        result = await self.db.execute(stmt)
+        profile = result.scalar_one_or_none()
+
+        if profile is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "traveller_profile_not_found",
+                    "message": "Traveller profile not found.",
+                },
+            )
+
+        return profile
 
     async def _get_route_obj(self, route_id: str) -> Route:
         stmt = (
@@ -2159,6 +2237,178 @@ class PassengerService:
                 "updated_at": profile.updated_at,
             },
         }
+    
+    async def list_traveller_profiles(
+        self,
+        current_user: User,
+        *,
+        active_only: bool = True,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        filters = [PassengerTravellerProfile.owner_user_id == current_user.id]
+        if active_only:
+            filters.append(PassengerTravellerProfile.is_active.is_(True))
+
+        stmt = (
+            select(PassengerTravellerProfile)
+            .where(*filters)
+            .order_by(
+                PassengerTravellerProfile.is_self.desc(),
+                PassengerTravellerProfile.created_at.asc(),
+            )
+        )
+        result = await self.db.execute(stmt)
+        profiles = list(result.scalars().all())
+
+        return {
+            "items": [
+                self._serialize_traveller_profile(profile)
+                for profile in profiles
+            ],
+            "count": len(profiles),
+        }
+
+    async def create_traveller_profile(
+        self,
+        current_user: User,
+        payload: PassengerTravellerProfileCreateRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        full_name = self._clean_required_text(
+            payload.full_name,
+            field_name="full_name",
+            max_length=120,
+        )
+        phone = self._clean_required_text(
+            payload.phone,
+            field_name="phone",
+            max_length=20,
+        )
+
+        if payload.is_self:
+            await self._clear_existing_self_traveller_profile(current_user.id)
+
+        profile = PassengerTravellerProfile(
+            owner_user_id=current_user.id,
+            full_name=full_name,
+            phone=phone,
+            email=self._clean_optional_text(payload.email),
+            relationship_label=self._clean_optional_text(payload.relationship_label),
+            is_self=payload.is_self,
+            is_active=True,
+        )
+
+        self.db.add(profile)
+        await self.db.commit()
+        await self.db.refresh(profile)
+
+        return {
+            "message": "Traveller profile created successfully.",
+            "profile": self._serialize_traveller_profile(profile),
+        }
+
+    async def patch_traveller_profile(
+        self,
+        current_user: User,
+        profile_id: str,
+        payload: PassengerTravellerProfileUpdateRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        profile = await self._get_traveller_profile_for_owner_or_404(
+            owner_user_id=current_user.id,
+            profile_id=profile_id,
+        )
+
+        if payload.full_name is not None:
+            profile.full_name = self._clean_required_text(
+                payload.full_name,
+                field_name="full_name",
+                max_length=120,
+            )
+
+        if payload.phone is not None:
+            profile.phone = self._clean_required_text(
+                payload.phone,
+                field_name="phone",
+                max_length=20,
+            )
+
+        if payload.email is not None:
+            profile.email = self._clean_optional_text(payload.email)
+
+        if payload.relationship_label is not None:
+            profile.relationship_label = self._clean_optional_text(
+                payload.relationship_label
+            )
+
+        if payload.is_active is not None:
+            profile.is_active = payload.is_active
+
+        if payload.is_self is not None:
+            if payload.is_self:
+                await self._clear_existing_self_traveller_profile(
+                    current_user.id,
+                    except_profile_id=profile.id,
+                )
+            profile.is_self = payload.is_self
+
+        self.db.add(profile)
+        await self.db.commit()
+        await self.db.refresh(profile)
+
+        return {
+            "message": "Traveller profile updated successfully.",
+            "profile": self._serialize_traveller_profile(profile),
+        }
+
+    async def delete_traveller_profile(
+        self,
+        current_user: User,
+        profile_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        profile = await self._get_traveller_profile_for_owner_or_404(
+            owner_user_id=current_user.id,
+            profile_id=profile_id,
+        )
+
+        profile.is_active = False
+        self.db.add(profile)
+        await self.db.commit()
+        await self.db.refresh(profile)
+
+        return {
+            "message": "Traveller profile deactivated successfully.",
+            "profile": self._serialize_traveller_profile(profile),
+        }
+
+    async def _clear_existing_self_traveller_profile(
+        self,
+        owner_user_id: str,
+        *,
+        except_profile_id: str | None = None,
+    ) -> None:
+        filters = [
+            PassengerTravellerProfile.owner_user_id == owner_user_id,
+            PassengerTravellerProfile.is_self.is_(True),
+        ]
+
+        if except_profile_id is not None:
+            filters.append(PassengerTravellerProfile.id != except_profile_id)
+
+        stmt = select(PassengerTravellerProfile).where(*filters).with_for_update()
+        result = await self.db.execute(stmt)
+        profiles = list(result.scalars().all())
+
+        for profile in profiles:
+            profile.is_self = False
+            self.db.add(profile)
+
+        await self.db.flush()
     
     async def get_rfid_summary(
         self,

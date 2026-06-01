@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PassengerProfileUpsertRequest(BaseModel):
@@ -32,6 +32,82 @@ class PassengerProfileResponse(BaseModel):
 class PassengerProfileMutationResponse(BaseModel):
     message: str
     profile: PassengerProfileResponse
+
+class PassengerTravellerProfileCreateRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=120)
+    phone: str = Field(..., min_length=5, max_length=20)
+    email: str | None = Field(default=None, max_length=255)
+    relationship_label: str | None = Field(default=None, max_length=80)
+    is_self: bool = False
+
+    @field_validator("full_name", "phone", "email", "relationship_label")
+    @classmethod
+    def clean_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("full_name", "phone")
+    @classmethod
+    def required_text_must_not_be_empty(cls, value: str | None) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("This field cannot be empty.")
+        return cleaned
+
+
+class PassengerTravellerProfileUpdateRequest(BaseModel):
+    full_name: str | None = Field(default=None, min_length=1, max_length=120)
+    phone: str | None = Field(default=None, min_length=5, max_length=20)
+    email: str | None = Field(default=None, max_length=255)
+    relationship_label: str | None = Field(default=None, max_length=80)
+    is_self: bool | None = None
+    is_active: bool | None = None
+
+    @field_validator("full_name", "phone", "email", "relationship_label")
+    @classmethod
+    def clean_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @model_validator(mode="after")
+    def require_at_least_one_field(self):
+        if (
+            self.full_name is None
+            and self.phone is None
+            and self.email is None
+            and self.relationship_label is None
+            and self.is_self is None
+            and self.is_active is None
+        ):
+            raise ValueError("At least one field must be provided.")
+        return self
+
+
+class PassengerTravellerProfileResponse(BaseModel):
+    id: str
+    owner_user_id: str
+    full_name: str
+    phone: str
+    email: str | None
+    relationship_label: str | None
+    is_self: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerTravellerProfileListResponse(BaseModel):
+    items: list[PassengerTravellerProfileResponse]
+    count: int
+
+
+class PassengerTravellerProfileMutationResponse(BaseModel):
+    message: str
+    profile: PassengerTravellerProfileResponse
 
 
 class StopBriefResponse(BaseModel):
