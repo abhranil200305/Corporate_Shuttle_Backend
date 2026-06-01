@@ -1469,6 +1469,31 @@ class PassengerService:
             "updated_at": booking.updated_at,
         }
     
+    def _serialize_booking_seat_refund_request(
+        self,
+        refund_request: BookingSeatRefundRequest | None,
+    ) -> dict[str, Any] | None:
+        if refund_request is None:
+            return None
+
+        return {
+            "id": refund_request.id,
+            "booking_session_id": refund_request.booking_session_id,
+            "booking_id": refund_request.booking_id,
+            "booking_session_payment_id": refund_request.booking_session_payment_id,
+            "owner_user_id": refund_request.owner_user_id,
+            "amount": refund_request.amount,
+            "status": refund_request.status,
+            "razorpay_refund_id": refund_request.razorpay_refund_id,
+            "failure_reason": refund_request.failure_reason,
+            "attempt_count": refund_request.attempt_count,
+            "retry_after": refund_request.retry_after,
+            "requested_at": refund_request.requested_at,
+            "processed_at": refund_request.processed_at,
+            "created_at": refund_request.created_at,
+            "updated_at": refund_request.updated_at,
+        }
+    
     def _serialize_booking_session_payment(
         self,
         payment: BookingSessionPayment,
@@ -1497,7 +1522,12 @@ class PassengerService:
     def _serialize_booking_session_seat(
         self,
         booking: TripBooking,
+        *,
+        refund_requests_by_booking_id: dict[str, BookingSeatRefundRequest] | None = None,
     ) -> dict[str, Any]:
+        refund_request = None
+        if refund_requests_by_booking_id is not None:
+            refund_request = refund_requests_by_booking_id.get(booking.id)
         return {
             "id": booking.id,
             "booking_session_id": booking.booking_session_id,
@@ -1517,6 +1547,9 @@ class PassengerService:
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "refund": self._serialize_booking_seat_refund_request(
+                refund_request
+            ),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
         }
@@ -1524,6 +1557,8 @@ class PassengerService:
     def _serialize_booking_session(
         self,
         booking_session: BookingSession,
+        *,
+        refund_requests_by_booking_id: dict[str, BookingSeatRefundRequest] | None = None,
     ) -> dict[str, Any]:
         bookings = sorted(
             list(booking_session.bookings),
@@ -1551,7 +1586,10 @@ class PassengerService:
             "cancelled_at": booking_session.cancelled_at,
             "expired_at": booking_session.expired_at,
             "bookings": [
-                self._serialize_booking_session_seat(booking)
+                self._serialize_booking_session_seat(
+                    booking,
+                    refund_requests_by_booking_id=refund_requests_by_booking_id,
+                )
                 for booking in bookings
             ],
             "payments": [
@@ -1561,6 +1599,42 @@ class PassengerService:
             "created_at": booking_session.created_at,
             "updated_at": booking_session.updated_at,
         }
+    
+    async def _serialize_booking_session_with_refunds(
+        self,
+        booking_session: BookingSession,
+    ) -> dict[str, Any]:
+        refund_requests_by_booking_id = (
+            await self._get_latest_booking_seat_refund_requests_by_booking_id(
+                booking_session_ids=[booking_session.id],
+            )
+        )
+
+        return self._serialize_booking_session(
+            booking_session,
+            refund_requests_by_booking_id=refund_requests_by_booking_id,
+        )
+
+    async def _serialize_booking_sessions_with_refunds(
+        self,
+        booking_sessions: list[BookingSession],
+    ) -> list[dict[str, Any]]:
+        refund_requests_by_booking_id = (
+            await self._get_latest_booking_seat_refund_requests_by_booking_id(
+                booking_session_ids=[
+                    booking_session.id
+                    for booking_session in booking_sessions
+                ],
+            )
+        )
+
+        return [
+            self._serialize_booking_session(
+                booking_session,
+                refund_requests_by_booking_id=refund_requests_by_booking_id,
+            )
+            for booking_session in booking_sessions
+        ]
 
     @staticmethod
     def _get_booking_session_payment_effective_status(
@@ -4960,6 +5034,44 @@ class PassengerService:
 
         return booking_session
     
+    async def _get_latest_booking_seat_refund_requests_by_booking_id(
+        self,
+        *,
+        booking_session_ids: list[str],
+    ) -> dict[str, BookingSeatRefundRequest]:
+        cleaned_session_ids = [
+            session_id
+            for session_id in booking_session_ids
+            if session_id
+        ]
+
+        if not cleaned_session_ids:
+            return {}
+
+        stmt = (
+            select(BookingSeatRefundRequest)
+            .where(
+                BookingSeatRefundRequest.booking_session_id.in_(
+                    cleaned_session_ids
+                )
+            )
+            .order_by(
+                BookingSeatRefundRequest.booking_id.asc(),
+                BookingSeatRefundRequest.created_at.desc(),
+            )
+        )
+
+        result = await self.db.execute(stmt)
+        refund_requests = list(result.scalars().all())
+
+        latest_by_booking_id: dict[str, BookingSeatRefundRequest] = {}
+
+        for refund_request in refund_requests:
+            if refund_request.booking_id not in latest_by_booking_id:
+                latest_by_booking_id[refund_request.booking_id] = refund_request
+
+        return latest_by_booking_id
+    
     async def create_booking_session(
         self,
         current_user: User,
@@ -5198,7 +5310,9 @@ class PassengerService:
 
         return {
             "message": "Booking session created. Payment is pending.",
-            "booking_session": self._serialize_booking_session(booking_session),
+            "booking_session": await self._serialize_booking_session_with_refunds(
+                booking_session
+            ),
             "payment_order": self._build_booking_session_payment_order_response(
                 booking_session=booking_session,
                 razorpay_order_id=order_payload["id"],
@@ -5284,7 +5398,9 @@ class PassengerService:
             await self.db.commit()
             return {
                 "message": "Payment already verified successfully.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
@@ -5377,7 +5493,9 @@ class PassengerService:
 
             return {
                 "message": "Payment verified successfully.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         self._verify_razorpay_signature(
@@ -5488,7 +5606,9 @@ class PassengerService:
 
         return {
             "message": "Payment verified successfully.",
-            "booking_session": self._serialize_booking_session(booking_session),
+            "booking_session": await self._serialize_booking_session_with_refunds(
+                booking_session
+            ),
         }
 
     async def cancel_booking_session(
@@ -5526,7 +5646,9 @@ class PassengerService:
             )
             return {
                 "message": "Booking session is already cancelled.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         if booking_session.status == BookingSessionStatus.EXPIRED:
@@ -5536,7 +5658,9 @@ class PassengerService:
             )
             return {
                 "message": "Booking session is already expired.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         if booking_session.status == BookingSessionStatus.CONFIRMED:
@@ -5598,7 +5722,9 @@ class PassengerService:
 
             return {
                 "message": "Booking session cancelled successfully. Refund has been requested.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
@@ -5647,7 +5773,9 @@ class PassengerService:
 
         return {
             "message": "Booking session cancelled successfully.",
-            "booking_session": self._serialize_booking_session(booking_session),
+            "booking_session": await self._serialize_booking_session_with_refunds(
+                booking_session
+            ),
         }
     
     async def cancel_booking_session_seat(
@@ -5689,7 +5817,9 @@ class PassengerService:
             )
             return {
                 "message": "Booking session is already closed.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         if booking_session.status != BookingSessionStatus.CONFIRMED:
@@ -5732,7 +5862,9 @@ class PassengerService:
             )
             return {
                 "message": "Seat booking is already cancelled.",
-                "booking_session": self._serialize_booking_session(booking_session),
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
             }
 
         now = utcnow()
@@ -5803,7 +5935,9 @@ class PassengerService:
 
         return {
             "message": "Seat cancelled successfully. Refund has been requested.",
-            "booking_session": self._serialize_booking_session(booking_session),
+            "booking_session": await self._serialize_booking_session_with_refunds(
+                booking_session
+            ),
         }
 
     async def list_booking_sessions(
@@ -5835,10 +5969,9 @@ class PassengerService:
         booking_sessions = list(result.scalars().unique().all())
 
         return {
-            "items": [
-                self._serialize_booking_session(booking_session)
-                for booking_session in booking_sessions
-            ],
+            "items": await self._serialize_booking_sessions_with_refunds(
+                booking_sessions
+            ),
             "count": len(booking_sessions),
         }
 
@@ -5854,7 +5987,9 @@ class PassengerService:
             owner_user_id=current_user.id,
         )
 
-        return self._serialize_booking_session(booking_session)
+        return await self._serialize_booking_session_with_refunds(
+            booking_session
+        )
 
     async def create_booking(
         self,
