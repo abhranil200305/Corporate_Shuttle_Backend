@@ -2120,10 +2120,25 @@ class PassengerService:
 
     @staticmethod
     def _get_traveller_notification_channel(booking: TripBooking) -> str:
-        if (booking.traveller_phone_snapshot or "").strip():
-            return "sms"
-        if (booking.traveller_email_snapshot or "").strip():
+        primary_channel = os.getenv(
+            "TRAVELLER_CONTACT_PRIMARY_CHANNEL",
+            "email",
+        ).strip().lower()
+
+        has_email = bool((booking.traveller_email_snapshot or "").strip())
+        has_phone = bool((booking.traveller_phone_snapshot or "").strip())
+
+        if primary_channel == "sms":
+            if has_phone:
+                return "sms"
+            if has_email:
+                return "email"
+            return "none"
+
+        if has_email:
             return "email"
+        if has_phone:
+            return "sms"
         return "none"
 
     def _build_traveller_booking_payload(
@@ -2133,7 +2148,7 @@ class PassengerService:
         booking: TripBooking,
         event_type: str,
     ) -> dict[str, Any]:
-                return {
+        return {
             "type": event_type,
             "delivery_assumption": "traveller_contact_sms_or_email",
             "booking_session_id": booking_session.id,
