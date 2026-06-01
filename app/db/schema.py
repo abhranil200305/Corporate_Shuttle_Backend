@@ -3287,7 +3287,20 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
     )
 
     provider_message_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    delivered_channel: Mapped[str | None] = mapped_column(String(20), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    delivery_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    delivery_retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
@@ -3306,6 +3319,15 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "message <> ''",
             name="ck_traveller_contact_notifications_message_nonempty",
+        ),
+        CheckConstraint(
+            "delivery_attempt_count >= 0",
+            name="ck_traveller_contact_notifications_attempt_nonnegative",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_retry",
+            "status",
+            "delivery_retry_after",
         ),
         Index(
             "ix_traveller_contact_notifications_status_created",

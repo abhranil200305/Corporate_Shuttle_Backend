@@ -22,6 +22,9 @@ from app.driver.driverprofileshow import router as driverprofileshow_router
 from app.driver.trips import booking_details_service, payout_details, route_trip_details, trip_details
 from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
+from app.notifications.traveller_contact_delivery import (
+    run_traveller_contact_delivery_loop,
+)
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.jobs.cancelled_booking_refund_reconciler import cancelled_booking_refund_loop
 from app.jobs.unstarted_scheduled_trip_canceller import unstarted_trip_cancel_loop
@@ -104,7 +107,7 @@ def _should_run_background_jobs() -> bool:
 def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
     ws_hub = app.state.ws_hub
 
-    task_specs: list[tuple[str, object]] = [
+    ws_hub_task_specs: list[tuple[str, object]] = [
         ("payment-reconcile-loop", payment_reconcile_loop),
         ("cancelled-booking-refund-loop", cancelled_booking_refund_loop),
         ("unstarted-trip-cancel-loop", unstarted_trip_cancel_loop),
@@ -120,11 +123,25 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
         ),
     ]
 
+    no_arg_task_specs: list[tuple[str, object]] = [
+        (
+            "traveller-contact-delivery-loop",
+            run_traveller_contact_delivery_loop,
+        ),
+    ]
+
     tasks: list[asyncio.Task] = []
 
-    for task_name, runner in task_specs:
+    for task_name, runner in ws_hub_task_specs:
         task = asyncio.create_task(
             runner(ws_hub),
+            name=task_name,
+        )
+        tasks.append(task)
+
+    for task_name, runner in no_arg_task_specs:
+        task = asyncio.create_task(
+            runner(),
             name=task_name,
         )
         tasks.append(task)
