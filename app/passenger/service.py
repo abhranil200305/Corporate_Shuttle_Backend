@@ -60,6 +60,8 @@ from app.db.schema import (
     PassengerTravellerProfile,
     TravellerContactNotification,
     TravellerContactNotificationStatus,
+    BookingSeatRefundRequest,
+    BookingSeatRefundRequestStatus,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -674,6 +676,159 @@ class PassengerService:
         self.db.add(payment)
         self.db.add(booking_session)
         await self.db.flush()
+
+    @staticmethod
+    def _get_booking_from_session_bookings_or_404(
+        *,
+        bookings: list[TripBooking],
+        booking_id: str,
+    ) -> TripBooking:
+        for booking in bookings:
+            if booking.id == booking_id:
+                return booking
+
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "booking_not_found_in_session",
+                "message": "Seat booking was not found in this booking session.",
+            },
+        )
+
+    async def _ensure_confirmed_booking_session_seat_cancellable(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+    ) -> None:
+        trip = await self._get_trip_obj_for_booking_update(
+            booking_session.scheduled_trip_id
+        )
+
+        if trip.actual_start_at is not None or trip.planned_start_at <= utcnow():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "trip_already_started",
+                    "message": "Seat can only be cancelled before the trip starts.",
+                },
+            )
+
+        if booking.booking_status == BookingStatus.CANCELLED:
+            return
+
+        if booking.booking_status != BookingStatus.BOOKED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "seat_booking_not_cancellable",
+                    "message": "Only booked seats can be cancelled through this endpoint.",
+                    "booking_status": booking.booking_status.value
+                    if hasattr(booking.booking_status, "value")
+                    else str(booking.booking_status),
+                },
+            )
+        
+    async def _get_existing_active_booking_seat_refund_request(
+        self,
+        *,
+        booking_id: str,
+    ) -> BookingSeatRefundRequest | None:
+        stmt = (
+            select(BookingSeatRefundRequest)
+            .where(
+                BookingSeatRefundRequest.booking_id == booking_id,
+                BookingSeatRefundRequest.status.in_(
+                    (
+                        BookingSeatRefundRequestStatus.PENDING,
+                        BookingSeatRefundRequestStatus.PROCESSING,
+                        BookingSeatRefundRequestStatus.SUCCEEDED,
+                    )
+                ),
+            )
+            .order_by(BookingSeatRefundRequest.created_at.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+    
+    async def _ensure_booking_seat_refund_request(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+        payment: BookingSessionPayment,
+    ) -> BookingSeatRefundRequest:
+        existing_request = await self._get_existing_active_booking_seat_refund_request(
+            booking_id=booking.id,
+        )
+
+        if existing_request is not None:
+            return existing_request
+
+        now = utcnow()
+        refund_amount = self._quantize_money(Decimal(booking.fare_amount or 0))
+
+        if refund_amount <= Decimal("0.00"):
+            refund_request = BookingSeatRefundRequest(
+                booking_session_id=booking_session.id,
+                booking_id=booking.id,
+                booking_session_payment_id=payment.id,
+                owner_user_id=booking_session.owner_user_id,
+                amount=Decimal("0.00"),
+                status=BookingSeatRefundRequestStatus.SKIPPED,
+                failure_reason="Seat fare amount is zero, so refund is not required.",
+                attempt_count=0,
+                retry_after=None,
+                requested_at=now,
+                processed_at=now,
+            )
+            self.db.add(refund_request)
+            await self.db.flush()
+            return refund_request
+
+        refund_request = BookingSeatRefundRequest(
+            booking_session_id=booking_session.id,
+            booking_id=booking.id,
+            booking_session_payment_id=payment.id,
+            owner_user_id=booking_session.owner_user_id,
+            amount=refund_amount,
+            status=BookingSeatRefundRequestStatus.PENDING,
+            attempt_count=0,
+            retry_after=now,
+            requested_at=now,
+        )
+
+        self.db.add(refund_request)
+        await self.db.flush()
+        return refund_request
+    
+    async def _sync_booking_session_status_after_seat_cancellation(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+    ) -> None:
+        active_statuses = {
+            BookingStatus.PENDING_PAYMENT,
+            BookingStatus.BOOKED,
+            BookingStatus.BOARDED,
+        }
+
+        has_active_booking = any(
+            booking.booking_status in active_statuses
+            for booking in bookings
+        )
+
+        if has_active_booking:
+            return
+
+        if booking_session.status == BookingSessionStatus.CONFIRMED:
+            booking_session.status = BookingSessionStatus.CANCELLED
+            booking_session.cancelled_at = booking_session.cancelled_at or utcnow()
+            self.db.add(booking_session)
+            await self.db.flush()
 
     async def _get_route_obj(self, route_id: str) -> Route:
         stmt = (
@@ -5476,6 +5631,162 @@ class PassengerService:
 
         return {
             "message": "Booking session cancelled successfully.",
+            "booking_session": self._serialize_booking_session(booking_session),
+        }
+    
+    async def cancel_booking_session_seat(
+        self,
+        current_user: User,
+        booking_session_id: str,
+        booking_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking_session = await self._get_booking_session_for_update_or_404(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        payments = await self._list_booking_session_payments_for_update(
+            booking_session.id
+        )
+        bookings = await self._list_booking_session_bookings_for_update(
+            booking_session.id
+        )
+
+        if booking_session.status == BookingSessionStatus.PENDING_PAYMENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "pending_session_seat_cancellation_not_supported",
+                    "message": "Cancel the pending booking session instead of cancelling an individual pending seat.",
+                },
+            )
+
+        if booking_session.status in (
+            BookingSessionStatus.CANCELLED,
+            BookingSessionStatus.EXPIRED,
+        ):
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Booking session is already closed.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        if booking_session.status != BookingSessionStatus.CONFIRMED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_not_confirmed",
+                    "message": "Only confirmed booking sessions support per-seat cancellation.",
+                    "status": booking_session.status.value
+                    if hasattr(booking_session.status, "value")
+                    else str(booking_session.status),
+                },
+            )
+
+        booking = self._get_booking_from_session_bookings_or_404(
+            bookings=bookings,
+            booking_id=booking_id,
+        )
+
+        paid_payment = self._get_paid_booking_session_payment(payments)
+
+        if paid_payment is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paid_booking_session_payment_not_found",
+                    "message": "Confirmed booking session does not have a paid session payment.",
+                },
+            )
+
+        await self._ensure_confirmed_booking_session_seat_cancellable(
+            booking_session=booking_session,
+            booking=booking,
+        )
+
+        if booking.booking_status == BookingStatus.CANCELLED:
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Seat booking is already cancelled.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        now = utcnow()
+
+        booking.booking_status = BookingStatus.CANCELLED
+        booking.cancelled_at = booking.cancelled_at or now
+        booking.payment_hold_expires_at = None
+        booking.refund_retry_after = booking.refund_retry_after or now
+        booking.refund_attempt_count = booking.refund_attempt_count or 0
+        self.db.add(booking)
+
+        await self._ensure_booking_seat_refund_request(
+            booking_session=booking_session,
+            booking=booking,
+            payment=paid_payment,
+        )
+
+        await self._sync_booking_session_status_after_seat_cancellation(
+            booking_session=booking_session,
+            bookings=bookings,
+        )
+
+        await self.db.commit()
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+
+        cancelled_booking = self._get_booking_from_session_bookings_or_404(
+            bookings=list(booking_session.bookings),
+            booking_id=booking_id,
+        )
+
+        await self._queue_booking_session_traveller_notifications(
+            booking_session=booking_session,
+            bookings=[cancelled_booking],
+            event_type="traveller_seat_cancelled",
+        )
+        await self.db.commit()
+
+        await self._broadcast_seatmap_snapshots_for_trip(
+            scheduled_trip_id=booking_session.scheduled_trip_id,
+            reason="booking_session_seat_cancelled",
+        )
+
+        await self._notify_user(
+            user_id=current_user.id,
+            title="Seat cancelled",
+            message="Selected seat was cancelled. Refund has been requested.",
+            data={
+                "type": "booking_session_seat_cancelled",
+                "booking_session_id": booking_session.id,
+                "booking_id": booking_id,
+                "scheduled_trip_id": booking_session.scheduled_trip_id,
+                "refresh": [
+                    "bookings_list",
+                    "booking_session_detail",
+                    "seatmap",
+                ],
+            },
+        )
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+
+        return {
+            "message": "Seat cancelled successfully. Refund has been requested.",
             "booking_session": self._serialize_booking_session(booking_session),
         }
 

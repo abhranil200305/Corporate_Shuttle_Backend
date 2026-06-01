@@ -303,6 +303,13 @@ class TravellerContactNotificationStatus(str, enum.Enum):
     SENT = "sent"
     FAILED = "failed"
     SKIPPED = "skipped"
+
+class BookingSeatRefundRequestStatus(str, enum.Enum):
+    PENDING = "pending"
+    PROCESSING = "processing"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 # ============================================================
 # auth / users
 # ============================================================
@@ -3239,6 +3246,103 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
         ),
     )
 
+class BookingSeatRefundRequest(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "booking_seat_refund_requests"
+
+    booking_session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("booking_sessions.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    booking_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trip_bookings.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    booking_session_payment_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("booking_session_payments.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+
+    status: Mapped[BookingSeatRefundRequestStatus] = mapped_column(
+        enum_type(
+            BookingSeatRefundRequestStatus,
+            "booking_seat_refund_request_status",
+        ),
+        nullable=False,
+        default=BookingSeatRefundRequestStatus.PENDING,
+        server_default=text("'pending'"),
+    )
+
+    razorpay_refund_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    provider_response_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=utcnow,
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_booking_seat_refund_requests_amount_positive",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_booking_seat_refund_requests_attempt_nonnegative",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_status_retry",
+            "status",
+            "retry_after",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_booking",
+            "booking_id",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_session",
+            "booking_session_id",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_payment",
+            "booking_session_payment_id",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_owner",
+            "owner_user_id",
+        ),
+        Index(
+            "ix_booking_seat_refund_requests_razorpay_refund",
+            "razorpay_refund_id",
+        ),
+    )
+
 class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "traveller_contact_notifications"
 
@@ -3287,7 +3391,20 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
     )
 
     provider_message_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    delivered_channel: Mapped[str | None] = mapped_column(String(20), nullable=True)
     failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    delivery_attempt_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default=text("0"),
+    )
+    delivery_retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
@@ -3306,6 +3423,15 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "message <> ''",
             name="ck_traveller_contact_notifications_message_nonempty",
+        ),
+        CheckConstraint(
+            "delivery_attempt_count >= 0",
+            name="ck_traveller_contact_notifications_attempt_nonnegative",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_retry",
+            "status",
+            "delivery_retry_after",
         ),
         Index(
             "ix_traveller_contact_notifications_status_created",
