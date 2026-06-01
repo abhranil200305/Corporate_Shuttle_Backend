@@ -70,7 +70,7 @@ async def get_current_trip(
 
     if trip is None:
         raise HTTPException(
-            status_code=404,
+            status_code=204,
             detail={
                 "error": "no_active_trip",
                 "message": "No current trip found for this driver.",
