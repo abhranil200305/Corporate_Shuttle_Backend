@@ -579,11 +579,6 @@ class AdminService:
 						if passenger.passenger_profile.full_name is None
 						else passenger.passenger_profile.full_name
 					),
-					"phone": (
-						None
-						if passenger.passenger_profile.phone is None
-						else passenger.passenger_profile.phone
-					),
 				},
 				"has_current_trip": False,
 				"current_trip": None,
@@ -625,11 +620,6 @@ class AdminService:
 					None
 					if passenger.passenger_profile.full_name is None
 					else passenger.passenger_profile.full_name
-				),
-				"phone": (
-					None
-					if passenger.passenger_profile.phone is None
-					else passenger.passenger_profile.phone
 				),
 			},
 			"has_current_trip": True,
