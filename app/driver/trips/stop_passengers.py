@@ -66,15 +66,24 @@ async def get_stop_passengers(
             booking.passenger.passenger_profile
         )
 
-        passenger_name = (
-            passenger_profile.full_name
-            if passenger_profile else "Unknown"
+        # =====================================================
+        # CORE FIX: USE TRAVELLER SNAPSHOT (DO NOT BREAK OLD RESPONSE)
+        # =====================================================
+        traveller_name = booking.traveller_name_snapshot or (
+            passenger_profile.full_name if passenger_profile else "Unknown"
         )
 
+        traveller_phone = booking.traveller_phone_snapshot
+        traveller_email = booking.traveller_email_snapshot
+        traveller_relationship = booking.traveller_relationship_label_snapshot
+
         passenger_data = {
+            # -----------------------------
+            # EXISTING FIELDS (UNCHANGED)
+            # -----------------------------
             "booking_id": booking.id,
             "passenger_id": booking.passenger_user_id,
-            "passenger_name": passenger_name,
+            "passenger_name": passenger_profile.full_name if passenger_profile else "Unknown",
             "seat_number": booking.seat_number,
             "pickup_stop": {
                 "id": booking.pickup_stop.id,
@@ -86,6 +95,14 @@ async def get_stop_passengers(
             },
             "fare": float(booking.fare_amount),
             "booking_status": booking.booking_status,
+
+            # -----------------------------
+            # NEW FIELDS (TRAVELLER SNAPSHOT)
+            # -----------------------------
+            "traveller_name": traveller_name,
+            "traveller_phone": traveller_phone,
+            "traveller_email": traveller_email,
+            "traveller_relationship_label": traveller_relationship,
         }
 
         # -----------------------------
