@@ -3806,17 +3806,35 @@ async def get_top_pickup_stops(
 # -----------------------------
 @router.post("/trips/{trip_id}/complete-manually")
 async def admin_complete_trip(
-	trip_id: str,
-	note: str = None,
-	db: AsyncSession = Depends(get_async_session),
-	# Ensure only admins can access this
-	current_admin: schema.User = Depends(get_current_admin),
+    trip_id: str,
+    note: str = None,
+    db: AsyncSession = Depends(get_async_session),
+    current_admin: schema.User = Depends(get_current_admin),
 ):
-	service = AdminService(db)
-	return await service.manually_complete_trip(
-		trip_id, current_admin.id, note
-	)
+    trip = await db.get(schema.ScheduledTrip, trip_id)
 
+    if not trip:
+        raise HTTPException(
+            status_code=404,
+            detail="Trip not found",
+        )
+
+    if trip.status != schema.ScheduledTripStatus.IN_PROGRESS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Manual trip completion is allowed only when "
+                "the trip status is 'in_progress'."
+            ),
+        )
+
+    service = AdminService(db)
+
+    return await service.manually_complete_trip(
+        trip_id=trip_id,
+        admin_user_id=current_admin.id,
+        note=note,
+    )
 
 # -----------------------------
 # Admin: Get all passengers details
