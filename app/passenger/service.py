@@ -58,6 +58,8 @@ from app.db.schema import (
     BookingSessionPayment,
     BookingSessionStatus,
     PassengerTravellerProfile,
+    TravellerContactNotification,
+    TravellerContactNotificationStatus,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -1865,6 +1867,129 @@ class PassengerService:
             "status": ticket.status.value,
             "refresh": ["support_tickets", "support_ticket_detail"],
         }
+
+    @staticmethod
+    def _get_traveller_notification_channel(booking: TripBooking) -> str:
+        if (booking.traveller_phone_snapshot or "").strip():
+            return "sms"
+        if (booking.traveller_email_snapshot or "").strip():
+            return "email"
+        return "none"
+
+    def _build_traveller_booking_payload(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+        event_type: str,
+    ) -> dict[str, Any]:
+        return {
+            "type": event_type,
+            "booking_session_id": booking_session.id,
+            "booking_id": booking.id,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "seat_number": booking.seat_number,
+            "traveller_profile_id": booking.traveller_profile_id,
+            "traveller_name": booking.traveller_name_snapshot,
+            "booking_status": booking.booking_status.value
+            if hasattr(booking.booking_status, "value")
+            else str(booking.booking_status),
+        }
+
+    async def _queue_traveller_contact_notification(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+        event_type: str,
+        title: str,
+        message: str,
+    ) -> TravellerContactNotification:
+        channel = self._get_traveller_notification_channel(booking)
+
+        status = (
+            TravellerContactNotificationStatus.PENDING
+            if channel != "none"
+            else TravellerContactNotificationStatus.SKIPPED
+        )
+
+        payload = self._build_traveller_booking_payload(
+            booking_session=booking_session,
+            booking=booking,
+            event_type=event_type,
+        )
+
+        notification = TravellerContactNotification(
+            booking_session_id=booking_session.id,
+            booking_id=booking.id,
+            owner_user_id=booking_session.owner_user_id,
+            traveller_profile_id=booking.traveller_profile_id,
+            traveller_name_snapshot=booking.traveller_name_snapshot,
+            traveller_phone_snapshot=booking.traveller_phone_snapshot,
+            traveller_email_snapshot=booking.traveller_email_snapshot,
+            channel=channel,
+            event_type=event_type,
+            title=title,
+            message=message,
+            payload_json=json.dumps(
+                payload,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            ),
+            status=status,
+            failure_reason=None
+            if channel != "none"
+            else "No traveller phone or email snapshot is available.",
+        )
+
+        self.db.add(notification)
+        await self.db.flush()
+
+        return notification
+
+    async def _queue_booking_session_traveller_notifications(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+        event_type: str,
+    ) -> None:
+        for booking in bookings:
+            traveller_name = (
+                booking.traveller_name_snapshot
+                or "Passenger"
+            )
+
+            if event_type == "traveller_seat_confirmed":
+                title = "Shuttle seat confirmed"
+                message = (
+                    f"Hi {traveller_name}, your shuttle seat "
+                    f"{booking.seat_number} is confirmed."
+                )
+            elif event_type == "traveller_seat_cancelled":
+                title = "Shuttle seat cancelled"
+                message = (
+                    f"Hi {traveller_name}, your shuttle seat "
+                    f"{booking.seat_number} has been cancelled."
+                )
+            else:
+                title = "Shuttle booking update"
+                message = (
+                    f"Hi {traveller_name}, there is an update for your "
+                    f"shuttle seat {booking.seat_number}."
+                )
+
+            await self._queue_traveller_contact_notification(
+                booking_session=booking_session,
+                booking=booking,
+                event_type=event_type,
+                title=title,
+                message=message,
+            )
 
     async def _notify_user(
         self,
@@ -4828,6 +4953,13 @@ class PassengerService:
             owner_user_id=current_user.id,
         )
 
+        await self._queue_booking_session_traveller_notifications(
+            booking_session=booking_session,
+            bookings=list(booking_session.bookings),
+            event_type="traveller_seat_confirmed",
+        )
+        await self.db.commit()
+
         payments = await self._list_booking_session_payments_for_update(
             booking_session.id
         )
@@ -4877,6 +5009,12 @@ class PassengerService:
                 booking_session_id=booking_session.id,
                 owner_user_id=current_user.id,
             )
+            await self._queue_booking_session_traveller_notifications(
+                booking_session=booking_session,
+                bookings=list(booking_session.bookings),
+                event_type="traveller_seat_confirmed",
+            )
+            await self.db.commit()
             return {
                 "message": "Payment already verified successfully.",
                 "booking_session": self._serialize_booking_session(booking_session),
@@ -5163,6 +5301,12 @@ class PassengerService:
                 booking_session_id=booking_session.id,
                 owner_user_id=current_user.id,
             )
+            await self._queue_booking_session_traveller_notifications(
+                booking_session=booking_session,
+                bookings=list(booking_session.bookings),
+                event_type="traveller_seat_cancelled",
+            )
+            await self.db.commit()
 
             await self._broadcast_seatmap_snapshots_for_trip(
                 scheduled_trip_id=booking_session.scheduled_trip_id,

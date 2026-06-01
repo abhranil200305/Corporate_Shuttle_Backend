@@ -297,6 +297,12 @@ class RFIDPayoutTransferReversalStatus(str, enum.Enum):
     PROCESSED = "processed"
     FAILED = "failed"
 
+
+class TravellerContactNotificationStatus(str, enum.Enum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 # ============================================================
 # auth / users
 # ============================================================
@@ -3233,6 +3239,92 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
         ),
     )
 
+class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "traveller_contact_notifications"
+
+    booking_session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("booking_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    booking_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trip_bookings.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    traveller_profile_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("passenger_traveller_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    traveller_name_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    traveller_phone_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    traveller_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    channel: Mapped[str] = mapped_column(String(20), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(80), nullable=False)
+
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    payload_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[TravellerContactNotificationStatus] = mapped_column(
+        enum_type(
+            TravellerContactNotificationStatus,
+            "traveller_contact_notification_status",
+        ),
+        nullable=False,
+        default=TravellerContactNotificationStatus.PENDING,
+        server_default=text("'pending'"),
+    )
+
+    provider_message_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "channel <> ''",
+            name="ck_traveller_contact_notifications_channel_nonempty",
+        ),
+        CheckConstraint(
+            "event_type <> ''",
+            name="ck_traveller_contact_notifications_event_type_nonempty",
+        ),
+        CheckConstraint(
+            "title <> ''",
+            name="ck_traveller_contact_notifications_title_nonempty",
+        ),
+        CheckConstraint(
+            "message <> ''",
+            name="ck_traveller_contact_notifications_message_nonempty",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_status_created",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_booking_session",
+            "booking_session_id",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_booking",
+            "booking_id",
+        ),
+        Index(
+            "ix_traveller_contact_notifications_owner",
+            "owner_user_id",
+        ),
+    )
 
 class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "booking_payments"
