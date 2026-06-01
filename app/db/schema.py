@@ -151,6 +151,11 @@ class BookingStatus(str, enum.Enum):
     CANCELLED = "cancelled"
     MISSED = "missed"
 
+class BookingSessionStatus(str, enum.Enum):
+    PENDING_PAYMENT = "pending_payment"
+    CONFIRMED = "confirmed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
 
 class TransferStatus(str, enum.Enum):
     NOT_READY = "not_ready"
@@ -373,6 +378,12 @@ class User(UUIDPKMixin, TimestampMixin, Base):
     passenger_bookings: Mapped[list["TripBooking"]] = relationship(
         back_populates="passenger",
         foreign_keys="TripBooking.passenger_user_id",
+        passive_deletes=True,
+    )
+
+    owned_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+        back_populates="owner",
+        foreign_keys="BookingSession.owner_user_id",
         passive_deletes=True,
     )
 
@@ -991,6 +1002,18 @@ class Stop(UUIDPKMixin, TimestampMixin, Base):
         passive_deletes=True,
     )
 
+    pickup_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+        back_populates="pickup_stop",
+        foreign_keys="BookingSession.pickup_stop_id",
+        passive_deletes=True,
+    )
+
+    dropoff_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+        back_populates="dropoff_stop",
+        foreign_keys="BookingSession.dropoff_stop_id",
+        passive_deletes=True,
+    )
+
     matched_scan_events: Mapped[list["TripScanEvent"]] = relationship(
         back_populates="matched_stop",
         foreign_keys="TripScanEvent.matched_stop_id",
@@ -1033,6 +1056,12 @@ class Route(UUIDPKMixin, TimestampMixin, Base):
     )
     bookings: Mapped[list["TripBooking"]] = relationship(
         back_populates="route",
+        passive_deletes=True,
+    )
+    
+    booking_sessions: Mapped[list["BookingSession"]] = relationship(
+        back_populates="route",
+        foreign_keys="BookingSession.route_id",
         passive_deletes=True,
     )
 
@@ -2653,6 +2682,13 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         back_populates="scheduled_trip",
         passive_deletes=True,
     )
+
+    booking_sessions: Mapped[list["BookingSession"]] = relationship(
+        back_populates="scheduled_trip",
+        foreign_keys="BookingSession.scheduled_trip_id",
+        passive_deletes=True,
+    )
+
     scan_events: Mapped[list["TripScanEvent"]] = relationship(
         back_populates="scheduled_trip",
         cascade="all, delete-orphan",
@@ -2677,6 +2713,121 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
         Index("ix_scheduled_trips_route_start", "route_id", "planned_start_at"),
     )
 
+class BookingSession(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "booking_sessions"
+
+    owner_user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    scheduled_trip_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("scheduled_trips.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    route_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("routes.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    pickup_stop_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    dropoff_stop_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("stops.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    pickup_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    dropoff_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    status: Mapped[BookingSessionStatus] = mapped_column(
+        enum_type(BookingSessionStatus, "booking_session_status"),
+        nullable=False,
+        default=BookingSessionStatus.PENDING_PAYMENT,
+        server_default=text("'pending_payment'"),
+    )
+
+    total_fare_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
+    payment_hold_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    expired_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    owner: Mapped["User"] = relationship(
+        back_populates="owned_booking_sessions",
+        foreign_keys=[owner_user_id],
+    )
+    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+        back_populates="booking_sessions",
+        foreign_keys=[scheduled_trip_id],
+    )
+    route: Mapped["Route"] = relationship(
+        back_populates="booking_sessions",
+        foreign_keys=[route_id],
+    )
+    pickup_stop: Mapped["Stop"] = relationship(
+        back_populates="pickup_booking_sessions",
+        foreign_keys=[pickup_stop_id],
+    )
+    dropoff_stop: Mapped["Stop"] = relationship(
+        back_populates="dropoff_booking_sessions",
+        foreign_keys=[dropoff_stop_id],
+    )
+
+    bookings: Mapped[list["TripBooking"]] = relationship(
+        back_populates="booking_session",
+        foreign_keys="TripBooking.booking_session_id",
+        passive_deletes=True,
+    )
+
+    payments: Mapped[list["BookingSessionPayment"]] = relationship(
+        back_populates="booking_session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "total_fare_amount >= 0",
+            name="ck_booking_sessions_total_fare_nonnegative",
+        ),
+        CheckConstraint(
+            "pickup_stop_id <> dropoff_stop_id",
+            name="ck_booking_sessions_pickup_dropoff_different",
+        ),
+        CheckConstraint(
+            "pickup_sequence_no_snapshot > 0",
+            name="ck_booking_sessions_pickup_sequence_positive",
+        ),
+        CheckConstraint(
+            "dropoff_sequence_no_snapshot > pickup_sequence_no_snapshot",
+            name="ck_booking_sessions_dropoff_after_pickup",
+        ),
+        Index("ix_booking_sessions_owner_status", "owner_user_id", "status"),
+        Index("ix_booking_sessions_trip_status", "scheduled_trip_id", "status"),
+        Index("ix_booking_sessions_hold_expiry", "status", "payment_hold_expires_at"),
+    )
 
 class TripEvent(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "trip_events"
@@ -2737,6 +2888,27 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         ForeignKey("users.id", ondelete="RESTRICT"),
         nullable=False,
     )
+
+    booking_session_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("booking_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    booked_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    traveller_profile_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("passenger_traveller_profiles.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    traveller_name_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    traveller_phone_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    traveller_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    traveller_relationship_label_snapshot: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
     otp: Mapped[str | None] = mapped_column(
         String(10),   
         nullable=True
@@ -2763,6 +2935,17 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
     )
 
     seat_number: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    booking_session: Mapped["BookingSession | None"] = relationship(
+        back_populates="bookings",
+        foreign_keys=[booking_session_id],
+    )
+    booked_by_user: Mapped["User | None"] = relationship(
+        foreign_keys=[booked_by_user_id],
+    )
+    traveller_profile: Mapped["PassengerTravellerProfile | None"] = relationship(
+        foreign_keys=[traveller_profile_id],
+    )
 
     booking_status: Mapped[BookingStatus] = mapped_column(
         enum_type(BookingStatus, "booking_status"),
@@ -2955,12 +3138,62 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
             "booking_status",
             "refund_retry_after",
         ),
+        Index("ix_trip_bookings_booking_session", "booking_session_id"),
+        Index("ix_trip_bookings_booked_by_user", "booked_by_user_id"),
+        Index("ix_trip_bookings_traveller_profile", "traveller_profile_id"),
     )
 
 
 # ============================================================
 # payments / transfers
 # ============================================================
+
+class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "booking_session_payments"
+
+    booking_session_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("booking_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    razorpay_order_id: Mapped[str] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=False,
+    )
+    razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
+    razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+
+    status: Mapped[BookingPaymentStatus] = mapped_column(
+        enum_type(BookingPaymentStatus, "booking_session_payment_status"),
+        nullable=False,
+        default=BookingPaymentStatus.CREATED,
+        server_default=text("'created'"),
+    )
+
+    booking_session: Mapped["BookingSession"] = relationship(
+        back_populates="payments",
+        foreign_keys=[booking_session_id],
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "amount > 0",
+            name="ck_booking_session_payments_amount_positive",
+        ),
+        Index(
+            "ix_booking_session_payments_session_status",
+            "booking_session_id",
+            "status",
+        ),
+    )
 
 
 class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
