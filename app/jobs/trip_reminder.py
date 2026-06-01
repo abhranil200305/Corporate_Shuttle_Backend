@@ -35,7 +35,10 @@ def utcnow() -> datetime:
 
 
 def _get_interval_seconds() -> int:
-    raw = os.getenv("TRIP_REMINDER_INTERVAL_SECONDS", "60").strip()
+    raw = os.getenv(
+        "TRIP_REMINDER_INTERVAL_SECONDS",
+        "60",
+    ).strip()
 
     try:
         value = int(raw)
@@ -46,7 +49,10 @@ def _get_interval_seconds() -> int:
 
 
 def _get_lease_seconds() -> int:
-    default_value = max(_get_interval_seconds() + 60, 120)
+    default_value = max(
+        _get_interval_seconds() + 60,
+        120,
+    )
 
     raw = os.getenv(
         "TRIP_REMINDER_LEASE_SECONDS",
@@ -61,16 +67,36 @@ def _get_lease_seconds() -> int:
     return max(60, value)
 
 
+def _get_batch_size() -> int:
+    raw = os.getenv(
+        "TRIP_REMINDER_BATCH_SIZE",
+        "100",
+    ).strip()
+
+    try:
+        value = int(raw)
+    except ValueError:
+        return 100
+
+    return max(1, value)
+
+
 def _seconds_until_next_minute() -> float:
     now = utcnow()
-    elapsed = now.second + (now.microsecond / 1_000_000)
+
+    elapsed = (
+        now.second +
+        (now.microsecond / 1_000_000)
+    )
 
     remaining = 60 - elapsed
 
     return remaining if remaining > 0 else 60.0
 
 
-def _get_reminder_message(minutes: int) -> tuple[str, str]:
+def _get_reminder_message(
+    minutes: int,
+) -> tuple[str, str]:
     return (
         "Upcoming Trip",
         f"Your trip will start in {minutes} minutes.",
@@ -89,12 +115,15 @@ async def _send_trip_notification(
         ws_hub=ws_hub,
     )
 
-    title, message = _get_reminder_message(minutes)
+    title, message = _get_reminder_message(
+        minutes,
+    )
 
     booking_result = await db.execute(
         select(TripBooking).where(
             TripBooking.scheduled_trip_id == trip.id,
-            TripBooking.booking_status == BookingStatus.BOOKED,
+            TripBooking.booking_status
+            == BookingStatus.BOOKED,
         )
     )
 
@@ -115,6 +144,7 @@ async def _send_trip_notification(
                     ],
                 },
             )
+
         except Exception:
             logger.exception(
                 "trip_reminder notification failed "
@@ -128,8 +158,6 @@ async def reconcile_trip_reminders_once(
     ws_hub: WSHub | None = None,
 ) -> None:
     owner_id = get_job_owner_id()
-
-    acquired = False
 
     async with AsyncSessionLocal() as lease_db:
         acquired = await try_acquire_or_renew_job_lease(
@@ -148,10 +176,12 @@ async def reconcile_trip_reminders_once(
         async with AsyncSessionLocal() as db:
 
             result = await db.execute(
-                select(ScheduledTrip).where(
+                select(ScheduledTrip)
+                .where(
                     ScheduledTrip.status
                     == ScheduledTripStatus.SCHEDULED
                 )
+                .limit(_get_batch_size())
             )
 
             trips = result.scalars().all()
@@ -162,14 +192,14 @@ async def reconcile_trip_reminders_once(
                     trip.planned_start_at - now
                 ).total_seconds()
 
-                minutes_remaining = int(
-                    seconds_remaining // 60
-                )
+                if seconds_remaining <= 0:
+                    continue
 
                 #
-                # 15 minute reminder
+                # 15-minute reminder window
+                # 14:00–15:00 before trip
                 #
-                if 14 <= minutes_remaining <= 15:
+                if 840 < seconds_remaining <= 900:
                     await _send_trip_notification(
                         db=db,
                         ws_hub=ws_hub,
@@ -178,9 +208,10 @@ async def reconcile_trip_reminders_once(
                     )
 
                 #
-                # 10 minute reminder
+                # 10-minute reminder window
+                # 09:00–10:00 before trip
                 #
-                elif 9 <= minutes_remaining <= 10:
+                elif 540 < seconds_remaining <= 600:
                     await _send_trip_notification(
                         db=db,
                         ws_hub=ws_hub,
@@ -189,9 +220,10 @@ async def reconcile_trip_reminders_once(
                     )
 
                 #
-                # 5 minute reminder
+                # 5-minute reminder window
+                # 04:00–05:00 before trip
                 #
-                elif 4 <= minutes_remaining <= 5:
+                elif 240 < seconds_remaining <= 300:
                     await _send_trip_notification(
                         db=db,
                         ws_hub=ws_hub,
@@ -207,6 +239,7 @@ async def reconcile_trip_reminders_once(
                     job_name=_JOB_NAME,
                     owner_id=owner_id,
                 )
+
         except Exception:
             logger.exception(
                 "trip_reminder lease release failed"
@@ -216,7 +249,9 @@ async def reconcile_trip_reminders_once(
 async def trip_reminder_loop(
     ws_hub: WSHub | None = None,
 ) -> None:
-    logger.info("trip_reminder loop started")
+    logger.info(
+        "trip_reminder loop started"
+    )
 
     try:
         await reconcile_trip_reminders_once(
@@ -232,6 +267,7 @@ async def trip_reminder_loop(
                 await reconcile_trip_reminders_once(
                     ws_hub=ws_hub,
                 )
+
             except Exception:
                 logger.exception(
                     "trip_reminder tick failed"
