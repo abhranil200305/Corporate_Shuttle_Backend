@@ -3832,7 +3832,7 @@ async def admin_complete_trip(
 
     return await service.manually_complete_trip(
         trip_id=trip_id,
-        admin_user_id=current_admin.id,
+        admin_id=current_admin.id,
         note=note,
     )
 
