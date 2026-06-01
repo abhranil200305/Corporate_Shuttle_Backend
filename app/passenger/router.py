@@ -56,6 +56,8 @@ from app.passenger.schemas import (
     PassengerTravellerProfileListResponse,
     PassengerTravellerProfileMutationResponse,
     PassengerTravellerProfileUpdateRequest,
+    BookingSessionCreateResponse,
+    CreateBookingSessionRequest,
 )
 
 from app.passenger.service import PassengerService
@@ -376,6 +378,17 @@ async def get_leg_available_seats(
     service: PassengerService = Depends(get_passenger_service),
 ) -> LegAvailableSeatsResponse:
     return await service.get_leg_available_seats(current_user, trip_id, payload)
+
+@router.post(
+    "/booking-sessions",
+    response_model=BookingSessionCreateResponse,
+)
+async def create_booking_session(
+    payload: CreateBookingSessionRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionCreateResponse:
+    return await service.create_booking_session(current_user, payload)
 
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(

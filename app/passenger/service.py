@@ -54,6 +54,10 @@ from app.db.schema import (
     RFIDCardAuthorizationStatus,
     RFIDCardInventoryStatus,
     RFIDRideStatus,
+    BookingSession,
+    BookingSessionPayment,
+    BookingSessionStatus,
+    PassengerTravellerProfile,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -68,6 +72,7 @@ from app.passenger.schemas import (
     VerifyBookingPaymentRequest,
     PassengerRFIDRechargeCreateOrderRequest,
     PassengerRFIDRechargeVerifyPaymentRequest,
+    CreateBookingSessionRequest,
 )
 
 
@@ -440,6 +445,37 @@ class PassengerService:
             )
 
         return profile
+
+    async def _get_booking_session_obj(
+        self,
+        *,
+        booking_session_id: str,
+        owner_user_id: str,
+    ) -> BookingSession:
+        stmt = (
+            select(BookingSession)
+            .where(
+                BookingSession.id == booking_session_id,
+                BookingSession.owner_user_id == owner_user_id,
+            )
+            .options(
+                selectinload(BookingSession.bookings),
+                selectinload(BookingSession.payments),
+            )
+        )
+        result = await self.db.execute(stmt)
+        booking_session = result.scalar_one_or_none()
+
+        if booking_session is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "booking_session_not_found",
+                    "message": "Booking session not found.",
+                },
+            )
+
+        return booking_session
 
     async def _get_route_obj(self, route_id: str) -> Route:
         stmt = (
@@ -1078,6 +1114,89 @@ class PassengerService:
             "rating": self._serialize_rating(booking.rating),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
+        }
+    
+    def _serialize_booking_session_payment(
+        self,
+        payment: BookingSessionPayment,
+    ) -> dict[str, Any]:
+        return {
+            "id": payment.id,
+            "booking_session_id": payment.booking_session_id,
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "status": payment.status,
+            "amount": payment.amount,
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+        }
+
+    def _serialize_booking_session_seat(
+        self,
+        booking: TripBooking,
+    ) -> dict[str, Any]:
+        return {
+            "id": booking.id,
+            "booking_session_id": booking.booking_session_id,
+            "passenger_user_id": booking.passenger_user_id,
+            "booked_by_user_id": booking.booked_by_user_id,
+            "traveller_profile_id": booking.traveller_profile_id,
+            "traveller_name_snapshot": booking.traveller_name_snapshot,
+            "traveller_phone_snapshot": booking.traveller_phone_snapshot,
+            "traveller_email_snapshot": booking.traveller_email_snapshot,
+            "traveller_relationship_label_snapshot": booking.traveller_relationship_label_snapshot,
+            "scheduled_trip_id": booking.scheduled_trip_id,
+            "route_id": booking.route_id,
+            "pickup_stop_id": booking.pickup_stop_id,
+            "dropoff_stop_id": booking.dropoff_stop_id,
+            "seat_number": booking.seat_number,
+            "otp": self._serialize_booking_otp(booking),
+            "booking_status": booking.booking_status,
+            "fare_amount": booking.fare_amount,
+            "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "created_at": booking.created_at,
+            "updated_at": booking.updated_at,
+        }
+
+    def _serialize_booking_session(
+        self,
+        booking_session: BookingSession,
+    ) -> dict[str, Any]:
+        bookings = sorted(
+            list(booking_session.bookings),
+            key=lambda item: item.seat_number,
+        )
+        payments = sorted(
+            list(booking_session.payments),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+
+        return {
+            "id": booking_session.id,
+            "owner_user_id": booking_session.owner_user_id,
+            "scheduled_trip_id": booking_session.scheduled_trip_id,
+            "route_id": booking_session.route_id,
+            "pickup_stop_id": booking_session.pickup_stop_id,
+            "dropoff_stop_id": booking_session.dropoff_stop_id,
+            "pickup_sequence_no_snapshot": booking_session.pickup_sequence_no_snapshot,
+            "dropoff_sequence_no_snapshot": booking_session.dropoff_sequence_no_snapshot,
+            "status": booking_session.status,
+            "total_fare_amount": booking_session.total_fare_amount,
+            "payment_hold_expires_at": booking_session.payment_hold_expires_at,
+            "confirmed_at": booking_session.confirmed_at,
+            "cancelled_at": booking_session.cancelled_at,
+            "expired_at": booking_session.expired_at,
+            "bookings": [
+                self._serialize_booking_session_seat(booking)
+                for booking in bookings
+            ],
+            "payments": [
+                self._serialize_booking_session_payment(payment)
+                for payment in payments
+            ],
+            "created_at": booking_session.created_at,
+            "updated_at": booking_session.updated_at,
         }
     
     async def _serialize_current_booking(self, booking: TripBooking) -> dict[str, Any]:
@@ -3664,6 +3783,50 @@ class PassengerService:
             )
 
         return response.json()
+    
+    async def _create_booking_session_razorpay_order(
+        self,
+        *,
+        booking_session: BookingSession,
+        amount: Decimal,
+    ) -> dict[str, Any]:
+        amount_subunits = self._to_subunits(amount)
+        receipt = f"booking_session_{booking_session.id.replace('-', '')[:20]}"
+
+        payload = {
+            "amount": amount_subunits,
+            "currency": "INR",
+            "receipt": receipt,
+            "notes": {
+                "booking_session_id": booking_session.id,
+                "scheduled_trip_id": booking_session.scheduled_trip_id,
+                "owner_user_id": booking_session.owner_user_id,
+            },
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path="/orders",
+            json_payload=payload,
+        )
+
+    def _build_booking_session_payment_order_response(
+        self,
+        *,
+        booking_session: BookingSession,
+        razorpay_order_id: str,
+        currency: str = "INR",
+        receipt: str | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": "razorpay",
+            "razorpay_key_id": self._get_razorpay_key_id(),
+            "razorpay_order_id": razorpay_order_id,
+            "amount": booking_session.total_fare_amount,
+            "amount_subunits": self._to_subunits(booking_session.total_fare_amount),
+            "currency": currency or "INR",
+            "receipt": receipt,
+        }
 
     async def _create_razorpay_order(
         self,
@@ -4012,10 +4175,90 @@ class PassengerService:
         await self.db.flush()
 
         return payment, order_payload
+    
+    async def _resolve_booking_session_traveller_snapshot(
+        self,
+        *,
+        owner_user_id: str,
+        traveller_profile_id: str | None,
+        guest_traveller,
+    ) -> dict[str, str | None]:
+        if traveller_profile_id is not None:
+            profile = await self._get_traveller_profile_for_owner_or_404(
+                owner_user_id=owner_user_id,
+                profile_id=traveller_profile_id,
+            )
+
+            if not profile.is_active:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "traveller_profile_inactive",
+                        "message": "Selected traveller profile is inactive.",
+                    },
+                )
+
+            return {
+                "traveller_profile_id": profile.id,
+                "traveller_name_snapshot": profile.full_name,
+                "traveller_phone_snapshot": profile.phone,
+                "traveller_email_snapshot": profile.email,
+                "traveller_relationship_label_snapshot": profile.relationship_label,
+            }
+
+        if guest_traveller is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "traveller_required",
+                    "message": "Each seat must be assigned to a traveller.",
+                },
+            )
+
+        return {
+            "traveller_profile_id": None,
+            "traveller_name_snapshot": guest_traveller.full_name,
+            "traveller_phone_snapshot": guest_traveller.phone,
+            "traveller_email_snapshot": guest_traveller.email,
+            "traveller_relationship_label_snapshot": guest_traveller.relationship_label,
+        }
 
     # ------------------------------------------------------------------
     # bookings
     # ------------------------------------------------------------------
+
+    async def _get_booking_session_obj(
+        self,
+        *,
+        booking_session_id: str,
+        owner_user_id: str,
+    ) -> BookingSession:
+        stmt = (
+            select(BookingSession)
+            .where(
+                BookingSession.id == booking_session_id,
+                BookingSession.owner_user_id == owner_user_id,
+            )
+            .options(
+                selectinload(BookingSession.bookings),
+                selectinload(BookingSession.payments),
+            )
+        )
+        result = await self.db.execute(stmt)
+        booking_session = result.scalar_one_or_none()
+
+        if booking_session is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "booking_session_not_found",
+                    "message": "Booking session not found.",
+                },
+            )
+
+        return booking_session
+    
+
     async def create_booking(
         self,
         current_user: User,

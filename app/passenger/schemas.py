@@ -261,6 +261,122 @@ class CreateBookingRequest(BaseModel):
     dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
     seat_number: int = Field(..., ge=1)
 
+class BookingSessionGuestTravellerRequest(BaseModel):
+    full_name: str = Field(..., min_length=1, max_length=120)
+    phone: str = Field(..., min_length=5, max_length=20)
+    email: str | None = Field(default=None, max_length=255)
+    relationship_label: str | None = Field(default=None, max_length=80)
+
+    @field_validator("full_name", "phone", "email", "relationship_label")
+    @classmethod
+    def clean_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+    @field_validator("full_name", "phone")
+    @classmethod
+    def required_text_must_not_be_empty(cls, value: str | None) -> str:
+        cleaned = (value or "").strip()
+        if not cleaned:
+            raise ValueError("This field cannot be empty.")
+        return cleaned
+
+
+class CreateBookingSessionSeatRequest(BaseModel):
+    seat_number: int = Field(..., ge=1)
+    traveller_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
+    traveller: BookingSessionGuestTravellerRequest | None = None
+
+    @model_validator(mode="after")
+    def require_exactly_one_traveller_source(self):
+        has_profile = self.traveller_profile_id is not None
+        has_guest = self.traveller is not None
+
+        if has_profile == has_guest:
+            raise ValueError(
+                "Provide exactly one of traveller_profile_id or traveller."
+            )
+
+        return self
+
+
+class CreateBookingSessionRequest(BaseModel):
+    scheduled_trip_id: str = Field(..., min_length=1, max_length=36)
+    pickup_stop_id: str = Field(..., min_length=1, max_length=36)
+    dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
+    seats: list[CreateBookingSessionSeatRequest] = Field(..., min_length=1, max_length=10)
+
+    @model_validator(mode="after")
+    def seat_numbers_must_be_unique(self):
+        seat_numbers = [seat.seat_number for seat in self.seats]
+        if len(seat_numbers) != len(set(seat_numbers)):
+            raise ValueError("Seat numbers must be unique within one booking session.")
+        return self
+
+
+class BookingSessionSeatResponse(BaseModel):
+    id: str
+    booking_session_id: str | None
+    passenger_user_id: str
+    booked_by_user_id: str | None
+    traveller_profile_id: str | None
+    traveller_name_snapshot: str | None
+    traveller_phone_snapshot: str | None
+    traveller_email_snapshot: str | None
+    traveller_relationship_label_snapshot: str | None
+
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    seat_number: int
+    otp: str | None
+    booking_status: str
+    fare_amount: Decimal
+    payment_hold_expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class BookingSessionPaymentResponse(BaseModel):
+    id: str
+    booking_session_id: str
+    razorpay_order_id: str
+    razorpay_payment_id: str | None
+    status: str
+    amount: Decimal
+    created_at: datetime
+    updated_at: datetime
+
+
+class BookingSessionResponse(BaseModel):
+    id: str
+    owner_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    pickup_sequence_no_snapshot: int
+    dropoff_sequence_no_snapshot: int
+    status: str
+    total_fare_amount: Decimal
+    payment_hold_expires_at: datetime | None
+    confirmed_at: datetime | None
+    cancelled_at: datetime | None
+    expired_at: datetime | None
+    bookings: list[BookingSessionSeatResponse]
+    payments: list[BookingSessionPaymentResponse]
+    created_at: datetime
+    updated_at: datetime
+
+
+class BookingSessionCreateResponse(BaseModel):
+    message: str
+    booking_session: BookingSessionResponse
+    payment_order: dict[str, Any]
+
 
 class VerifyBookingPaymentRequest(BaseModel):
     razorpay_order_id: str = Field(..., min_length=1, max_length=64)
