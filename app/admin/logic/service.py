@@ -514,7 +514,7 @@ class AdminService:
 			"actual_end_at": trip.actual_end_at,
 			"last_lat": trip.last_lat,
 			"last_lng": trip.last_lng,
-			"last_location_at": trip.last_location_at,
+			# "last_location_at": trip.last_location_at,
 			"route": None if trip.route is None else {
 				"id": trip.route.id,
 				"name": trip.route.name,
