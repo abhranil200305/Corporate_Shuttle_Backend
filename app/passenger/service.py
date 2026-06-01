@@ -1868,6 +1868,100 @@ class PassengerService:
             "refresh": ["support_tickets", "support_ticket_detail"],
         }
 
+    async def _build_traveller_trip_sms_context(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+    ) -> dict[str, Any]:
+        trip = await self._get_trip_obj(booking_session.scheduled_trip_id)
+
+        pickup_stop = await self._get_stop_obj_or_raise(booking.pickup_stop_id)
+        dropoff_stop = await self._get_stop_obj_or_raise(booking.dropoff_stop_id)
+
+        pickup_time = self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=booking.pickup_sequence_no_snapshot,
+        )
+
+        dropoff_time = self._get_route_stop_planned_time(
+            trip=trip,
+            target_sequence_no=booking.dropoff_sequence_no_snapshot,
+        )
+
+        route_name = None
+        if trip.route is not None:
+            route_name = trip.route.name
+
+        vehicle_name = None
+        vehicle_number = None
+        if trip.vehicle is not None:
+            vehicle_name = trip.vehicle.vehicle_name
+            vehicle_number = trip.vehicle.registration_number
+
+        return {
+            "route_name": route_name,
+            "pickup_stop_name": pickup_stop.name,
+            "dropoff_stop_name": dropoff_stop.name,
+            "pickup_time": pickup_time,
+            "dropoff_time": dropoff_time,
+            "vehicle_name": vehicle_name,
+            "vehicle_number": vehicle_number,
+        }
+    
+    async def _build_traveller_sms_message(
+        self,
+        *,
+        booking_session: BookingSession,
+        booking: TripBooking,
+        event_type: str,
+    ) -> str:
+        traveller_name = booking.traveller_name_snapshot or "Passenger"
+
+        context = await self._build_traveller_trip_sms_context(
+            booking_session=booking_session,
+            booking=booking,
+        )
+
+        pickup_time_text = self._format_sms_datetime(context["pickup_time"])
+        dropoff_time_text = self._format_sms_datetime(context["dropoff_time"])
+
+        route_text = context["route_name"] or "your shuttle route"
+
+        vehicle_parts = [
+            value
+            for value in (
+                context["vehicle_name"],
+                context["vehicle_number"],
+            )
+            if value
+        ]
+        vehicle_text = ", ".join(vehicle_parts) if vehicle_parts else "TBA"
+
+        if event_type == "traveller_seat_confirmed":
+            first_line = f"Hi {traveller_name}, your shuttle seat is confirmed."
+        elif event_type == "traveller_seat_cancelled":
+            first_line = f"Hi {traveller_name}, your shuttle seat has been cancelled."
+        else:
+            first_line = f"Hi {traveller_name}, your shuttle booking has an update."
+
+        return (
+            f"{first_line}\n"
+            f"Route: {route_text}\n"
+            f"Pickup: {context['pickup_stop_name']} at {pickup_time_text}\n"
+            f"Drop: {context['dropoff_stop_name']} around {dropoff_time_text}\n"
+            f"Seat: {booking.seat_number}\n"
+            f"Vehicle: {vehicle_text}\n"
+            f"For changes or cancellation, contact the person who booked this ride."
+        )
+
+    @staticmethod
+    def _format_sms_datetime(value: datetime | None) -> str:
+        if value is None:
+            return "TBA"
+
+        return value.strftime("%d %b %Y, %I:%M %p")
+
     @staticmethod
     def _get_traveller_notification_channel(booking: TripBooking) -> str:
         if (booking.traveller_phone_snapshot or "").strip():
@@ -1883,20 +1977,28 @@ class PassengerService:
         booking: TripBooking,
         event_type: str,
     ) -> dict[str, Any]:
-        return {
+                return {
             "type": event_type,
+            "delivery_assumption": "traveller_contact_sms_or_email",
             "booking_session_id": booking_session.id,
             "booking_id": booking.id,
+            "owner_user_id": booking_session.owner_user_id,
             "scheduled_trip_id": booking.scheduled_trip_id,
             "route_id": booking.route_id,
             "pickup_stop_id": booking.pickup_stop_id,
             "dropoff_stop_id": booking.dropoff_stop_id,
+            "pickup_sequence_no_snapshot": booking.pickup_sequence_no_snapshot,
+            "dropoff_sequence_no_snapshot": booking.dropoff_sequence_no_snapshot,
             "seat_number": booking.seat_number,
             "traveller_profile_id": booking.traveller_profile_id,
             "traveller_name": booking.traveller_name_snapshot,
+            "traveller_phone": booking.traveller_phone_snapshot,
+            "traveller_email": booking.traveller_email_snapshot,
             "booking_status": booking.booking_status.value
             if hasattr(booking.booking_status, "value")
             else str(booking.booking_status),
+            "contains_public_link": False,
+            "contains_payment_data": False,
         }
 
     async def _queue_traveller_contact_notification(
@@ -1966,22 +2068,16 @@ class PassengerService:
 
             if event_type == "traveller_seat_confirmed":
                 title = "Shuttle seat confirmed"
-                message = (
-                    f"Hi {traveller_name}, your shuttle seat "
-                    f"{booking.seat_number} is confirmed."
-                )
             elif event_type == "traveller_seat_cancelled":
                 title = "Shuttle seat cancelled"
-                message = (
-                    f"Hi {traveller_name}, your shuttle seat "
-                    f"{booking.seat_number} has been cancelled."
-                )
             else:
                 title = "Shuttle booking update"
-                message = (
-                    f"Hi {traveller_name}, there is an update for your "
-                    f"shuttle seat {booking.seat_number}."
-                )
+
+            message = await self._build_traveller_sms_message(
+                booking_session=booking_session,
+                booking=booking,
+                event_type=event_type,
+            )
 
             await self._queue_traveller_contact_notification(
                 booking_session=booking_session,
