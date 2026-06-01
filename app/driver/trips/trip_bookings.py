@@ -97,7 +97,21 @@ async def get_trip_bookings(
             if booking.passenger else None
         )
 
+        # =====================================================
+        # CORE ADDITION: TRAVELLER SNAPSHOT LOGIC (DO NOT REMOVE ANYTHING)
+        # =====================================================
+        traveller_name = booking.traveller_name_snapshot or (
+            profile.full_name if profile else None
+        )
+
+        traveller_phone = booking.traveller_phone_snapshot
+        traveller_email = booking.traveller_email_snapshot
+        traveller_relationship = booking.traveller_relationship_label_snapshot
+
         response_data.append({
+            # ---------------------------
+            # EXISTING FIELDS (UNCHANGED)
+            # ---------------------------
             "booking_id": booking.id,
             "passenger_id": booking.passenger_user_id,
             "passenger_name": profile.full_name if profile else None,
@@ -117,6 +131,14 @@ async def get_trip_bookings(
 
             "boarded_at": booking.boarded_at,
             "completed_at": booking.completed_at,
+
+            # ---------------------------
+            # NEW FIELDS (TRAVELLER SNAPSHOT)
+            # ---------------------------
+            "traveller_name": traveller_name,
+            "traveller_phone": traveller_phone,
+            "traveller_email": traveller_email,
+            "traveller_relationship_label": traveller_relationship,
         })
 
     # ---------------------------
