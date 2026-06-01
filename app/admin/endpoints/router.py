@@ -689,6 +689,18 @@ async def get_driver_details_vechicals(
 # 		},
 # 	}
 
+@router.get("/passengers/{user_id}/current-trip")
+async def get_admin_passenger_current_trip(
+	user_id: str = Path(...),
+	request: Request = None,
+	db: AsyncSession = Depends(get_async_session),
+	current_user: schema.User = Depends(get_current_admin),
+):
+	hub = get_ws_hub(request)
+	service = AdminService(db, ws_hub=hub)
+
+	return await service.get_passenger_current_trip_detail(user_id)
+
 
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
