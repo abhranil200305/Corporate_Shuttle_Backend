@@ -25,6 +25,7 @@ from app.driver.trips.scheduled_trip import router as scheduled_trip_router
 from app.notifications.traveller_contact_delivery import (
     run_traveller_contact_delivery_loop,
 )
+from app.jobs.booking_seat_refund_reconciler import booking_seat_refund_loop
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.jobs.cancelled_booking_refund_reconciler import cancelled_booking_refund_loop
 from app.jobs.unstarted_scheduled_trip_canceller import unstarted_trip_cancel_loop
@@ -113,6 +114,7 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
         ("unstarted-trip-cancel-loop", unstarted_trip_cancel_loop),
         ("trip-reminder-loop", trip_reminder_loop),
         ("driver-trip-reminder-loop", driver_trip_reminder_loop),
+        ("booking-seat-refund-loop", booking_seat_refund_loop),
         (
             "vehicle-registration-expiry-reminder-loop",
             vehicle_registration_expiry_reminder_loop,

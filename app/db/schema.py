@@ -3209,6 +3209,13 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
 
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
 
+    refunded_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
     status: Mapped[BookingPaymentStatus] = mapped_column(
         enum_type(BookingPaymentStatus, "booking_session_payment_status"),
         nullable=False,
@@ -3243,6 +3250,14 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
         Index(
             "ix_booking_session_payments_razorpay_refund",
             "razorpay_refund_id",
+        ),
+        CheckConstraint(
+            "refunded_amount >= 0",
+            name="ck_booking_session_payments_refunded_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "refunded_amount <= amount",
+            name="ck_booking_session_payments_refunded_not_above_amount",
         ),
     )
 

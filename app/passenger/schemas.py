@@ -349,6 +349,7 @@ class BookingSessionPaymentResponse(BaseModel):
     status: str
     effective_status: str
     amount: Decimal
+    refunded_amount: Decimal
     refund_requested_at: datetime | None
     refund_processed_at: datetime | None
     refund_retry_after: datetime | None

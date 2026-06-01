@@ -1484,6 +1484,7 @@ class PassengerService:
                 payment
             ),
             "amount": payment.amount,
+            "refunded_amount": payment.refunded_amount,
             "refund_requested_at": payment.refund_requested_at,
             "refund_processed_at": payment.refund_processed_at,
             "refund_retry_after": payment.refund_retry_after,
