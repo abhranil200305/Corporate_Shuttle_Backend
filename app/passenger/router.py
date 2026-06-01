@@ -453,6 +453,22 @@ async def get_booking_session_detail(
         booking_session_id,
     )
 
+@router.post(
+    "/booking-sessions/{booking_session_id}/bookings/{booking_id}/cancel",
+    response_model=BookingSessionMutationResponse,
+)
+async def cancel_booking_session_seat(
+    booking_session_id: str,
+    booking_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionMutationResponse:
+    return await service.cancel_booking_session_seat(
+        current_user,
+        booking_session_id,
+        booking_id,
+    )
+
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(
     payload: CreateBookingRequest,
