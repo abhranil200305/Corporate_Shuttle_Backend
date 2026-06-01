@@ -6,7 +6,7 @@ from datetime import datetime
 
 from app.auth.dependencies import get_current_active_user
 from app.db.database import get_async_session
-from app.db.schema import BookingPaymentStatus, BookingStatus, User
+from app.db.schema import BookingPaymentStatus, BookingSessionStatus, BookingStatus, User
 from app.notifications.hub import WSHub
 from app.passenger.schemas import (
     BookingCreateResponse,
@@ -60,6 +60,8 @@ from app.passenger.schemas import (
     CreateBookingSessionRequest,
     BookingSessionMutationResponse,
     VerifyBookingSessionPaymentRequest,
+    BookingSessionListResponse,
+    BookingSessionResponse,
 )
 
 from app.passenger.service import PassengerService
@@ -406,6 +408,35 @@ async def verify_booking_session_payment(
         current_user,
         booking_session_id,
         payload,
+    )
+
+@router.get(
+    "/booking-sessions",
+    response_model=BookingSessionListResponse,
+)
+async def list_booking_sessions(
+    status: BookingSessionStatus | None = Query(default=None),
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionListResponse:
+    return await service.list_booking_sessions(
+        current_user,
+        status=status,
+    )
+
+
+@router.get(
+    "/booking-sessions/{booking_session_id}",
+    response_model=BookingSessionResponse,
+)
+async def get_booking_session_detail(
+    booking_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionResponse:
+    return await service.get_booking_session_detail(
+        current_user,
+        booking_session_id,
     )
 
 @router.post("/bookings", response_model=BookingCreateResponse)

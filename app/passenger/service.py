@@ -4910,6 +4910,56 @@ class PassengerService:
             "booking_session": self._serialize_booking_session(booking_session),
         }
 
+    async def list_booking_sessions(
+        self,
+        current_user: User,
+        *,
+        status: BookingSessionStatus | None = None,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        filters = [
+            BookingSession.owner_user_id == current_user.id,
+        ]
+
+        if status is not None:
+            filters.append(BookingSession.status == status)
+
+        stmt = (
+            select(BookingSession)
+            .where(*filters)
+            .options(
+                selectinload(BookingSession.bookings),
+                selectinload(BookingSession.payments),
+            )
+            .order_by(BookingSession.created_at.desc())
+        )
+
+        result = await self.db.execute(stmt)
+        booking_sessions = list(result.scalars().unique().all())
+
+        return {
+            "items": [
+                self._serialize_booking_session(booking_session)
+                for booking_session in booking_sessions
+            ],
+            "count": len(booking_sessions),
+        }
+
+    async def get_booking_session_detail(
+        self,
+        current_user: User,
+        booking_session_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        return self._serialize_booking_session(booking_session)
+
     async def create_booking(
         self,
         current_user: User,

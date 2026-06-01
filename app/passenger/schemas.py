@@ -371,6 +371,10 @@ class BookingSessionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+class BookingSessionListResponse(BaseModel):
+    items: list[BookingSessionResponse]
+    count: int
+
 
 class BookingSessionCreateResponse(BaseModel):
     message: str
