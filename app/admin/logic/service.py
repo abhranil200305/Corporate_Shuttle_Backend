@@ -588,8 +588,7 @@ class AdminService:
 						schema.BookingStatus.BOARDED,
 					)
 				),
-				schema.ScheduledTrip.planned_start_at <= now,
-				schema.ScheduledTrip.planned_end_at >= now,
+				schema.ScheduledTrip.status == schema.ScheduledTripStatus.IN_PROGRESS
 			)
 			.options(
 				joinedload(schema.ScheduledTrip.route),
