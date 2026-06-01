@@ -53,7 +53,10 @@ class SMTPEmailSender:
     @classmethod
     def load_config(cls) -> SMTPConfig | None:
         host = os.getenv("SMTP_HOST", "").strip()
-        from_email = os.getenv("SMTP_FROM_EMAIL", "").strip()
+        from_email = (
+            os.getenv("SMTP_FROM_EMAIL", "").strip()
+            or os.getenv("MAIL_FROM_EMAIL", "").strip()
+        )
 
         if not host or not from_email:
             return None

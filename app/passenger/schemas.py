@@ -315,6 +315,22 @@ class CreateBookingSessionRequest(BaseModel):
             raise ValueError("Seat numbers must be unique within one booking session.")
         return self
 
+class BookingSessionSeatRefundResponse(BaseModel):
+    id: str
+    booking_session_id: str
+    booking_id: str
+    booking_session_payment_id: str
+    owner_user_id: str
+    amount: Decimal
+    status: str
+    razorpay_refund_id: str | None
+    failure_reason: str | None
+    attempt_count: int
+    retry_after: datetime | None
+    requested_at: datetime
+    processed_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
 
 class BookingSessionSeatResponse(BaseModel):
     id: str
@@ -336,6 +352,7 @@ class BookingSessionSeatResponse(BaseModel):
     booking_status: str
     fare_amount: Decimal
     payment_hold_expires_at: datetime | None
+    refund: BookingSessionSeatRefundResponse | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -349,6 +366,7 @@ class BookingSessionPaymentResponse(BaseModel):
     status: str
     effective_status: str
     amount: Decimal
+    refunded_amount: Decimal
     refund_requested_at: datetime | None
     refund_processed_at: datetime | None
     refund_retry_after: datetime | None
