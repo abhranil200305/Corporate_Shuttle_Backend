@@ -73,6 +73,7 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeCreateOrderRequest,
     PassengerRFIDRechargeVerifyPaymentRequest,
     CreateBookingSessionRequest,
+    VerifyBookingSessionPaymentRequest,
 )
 
 
@@ -476,6 +477,139 @@ class PassengerService:
             )
 
         return booking_session
+    
+    async def _get_booking_session_for_update_or_404(
+        self,
+        *,
+        booking_session_id: str,
+        owner_user_id: str,
+    ) -> BookingSession:
+        stmt = (
+            select(BookingSession)
+            .where(
+                BookingSession.id == booking_session_id,
+                BookingSession.owner_user_id == owner_user_id,
+            )
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        booking_session = result.scalar_one_or_none()
+
+        if booking_session is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "booking_session_not_found",
+                    "message": "Booking session not found.",
+                },
+            )
+
+        return booking_session
+
+    async def _list_booking_session_payments_for_update(
+        self,
+        booking_session_id: str,
+    ) -> list[BookingSessionPayment]:
+        stmt = (
+            select(BookingSessionPayment)
+            .where(BookingSessionPayment.booking_session_id == booking_session_id)
+            .order_by(BookingSessionPayment.created_at.desc())
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def _list_booking_session_bookings_for_update(
+        self,
+        booking_session_id: str,
+    ) -> list[TripBooking]:
+        stmt = (
+            select(TripBooking)
+            .where(TripBooking.booking_session_id == booking_session_id)
+            .order_by(TripBooking.seat_number.asc())
+            .with_for_update()
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().all())
+
+    def _get_booking_session_payment_by_order_id(
+        self,
+        payments: list[BookingSessionPayment],
+        *,
+        razorpay_order_id: str,
+    ) -> BookingSessionPayment | None:
+        return next(
+            (
+                payment
+                for payment in payments
+                if payment.razorpay_order_id == razorpay_order_id
+            ),
+            None,
+        )
+    
+    async def _expire_pending_booking_session(
+        self,
+        *,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+        payments: list[BookingSessionPayment],
+    ) -> None:
+        now = utcnow()
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            return
+
+        booking_session.status = BookingSessionStatus.EXPIRED
+        booking_session.expired_at = booking_session.expired_at or now
+        booking_session.payment_hold_expires_at = None
+        self.db.add(booking_session)
+
+        for booking in bookings:
+            if booking.booking_status == BookingStatus.PENDING_PAYMENT:
+                booking.booking_status = BookingStatus.CANCELLED
+                booking.cancelled_at = booking.cancelled_at or now
+                booking.payment_hold_expires_at = None
+                self.db.add(booking)
+
+        for payment in payments:
+            if payment.status == BookingPaymentStatus.CREATED:
+                payment.status = BookingPaymentStatus.FAILED
+                self.db.add(payment)
+
+        await self.db.flush()
+
+    async def _mark_booking_session_paid_and_confirmed(
+        self,
+        *,
+        booking_session: BookingSession,
+        payment: BookingSessionPayment,
+        bookings: list[TripBooking],
+        razorpay_payment_id: str | None,
+        razorpay_signature: str | None = None,
+    ) -> None:
+        now = utcnow()
+
+        if razorpay_payment_id:
+            payment.razorpay_payment_id = razorpay_payment_id
+
+        if razorpay_signature:
+            payment.razorpay_signature = razorpay_signature
+
+        payment.status = BookingPaymentStatus.PAID
+
+        booking_session.status = BookingSessionStatus.CONFIRMED
+        booking_session.confirmed_at = booking_session.confirmed_at or now
+        booking_session.payment_hold_expires_at = None
+
+        for booking in bookings:
+            if booking.booking_status == BookingStatus.PENDING_PAYMENT:
+                booking.booking_status = BookingStatus.BOOKED
+                booking.payment_hold_expires_at = None
+                self.db.add(booking)
+
+        self.db.add(payment)
+        self.db.add(booking_session)
+        await self.db.flush()
 
     async def _get_route_obj(self, route_id: str) -> Route:
         stmt = (
@@ -4258,6 +4392,523 @@ class PassengerService:
 
         return booking_session
     
+    async def create_booking_session(
+        self,
+        current_user: User,
+        payload: CreateBookingSessionRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        profile = await self._get_profile_obj(current_user.id)
+        if profile is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "profile_required",
+                    "message": "Create passenger profile before booking a trip.",
+                },
+            )
+
+        trip = await self._get_trip_obj_for_booking_update(payload.scheduled_trip_id)
+
+        if trip.status != ScheduledTripStatus.SCHEDULED:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "trip_not_bookable",
+                    "message": "This scheduled trip is not open for booking.",
+                },
+            )
+
+        if trip.actual_start_at is not None and trip.actual_start_at <= utcnow():
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "trip_already_started",
+                    "message": "This scheduled trip can no longer be booked.",
+                },
+            )
+
+        expired_pending_booking_count = await self._expire_stale_pending_bookings_for_trip(
+            trip.id
+        )
+
+        fare, pickup_route_stop, dropoff_route_stop = await self._resolve_fare(
+            route_id=trip.route_id,
+            pickup_stop_id=payload.pickup_stop_id,
+            dropoff_stop_id=payload.dropoff_stop_id,
+        )
+
+        seat_count = await self._get_app_bookable_capacity_for_trip(trip)
+
+        requested_seat_numbers = [seat.seat_number for seat in payload.seats]
+        requested_seat_number_set = set(requested_seat_numbers)
+
+        if len(requested_seat_numbers) != len(requested_seat_number_set):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "duplicate_seat_numbers",
+                    "message": "Seat numbers must be unique within one booking session.",
+                },
+            )
+
+        for seat_number in requested_seat_numbers:
+            if seat_number < 1 or seat_number > seat_count:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": "invalid_seat_number",
+                        "message": "Selected seat is outside the app-bookable seat range for this trip.",
+                        "seat_number": seat_number,
+                        "seat_capacity": seat_count,
+                    },
+                )
+
+        occupied_seat_numbers = await self._get_occupied_app_seat_numbers_for_leg(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        unavailable_seat_numbers = sorted(
+            requested_seat_number_set.intersection(occupied_seat_numbers)
+        )
+
+        if unavailable_seat_numbers:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "seat_unavailable",
+                    "message": "One or more selected seats are already occupied for the selected route segment.",
+                    "seat_numbers": unavailable_seat_numbers,
+                },
+            )
+
+        overlapping_active_booking_count = await self._count_overlapping_active_trip_bookings(
+            scheduled_trip_id=trip.id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+        )
+
+        available_seat_count = max(seat_count - overlapping_active_booking_count, 0)
+
+        if len(requested_seat_numbers) > available_seat_count:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "trip_segment_full",
+                    "message": "Not enough seats are available for the selected trip segment.",
+                    "requested_seat_count": len(requested_seat_numbers),
+                    "available_seat_count": available_seat_count,
+                },
+            )
+
+        normalized_fare_amount = self._quantize_money(fare.amount)
+        total_fare_amount = self._quantize_money(
+            normalized_fare_amount * Decimal(len(requested_seat_numbers))
+        )
+
+        current_commission_percent = await self._get_current_commission_percent()
+        (
+            commission_percent_snapshot,
+            commission_amount,
+            driver_payout_amount,
+        ) = self._build_booking_commission_snapshot(
+            fare_amount=normalized_fare_amount,
+            commission_percent=current_commission_percent,
+        )
+
+        payment_hold_expires_at = self._get_payment_hold_expires_at()
+
+        traveller_snapshots: dict[int, dict[str, str | None]] = {}
+
+        for seat in payload.seats:
+            traveller_snapshots[seat.seat_number] = (
+                await self._resolve_booking_session_traveller_snapshot(
+                    owner_user_id=current_user.id,
+                    traveller_profile_id=seat.traveller_profile_id,
+                    guest_traveller=seat.traveller,
+                )
+            )
+
+        try:
+            booking_session = BookingSession(
+                owner_user_id=current_user.id,
+                scheduled_trip_id=trip.id,
+                route_id=trip.route_id,
+                pickup_stop_id=payload.pickup_stop_id,
+                dropoff_stop_id=payload.dropoff_stop_id,
+                pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
+                dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
+                status=BookingSessionStatus.PENDING_PAYMENT,
+                total_fare_amount=total_fare_amount,
+                payment_hold_expires_at=payment_hold_expires_at,
+            )
+            self.db.add(booking_session)
+            await self.db.flush()
+
+            for seat in payload.seats:
+                snapshot = traveller_snapshots[seat.seat_number]
+
+                booking = TripBooking(
+                    booking_session_id=booking_session.id,
+                    passenger_user_id=current_user.id,
+                    booked_by_user_id=current_user.id,
+                    traveller_profile_id=snapshot["traveller_profile_id"],
+                    traveller_name_snapshot=snapshot["traveller_name_snapshot"],
+                    traveller_phone_snapshot=snapshot["traveller_phone_snapshot"],
+                    traveller_email_snapshot=snapshot["traveller_email_snapshot"],
+                    traveller_relationship_label_snapshot=snapshot[
+                        "traveller_relationship_label_snapshot"
+                    ],
+                    otp=self._generate_booking_otp(),
+                    scheduled_trip_id=trip.id,
+                    route_id=trip.route_id,
+                    pickup_stop_id=payload.pickup_stop_id,
+                    dropoff_stop_id=payload.dropoff_stop_id,
+                    seat_number=seat.seat_number,
+                    booking_status=BookingStatus.PENDING_PAYMENT,
+                    fare_amount=normalized_fare_amount,
+                    pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
+                    dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
+                    payment_hold_expires_at=payment_hold_expires_at,
+                    commission_percent_snapshot=commission_percent_snapshot,
+                    commission_amount=commission_amount,
+                    driver_payout_amount=driver_payout_amount,
+                )
+                self.db.add(booking)
+
+            await self.db.flush()
+
+            order_payload = await self._create_booking_session_razorpay_order(
+                booking_session=booking_session,
+                amount=booking_session.total_fare_amount,
+            )
+
+            payment = BookingSessionPayment(
+                booking_session_id=booking_session.id,
+                razorpay_order_id=order_payload["id"],
+                amount=booking_session.total_fare_amount,
+                status=BookingPaymentStatus.CREATED,
+            )
+            self.db.add(payment)
+
+            await self.db.commit()
+
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=trip.id,
+                reason="booking_session_created",
+            )
+
+            if expired_pending_booking_count > 0:
+                await self._broadcast_seatmap_snapshots_for_trip(
+                    scheduled_trip_id=trip.id,
+                    reason="payment_hold_expired",
+                )
+
+        except HTTPException:
+            await self.db.rollback()
+            raise
+        except IntegrityError:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_conflict",
+                    "message": "Could not create booking session because one or more seats are no longer available.",
+                },
+            )
+        except Exception:
+            await self.db.rollback()
+            raise
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+
+        return {
+            "message": "Booking session created. Payment is pending.",
+            "booking_session": self._serialize_booking_session(booking_session),
+            "payment_order": self._build_booking_session_payment_order_response(
+                booking_session=booking_session,
+                razorpay_order_id=order_payload["id"],
+                currency=order_payload.get("currency", "INR"),
+                receipt=order_payload.get("receipt"),
+            ),
+        }
+    
+    async def verify_booking_session_payment(
+        self,
+        current_user: User,
+        booking_session_id: str,
+        payload: VerifyBookingSessionPaymentRequest,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking_session = await self._get_booking_session_for_update_or_404(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        payments = await self._list_booking_session_payments_for_update(
+            booking_session.id
+        )
+        bookings = await self._list_booking_session_bookings_for_update(
+            booking_session.id
+        )
+
+        if not bookings:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_empty",
+                    "message": "Booking session has no seat bookings.",
+                },
+            )
+
+        payment = self._get_booking_session_payment_by_order_id(
+            payments,
+            razorpay_order_id=payload.razorpay_order_id,
+        )
+
+        if payment is None:
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "error": "booking_session_payment_not_found",
+                    "message": "Payment order was not found for this booking session.",
+                },
+            )
+
+        already_confirmed = (
+            booking_session.status == BookingSessionStatus.CONFIRMED
+            and payment.status == BookingPaymentStatus.PAID
+            and all(
+                booking.booking_status
+                in (
+                    BookingStatus.BOOKED,
+                    BookingStatus.BOARDED,
+                    BookingStatus.COMPLETED,
+                )
+                for booking in bookings
+            )
+        )
+
+        if already_confirmed:
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Payment already verified successfully.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_not_pending_payment",
+                    "message": "This booking session is not awaiting payment verification.",
+                },
+            )
+
+        hold_expired = (
+            booking_session.payment_hold_expires_at is not None
+            and booking_session.payment_hold_expires_at <= utcnow()
+        )
+
+        if hold_expired:
+            await self._expire_pending_booking_session(
+                booking_session=booking_session,
+                bookings=bookings,
+                payments=payments,
+            )
+            await self.db.commit()
+
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason="booking_session_payment_hold_expired",
+            )
+
+            await self._notify_user(
+                user_id=current_user.id,
+                title="Booking session expired",
+                message="Your payment window expired, so the selected seats were released.",
+                data={
+                    "type": "booking_session_expired",
+                    "booking_session_id": booking_session.id,
+                    "scheduled_trip_id": booking_session.scheduled_trip_id,
+                    "refresh": [
+                        "bookings_list",
+                        "booking_session_detail",
+                        "seatmap",
+                    ],
+                },
+            )
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_hold_expired",
+                    "message": "Payment hold expired. Booking session was expired and seats were released.",
+                },
+            )
+
+        if payment.status == BookingPaymentStatus.PAID:
+            await self._mark_booking_session_paid_and_confirmed(
+                booking_session=booking_session,
+                payment=payment,
+                bookings=bookings,
+                razorpay_payment_id=payload.razorpay_payment_id,
+                razorpay_signature=payload.razorpay_signature,
+            )
+            await self.db.commit()
+
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason="booking_session_confirmed",
+            )
+
+            await self._notify_user(
+                user_id=current_user.id,
+                title="Payment verified",
+                message="Your booking session is confirmed.",
+                data={
+                    "type": "booking_session_confirmed",
+                    "booking_session_id": booking_session.id,
+                    "scheduled_trip_id": booking_session.scheduled_trip_id,
+                    "refresh": [
+                        "bookings_list",
+                        "booking_session_detail",
+                        "current_booking",
+                        "seatmap",
+                    ],
+                },
+            )
+
+            return {
+                "message": "Payment verified successfully.",
+                "booking_session": self._serialize_booking_session(booking_session),
+            }
+
+        self._verify_razorpay_signature(
+            order_id=payload.razorpay_order_id,
+            payment_id=payload.razorpay_payment_id,
+            received_signature=payload.razorpay_signature,
+        )
+
+        fetched_payment = await self._fetch_razorpay_payment(
+            payload.razorpay_payment_id
+        )
+
+        fetched_order_id = fetched_payment.get("order_id")
+        fetched_status = str(fetched_payment.get("status", "")).lower()
+        fetched_captured = bool(fetched_payment.get("captured", False))
+        fetched_amount = int(fetched_payment.get("amount", 0))
+
+        expected_amount_subunits = self._to_subunits(payment.amount)
+
+        if fetched_order_id != payment.razorpay_order_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "payment_order_mismatch",
+                    "message": "Fetched payment order does not match stored booking session payment order.",
+                },
+            )
+
+        if fetched_amount != expected_amount_subunits:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "payment_amount_mismatch",
+                    "message": "Fetched payment amount does not match booking session amount.",
+                },
+            )
+
+        if fetched_status == "authorized" and not fetched_captured:
+            captured_payment = await self._capture_razorpay_payment(
+                payload.razorpay_payment_id,
+                expected_amount_subunits,
+            )
+            fetched_status = str(captured_payment.get("status", "")).lower()
+            fetched_captured = bool(captured_payment.get("captured", False))
+
+        if fetched_status in {"failed", "refunded"}:
+            payment.razorpay_payment_id = payload.razorpay_payment_id
+            payment.razorpay_signature = payload.razorpay_signature
+            payment.status = BookingPaymentStatus.FAILED
+            self.db.add(payment)
+            await self.db.commit()
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_not_successful",
+                    "message": "Payment was not successful.",
+                    "provider_status": fetched_status,
+                },
+            )
+
+        if fetched_status != "captured" and not fetched_captured:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_not_captured",
+                    "message": "Payment has not been captured yet.",
+                    "provider_status": fetched_status,
+                },
+            )
+
+        await self._mark_booking_session_paid_and_confirmed(
+            booking_session=booking_session,
+            payment=payment,
+            bookings=bookings,
+            razorpay_payment_id=payload.razorpay_payment_id,
+            razorpay_signature=payload.razorpay_signature,
+        )
+
+        await self.db.commit()
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+
+        await self._broadcast_seatmap_snapshots_for_trip(
+            scheduled_trip_id=booking_session.scheduled_trip_id,
+            reason="booking_session_confirmed",
+        )
+
+        await self._notify_user(
+            user_id=current_user.id,
+            title="Payment verified",
+            message="Your booking session is confirmed.",
+            data={
+                "type": "booking_session_confirmed",
+                "booking_session_id": booking_session.id,
+                "scheduled_trip_id": booking_session.scheduled_trip_id,
+                "refresh": [
+                    "bookings_list",
+                    "booking_session_detail",
+                    "current_booking",
+                    "seatmap",
+                ],
+            },
+        )
+
+        return {
+            "message": "Payment verified successfully.",
+            "booking_session": self._serialize_booking_session(booking_session),
+        }
 
     async def create_booking(
         self,

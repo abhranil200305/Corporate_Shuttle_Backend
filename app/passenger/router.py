@@ -58,6 +58,8 @@ from app.passenger.schemas import (
     PassengerTravellerProfileUpdateRequest,
     BookingSessionCreateResponse,
     CreateBookingSessionRequest,
+    BookingSessionMutationResponse,
+    VerifyBookingSessionPaymentRequest,
 )
 
 from app.passenger.service import PassengerService
@@ -389,6 +391,22 @@ async def create_booking_session(
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingSessionCreateResponse:
     return await service.create_booking_session(current_user, payload)
+
+@router.post(
+    "/booking-sessions/{booking_session_id}/verify-payment",
+    response_model=BookingSessionMutationResponse,
+)
+async def verify_booking_session_payment(
+    booking_session_id: str,
+    payload: VerifyBookingSessionPaymentRequest,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionMutationResponse:
+    return await service.verify_booking_session_payment(
+        current_user,
+        booking_session_id,
+        payload,
+    )
 
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(
