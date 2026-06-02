@@ -4951,17 +4951,49 @@ class PassengerService:
         await self.db.flush()
 
         return payment, order_payload
+
+    @staticmethod
+    def _emails_match(
+        left: str | None,
+        right: str | None,
+    ) -> bool:
+        cleaned_left = (left or "").strip()
+        cleaned_right = (right or "").strip()
+
+        if not cleaned_left or not cleaned_right:
+            return False
+
+        return cleaned_left.casefold() == cleaned_right.casefold()
+
+    def _ensure_explicit_traveller_is_not_account_owner(
+        self,
+        *,
+        owner_user: User,
+        traveller_email: str | None,
+        seat_number: int,
+    ) -> None:
+        if self._emails_match(traveller_email, owner_user.email):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "traveller_matches_account_owner",
+                    "message": "A traveller booked as someone else cannot use the account owner's email. Omit traveller details when booking for yourself.",
+                    "seat_number": seat_number,
+                },
+            )
     
     async def _resolve_booking_session_traveller_snapshot(
         self,
         *,
-        owner_user_id: str,
+        owner_user: User,
+        owner_profile: PassengerProfile,
+        seat_number: int,
         traveller_profile_id: str | None,
         guest_traveller,
     ) -> dict[str, str | None]:
         if traveller_profile_id is not None:
             profile = await self._get_traveller_profile_for_owner_or_404(
-                owner_user_id=owner_user_id,
+                owner_user_id=owner_user.id,
                 profile_id=traveller_profile_id,
             )
 
@@ -4974,29 +5006,44 @@ class PassengerService:
                     },
                 )
 
+            if not profile.is_self:
+                self._ensure_explicit_traveller_is_not_account_owner(
+                    owner_user=owner_user,
+                    traveller_email=profile.email,
+                    seat_number=seat_number,
+                )
+
             return {
                 "traveller_profile_id": profile.id,
                 "traveller_name_snapshot": profile.full_name,
                 "traveller_phone_snapshot": profile.phone,
-                "traveller_email_snapshot": profile.email,
+                "traveller_email_snapshot": None
+                if self._emails_match(profile.email, owner_user.email)
+                else profile.email,
                 "traveller_relationship_label_snapshot": profile.relationship_label,
             }
 
-        if guest_traveller is None:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "error": "traveller_required",
-                    "message": "Each seat must be assigned to a traveller.",
-                },
+        if guest_traveller is not None:
+            self._ensure_explicit_traveller_is_not_account_owner(
+                owner_user=owner_user,
+                traveller_email=guest_traveller.email,
+                seat_number=seat_number,
             )
+
+            return {
+                "traveller_profile_id": None,
+                "traveller_name_snapshot": guest_traveller.full_name,
+                "traveller_phone_snapshot": guest_traveller.phone,
+                "traveller_email_snapshot": guest_traveller.email,
+                "traveller_relationship_label_snapshot": guest_traveller.relationship_label,
+            }
 
         return {
             "traveller_profile_id": None,
-            "traveller_name_snapshot": guest_traveller.full_name,
-            "traveller_phone_snapshot": guest_traveller.phone,
-            "traveller_email_snapshot": guest_traveller.email,
-            "traveller_relationship_label_snapshot": guest_traveller.relationship_label,
+            "traveller_name_snapshot": owner_profile.full_name,
+            "traveller_phone_snapshot": None,
+            "traveller_email_snapshot": None,
+            "traveller_relationship_label_snapshot": "Self",
         }
 
     # ------------------------------------------------------------------
@@ -5206,7 +5253,9 @@ class PassengerService:
         for seat in payload.seats:
             traveller_snapshots[seat.seat_number] = (
                 await self._resolve_booking_session_traveller_snapshot(
-                    owner_user_id=current_user.id,
+                    owner_user=current_user,
+                    owner_profile=profile,
+                    seat_number=seat.seat_number,
                     traveller_profile_id=seat.traveller_profile_id,
                     guest_traveller=seat.traveller,
                 )
