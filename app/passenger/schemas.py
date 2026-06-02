@@ -290,13 +290,13 @@ class CreateBookingSessionSeatRequest(BaseModel):
     traveller: BookingSessionGuestTravellerRequest | None = None
 
     @model_validator(mode="after")
-    def require_exactly_one_traveller_source(self):
+    def reject_multiple_traveller_sources(self):
         has_profile = self.traveller_profile_id is not None
         has_guest = self.traveller is not None
 
-        if has_profile == has_guest:
+        if has_profile and has_guest:
             raise ValueError(
-                "Provide exactly one of traveller_profile_id or traveller."
+                "Provide only one of traveller_profile_id or traveller."
             )
 
         return self
