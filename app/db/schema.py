@@ -3102,10 +3102,9 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
 
     __table_args__ = (
         Index(
-            "uq_trip_bookings_passenger_trip_active",
+            "ix_trip_bookings_passenger_trip_active",
             "passenger_user_id",
             "scheduled_trip_id",
-            unique=True,
             postgresql_where=text(
                 "booking_status IN ('pending_payment', 'booked', 'boarded')"
             ),
