@@ -299,7 +299,6 @@ async def get_booking_details(
                     booking.completed_at
                 ),
 
-                "otp": booking.otp,
 
                 # ------------------------------------------------
                 # NEW MULTI-SEAT / TRAVELLER SNAPSHOT FIELDS
