@@ -5334,13 +5334,6 @@ class PassengerService:
             owner_user_id=current_user.id,
         )
 
-        await self._queue_booking_session_traveller_notifications(
-            booking_session=booking_session,
-            bookings=list(booking_session.bookings),
-            event_type="traveller_seat_confirmed",
-        )
-        await self.db.commit()
-
         payments = await self._list_booking_session_payments_for_update(
             booking_session.id
         )
@@ -5462,6 +5455,11 @@ class PassengerService:
                 razorpay_payment_id=payload.razorpay_payment_id,
                 razorpay_signature=payload.razorpay_signature,
             )
+            await self._queue_booking_session_traveller_notifications(
+                booking_session=booking_session,
+                bookings=bookings,
+                event_type="traveller_seat_confirmed",
+            )
             await self.db.commit()
 
             booking_session = await self._get_booking_session_obj(
@@ -5573,6 +5571,11 @@ class PassengerService:
             bookings=bookings,
             razorpay_payment_id=payload.razorpay_payment_id,
             razorpay_signature=payload.razorpay_signature,
+        )
+        await self._queue_booking_session_traveller_notifications(
+            booking_session=booking_session,
+            bookings=bookings,
+            event_type="traveller_seat_confirmed",
         )
 
         await self.db.commit()
