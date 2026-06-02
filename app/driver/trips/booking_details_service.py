@@ -49,27 +49,51 @@ def _build_eta_by_stop_id(trip: ScheduledTrip) -> dict[str, object]:
             eta_by_stop_id[route_stop.stop_id] = current_eta
             continue
 
-        diff_minutes = max(0, int(route_stop.assume_time_diff_minutes or 0))
-        current_eta = current_eta + timedelta(minutes=diff_minutes)
+        diff_minutes = max(
+            0,
+            int(route_stop.assume_time_diff_minutes or 0),
+        )
+
+        current_eta = current_eta + timedelta(
+            minutes=diff_minutes
+        )
+
         eta_by_stop_id[route_stop.stop_id] = current_eta
 
     return eta_by_stop_id
 
 
-def _resolve_passenger_name(booking: TripBooking) -> str:
-    if booking.passenger and booking.passenger.passenger_profile:
-        full_name = (booking.passenger.passenger_profile.full_name or "").strip()
+def _resolve_driver_traveller_display(
+    booking: TripBooking,
+) -> tuple[str, str | None]:
+    owner_name = None
 
-        if full_name:
-            return full_name
+    if (
+        booking.passenger
+        and booking.passenger.passenger_profile
+    ):
+        owner_name = (
+            booking.passenger.passenger_profile.full_name
+            or ""
+        ).strip() or None
 
-    if booking.passenger:
-        return booking.passenger.email
+    traveller_name = (
+        booking.traveller_name_snapshot
+        or owner_name
+        or (
+            booking.passenger.email
+            if booking.passenger
+            else None
+        )
+        or "Passenger"
+    )
 
-    return booking.passenger_user_id
+    return traveller_name, owner_name
 
 
-def _resolve_fare_paid(booking: TripBooking) -> Decimal:
+def _resolve_fare_paid(
+    booking: TripBooking,
+) -> Decimal:
     paid_payments = [
         payment
         for payment in booking.payments
@@ -87,40 +111,76 @@ def _resolve_fare_paid(booking: TripBooking) -> Decimal:
         reverse=True,
     )
 
-    return _money(paid_payments[0].amount)
+    return _money(
+        paid_payments[0].amount
+    )
 
 
 @router.get("/{trip_id}/booking-details")
 async def get_booking_details(
     trip_id: str,
-    db: AsyncSession = Depends(get_async_session),
-    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(
+        get_async_session
+    ),
+    current_user: User = Depends(
+        get_current_user
+    ),
 ):
     # 1️⃣ Fetch trip with route + stops + bookings + passenger + payments
     result = await db.execute(
         select(ScheduledTrip)
-        .where(ScheduledTrip.id == trip_id)
+        .where(
+            ScheduledTrip.id == trip_id
+        )
         .options(
-            selectinload(ScheduledTrip.route)
-            .selectinload(Route.route_stops)
-            .selectinload(RouteStop.stop),
+            selectinload(
+                ScheduledTrip.route
+            )
+            .selectinload(
+                Route.route_stops
+            )
+            .selectinload(
+                RouteStop.stop
+            ),
 
-            selectinload(ScheduledTrip.driver),
+            selectinload(
+                ScheduledTrip.driver
+            ),
 
-            selectinload(ScheduledTrip.vehicle),
+            selectinload(
+                ScheduledTrip.vehicle
+            ),
 
-            selectinload(ScheduledTrip.bookings)
-            .selectinload(TripBooking.pickup_stop),
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.pickup_stop
+            ),
 
-            selectinload(ScheduledTrip.bookings)
-            .selectinload(TripBooking.dropoff_stop),
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.dropoff_stop
+            ),
 
-            selectinload(ScheduledTrip.bookings)
-            .selectinload(TripBooking.payments),
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.payments
+            ),
 
-            selectinload(ScheduledTrip.bookings)
-            .selectinload(TripBooking.passenger)
-            .selectinload(User.passenger_profile),
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.passenger
+            )
+            .selectinload(
+                User.passenger_profile
+            ),
         )
     )
 
@@ -140,7 +200,9 @@ async def get_booking_details(
         )
 
     # 2️⃣ Build ETA map from route stop diffs
-    eta_by_stop_id = _build_eta_by_stop_id(trip)
+    eta_by_stop_id = _build_eta_by_stop_id(
+        trip
+    )
 
     # 3️⃣ Keep only driver-useful bookings
     visible_bookings = [
@@ -168,19 +230,34 @@ async def get_booking_details(
     total_fare_paid = Decimal("0.00")
 
     for booking in visible_bookings:
-        fare = _money(booking.fare_amount)
-        fare_paid = _resolve_fare_paid(booking)
+        fare = _money(
+            booking.fare_amount
+        )
+
+        fare_paid = _resolve_fare_paid(
+            booking
+        )
+
+        traveller_name, owner_name = (
+            _resolve_driver_traveller_display(
+                booking
+            )
+        )
 
         total_fare += fare
         total_fare_paid += fare_paid
 
         bookings_data.append(
             {
+                # Existing fields
                 "booking_id": booking.id,
 
-                "seat_number": booking.seat_number,
+                "seat_number": (
+                    booking.seat_number
+                ),
 
-                "name": _resolve_passenger_name(booking),
+                # Existing field kept
+                "name": traveller_name,
 
                 "take_in": (
                     booking.pickup_stop.name
@@ -194,24 +271,78 @@ async def get_booking_details(
                     else None
                 ),
 
-                "estimated_pickup_time": eta_by_stop_id.get(
-                    booking.pickup_stop_id
+                "estimated_pickup_time": (
+                    eta_by_stop_id.get(
+                        booking.pickup_stop_id
+                    )
                 ),
 
-                "estimated_drop_off_time": eta_by_stop_id.get(
-                    booking.dropoff_stop_id
+                "estimated_drop_off_time": (
+                    eta_by_stop_id.get(
+                        booking.dropoff_stop_id
+                    )
                 ),
 
                 "fare": fare,
 
                 "fare_paid": fare_paid,
 
-                "booking_status": booking.booking_status,
+                "booking_status": (
+                    booking.booking_status
+                ),
 
-                # optional extra useful fields
-                "boarded_at": booking.boarded_at,
-                "completed_at": booking.completed_at,
+                "boarded_at": (
+                    booking.boarded_at
+                ),
+
+                "completed_at": (
+                    booking.completed_at
+                ),
+
                 "otp": booking.otp,
+
+                # ------------------------------------------------
+                # NEW MULTI-SEAT / TRAVELLER SNAPSHOT FIELDS
+                # ------------------------------------------------
+                "booking_session_id": (
+                    booking.booking_session_id
+                ),
+
+                "passenger_id": (
+                    booking.passenger_user_id
+                ),
+
+                "account_owner_user_id": (
+                    booking.passenger_user_id
+                ),
+
+                "booked_by_user_id": (
+                    booking.booked_by_user_id
+                ),
+
+                "passenger_name": (
+                    traveller_name
+                ),
+
+                "traveller_name": (
+                    traveller_name
+                ),
+
+                "traveller_phone": (
+                    booking.traveller_phone_snapshot
+                ),
+
+                "traveller_email": (
+                    booking.traveller_email_snapshot
+                ),
+
+                "traveller_relationship_label": (
+                    booking.traveller_relationship_label_snapshot
+                ),
+
+                "account_owner_name": (
+                    owner_name
+                ),
             }
         )
 
@@ -221,11 +352,21 @@ async def get_booking_details(
 
         "status": trip.status,
 
-        "planned_start": trip.planned_start_at,
-        "planned_end": trip.planned_end_at,
+        "planned_start": (
+            trip.planned_start_at
+        ),
 
-        "actual_start": trip.actual_start_at,
-        "actual_end": trip.actual_end_at,
+        "planned_end": (
+            trip.planned_end_at
+        ),
+
+        "actual_start": (
+            trip.actual_start_at
+        ),
+
+        "actual_end": (
+            trip.actual_end_at
+        ),
 
         "driver": {
             "driver_id": trip.driver.id,
@@ -233,10 +374,18 @@ async def get_booking_details(
         },
 
         "vehicle": {
-            "vehicle_id": trip.vehicle.id,
-            "name": trip.vehicle.vehicle_name,
-            "model": trip.vehicle.vehicle_model,
-            "registration_number": trip.vehicle.registration_number,
+            "vehicle_id": (
+                trip.vehicle.id
+            ),
+            "name": (
+                trip.vehicle.vehicle_name
+            ),
+            "model": (
+                trip.vehicle.vehicle_model
+            ),
+            "registration_number": (
+                trip.vehicle.registration_number
+            ),
         },
 
         "route": {
@@ -244,11 +393,17 @@ async def get_booking_details(
             "name": trip.route.name,
         },
 
-        "booking_count": len(bookings_data),
+        "booking_count": len(
+            bookings_data
+        ),
 
         "bookings": bookings_data,
 
-        "total_fare": _money(total_fare),
+        "total_fare": _money(
+            total_fare
+        ),
 
-        "total_fare_paid": _money(total_fare_paid),
+        "total_fare_paid": _money(
+            total_fare_paid
+        ),
     }

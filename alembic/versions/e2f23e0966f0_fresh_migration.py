@@ -1,8 +1,8 @@
-"""New db migration
+"""Fresh migration
 
-Revision ID: 70997f499431
+Revision ID: e2f23e0966f0
 Revises: 
-Create Date: 2026-05-14 10:28:54.843378
+Create Date: 2026-06-02 11:00:33.902617
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = '70997f499431'
+revision: str = 'e2f23e0966f0'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -34,6 +34,7 @@ def upgrade() -> None:
     op.create_index('ix_job_leases_lease_expires_at', 'job_leases', ['lease_expires_at'], unique=False)
     op.create_table('otp_requests',
     sa.Column('email', sa.String(length=255), nullable=False),
+    sa.Column('role', sa.Enum('admin', 'driver', 'passenger', name='otp_user_role', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('otp_code_hash', sa.String(length=255), nullable=False),
     sa.Column('purpose', sa.Enum('login', 'signup', name='otp_purpose', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
@@ -43,16 +44,18 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('ix_otp_requests_email_expires_at', 'otp_requests', ['email', 'expires_at'], unique=False)
+    op.create_index('ix_otp_requests_email_role_purpose_expires_at', 'otp_requests', ['email', 'role', 'purpose', 'expires_at'], unique=False)
     op.create_table('platform_settings',
     sa.Column('settings_key', sa.String(length=32), nullable=False),
     sa.Column('commission_percent', sa.Numeric(precision=5, scale=2), nullable=False),
     sa.Column('commercial_policy_json', sa.Text(), nullable=True),
     sa.Column('allow_driver_rfid_seat_reservation', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('driver_max_active_sessions', sa.Integer(), server_default=sa.text('2'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint('commission_percent >= 0 AND commission_percent <= 100', name='ck_platform_settings_commission_percent_range'),
+    sa.CheckConstraint('driver_max_active_sessions >= 1', name='ck_platform_settings_driver_max_active_sessions_positive'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('settings_key')
     )
@@ -93,7 +96,7 @@ def upgrade() -> None:
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
     sa.CheckConstraint("email <> ''", name='ck_users_email_nonempty'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('email')
+    sa.UniqueConstraint('role', 'email', name='uq_users_role_email')
     )
     op.create_table('driver_payout_details',
     sa.Column('driver_user_id', sa.String(length=36), nullable=False),
@@ -172,6 +175,24 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('user_id')
     )
+    op.create_table('passenger_traveller_profiles',
+    sa.Column('owner_user_id', sa.String(length=36), nullable=False),
+    sa.Column('full_name', sa.String(length=120), nullable=False),
+    sa.Column('phone', sa.String(length=20), nullable=False),
+    sa.Column('email', sa.String(length=255), nullable=True),
+    sa.Column('relationship_label', sa.String(length=80), nullable=True),
+    sa.Column('is_self', sa.Boolean(), server_default=sa.text('false'), nullable=False),
+    sa.Column('is_active', sa.Boolean(), server_default=sa.text('true'), nullable=False),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("full_name <> ''", name='ck_passenger_traveller_profiles_full_name_nonempty'),
+    sa.CheckConstraint("phone <> ''", name='ck_passenger_traveller_profiles_phone_nonempty'),
+    sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_passenger_traveller_profiles_owner_active', 'passenger_traveller_profiles', ['owner_user_id', 'is_active'], unique=False)
+    op.create_index('ix_passenger_traveller_profiles_owner_self', 'passenger_traveller_profiles', ['owner_user_id', 'is_self'], unique=False)
     op.create_table('rfid_cards',
     sa.Column('card_uid_hash', sa.String(length=255), nullable=False),
     sa.Column('card_uid_masked', sa.String(length=64), nullable=True),
@@ -266,6 +287,12 @@ def upgrade() -> None:
     sa.Column('token_hash', sa.String(length=255), nullable=False),
     sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('last_used_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('device_name', sa.String(length=255), nullable=True),
+    sa.Column('device_family', sa.String(length=120), nullable=True),
+    sa.Column('platform', sa.String(length=120), nullable=True),
+    sa.Column('browser', sa.String(length=120), nullable=True),
+    sa.Column('user_agent', sa.Text(), nullable=True),
+    sa.Column('ip_address', sa.String(length=64), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
@@ -417,6 +444,37 @@ def upgrade() -> None:
     op.create_index('ix_scheduled_trips_driver_start', 'scheduled_trips', ['driver_user_id', 'planned_start_at'], unique=False)
     op.create_index('ix_scheduled_trips_route_start', 'scheduled_trips', ['route_id', 'planned_start_at'], unique=False)
     op.create_index('ix_scheduled_trips_vehicle_start', 'scheduled_trips', ['vehicle_id', 'planned_start_at'], unique=False)
+    op.create_table('booking_sessions',
+    sa.Column('owner_user_id', sa.String(length=36), nullable=False),
+    sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
+    sa.Column('route_id', sa.String(length=36), nullable=False),
+    sa.Column('pickup_stop_id', sa.String(length=36), nullable=False),
+    sa.Column('dropoff_stop_id', sa.String(length=36), nullable=False),
+    sa.Column('pickup_sequence_no_snapshot', sa.Integer(), nullable=False),
+    sa.Column('dropoff_sequence_no_snapshot', sa.Integer(), nullable=False),
+    sa.Column('status', sa.Enum('pending_payment', 'confirmed', 'cancelled', 'expired', name='booking_session_status', native_enum=False, create_constraint=True), server_default=sa.text("'pending_payment'"), nullable=False),
+    sa.Column('total_fare_amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('payment_hold_expires_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('confirmed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('expired_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('dropoff_sequence_no_snapshot > pickup_sequence_no_snapshot', name='ck_booking_sessions_dropoff_after_pickup'),
+    sa.CheckConstraint('pickup_sequence_no_snapshot > 0', name='ck_booking_sessions_pickup_sequence_positive'),
+    sa.CheckConstraint('pickup_stop_id <> dropoff_stop_id', name='ck_booking_sessions_pickup_dropoff_different'),
+    sa.CheckConstraint('total_fare_amount >= 0', name='ck_booking_sessions_total_fare_nonnegative'),
+    sa.ForeignKeyConstraint(['dropoff_stop_id'], ['stops.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['pickup_stop_id'], ['stops.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['route_id'], ['routes.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_booking_sessions_hold_expiry', 'booking_sessions', ['status', 'payment_hold_expires_at'], unique=False)
+    op.create_index('ix_booking_sessions_owner_status', 'booking_sessions', ['owner_user_id', 'status'], unique=False)
+    op.create_index('ix_booking_sessions_trip_status', 'booking_sessions', ['scheduled_trip_id', 'status'], unique=False)
     op.create_table('rfid_recharges',
     sa.Column('account_id', sa.String(length=36), nullable=False),
     sa.Column('card_id', sa.String(length=36), nullable=False),
@@ -461,8 +519,8 @@ def upgrade() -> None:
     sa.Column('pickup_sequence_no', sa.Integer(), nullable=False),
     sa.Column('board_rfid_scan_event_id', sa.String(length=36), nullable=True),
     sa.Column('boarded_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('board_lat', sa.Numeric(precision=9, scale=6), nullable=False),
-    sa.Column('board_lng', sa.Numeric(precision=9, scale=6), nullable=False),
+    sa.Column('board_lat', sa.Numeric(precision=9, scale=6), nullable=True),
+    sa.Column('board_lng', sa.Numeric(precision=9, scale=6), nullable=True),
     sa.Column('dropoff_stop_id', sa.String(length=36), nullable=True),
     sa.Column('dropoff_sequence_no', sa.Integer(), nullable=True),
     sa.Column('drop_rfid_scan_event_id', sa.String(length=36), nullable=True),
@@ -485,8 +543,8 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('board_lat >= -90 AND board_lat <= 90', name='ck_rfid_trip_rides_board_lat_range'),
-    sa.CheckConstraint('board_lng >= -180 AND board_lng <= 180', name='ck_rfid_trip_rides_board_lng_range'),
+    sa.CheckConstraint('board_lat IS NULL OR (board_lat >= -90 AND board_lat <= 90)', name='ck_rfid_trip_rides_board_lat_range'),
+    sa.CheckConstraint('board_lng IS NULL OR (board_lng >= -180 AND board_lng <= 180)', name='ck_rfid_trip_rides_board_lng_range'),
     sa.CheckConstraint('commission_amount >= 0', name='ck_rfid_trip_rides_commission_amount_nonnegative'),
     sa.CheckConstraint('commission_percent_snapshot >= 0', name='ck_rfid_trip_rides_commission_percent_nonnegative'),
     sa.CheckConstraint('driver_payout_amount >= 0', name='ck_rfid_trip_rides_driver_payout_nonnegative'),
@@ -519,54 +577,6 @@ def upgrade() -> None:
     op.create_index('ix_rfid_trip_rides_transfer_status', 'rfid_trip_rides', ['transfer_status'], unique=False)
     op.create_index('ix_rfid_trip_rides_trip_status', 'rfid_trip_rides', ['scheduled_trip_id', 'status'], unique=False)
     op.create_index('ix_rfid_trip_rides_vehicle_status', 'rfid_trip_rides', ['vehicle_id', 'status'], unique=False)
-    op.create_table('trip_bookings',
-    sa.Column('passenger_user_id', sa.String(length=36), nullable=False),
-    sa.Column('otp', sa.String(length=10), nullable=True),
-    sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
-    sa.Column('route_id', sa.String(length=36), nullable=False),
-    sa.Column('pickup_stop_id', sa.String(length=36), nullable=False),
-    sa.Column('dropoff_stop_id', sa.String(length=36), nullable=False),
-    sa.Column('booking_status', sa.Enum('pending_payment', 'booked', 'boarded', 'completed', 'cancelled', 'missed', name='booking_status', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('fare_amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('pickup_sequence_no_snapshot', sa.Integer(), nullable=False),
-    sa.Column('dropoff_sequence_no_snapshot', sa.Integer(), nullable=False),
-    sa.Column('payment_hold_expires_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('commission_percent_snapshot', sa.Numeric(precision=5, scale=2), nullable=False),
-    sa.Column('commission_amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('driver_payout_amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('transfer_status', sa.Enum('not_ready', 'ready', 'transferred', 'withheld', 'reversed', 'failed', name='transfer_status', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('transfer_ready_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('transfer_processed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('withheld_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('boarded_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('refund_retry_after', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('refund_attempt_count', sa.Integer(), nullable=True),
-    sa.Column('boarded_near_stop_id', sa.String(length=36), nullable=True),
-    sa.Column('completed_near_stop_id', sa.String(length=36), nullable=True),
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('commission_amount >= 0', name='ck_trip_bookings_commission_amount_nonnegative'),
-    sa.CheckConstraint('commission_percent_snapshot >= 0 AND commission_percent_snapshot <= 100', name='ck_trip_bookings_commission_percent_range'),
-    sa.CheckConstraint('driver_payout_amount >= 0', name='ck_trip_bookings_driver_payout_nonnegative'),
-    sa.CheckConstraint('dropoff_sequence_no_snapshot > pickup_sequence_no_snapshot', name='ck_trip_bookings_dropoff_after_pickup'),
-    sa.CheckConstraint('fare_amount >= 0', name='ck_trip_bookings_fare_nonnegative'),
-    sa.CheckConstraint('pickup_sequence_no_snapshot > 0', name='ck_trip_bookings_pickup_sequence_positive'),
-    sa.CheckConstraint('pickup_stop_id <> dropoff_stop_id', name='ck_trip_bookings_pickup_dropoff_different'),
-    sa.ForeignKeyConstraint(['boarded_near_stop_id'], ['stops.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['completed_near_stop_id'], ['stops.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['dropoff_stop_id'], ['stops.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['passenger_user_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['pickup_stop_id'], ['stops.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['route_id'], ['routes.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index('ix_trip_bookings_status_refund_retry_after', 'trip_bookings', ['booking_status', 'refund_retry_after'], unique=False)
-    op.create_index('ix_trip_bookings_trip_status', 'trip_bookings', ['scheduled_trip_id', 'booking_status'], unique=False)
-    op.create_index('uq_trip_bookings_passenger_trip_active', 'trip_bookings', ['passenger_user_id', 'scheduled_trip_id'], unique=True, postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.create_table('trip_events',
     sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
     sa.Column('stop_id', sa.String(length=36), nullable=False),
@@ -581,68 +591,35 @@ def upgrade() -> None:
     sa.UniqueConstraint('scheduled_trip_id', 'stop_id', name='uq_trip_events_trip_stop')
     )
     op.create_index('ix_trip_events_trip_stop', 'trip_events', ['scheduled_trip_id', 'stop_id'], unique=False)
-    op.create_table('booking_payments',
-    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    op.create_table('booking_session_payments',
+    sa.Column('booking_session_id', sa.String(length=36), nullable=False),
     sa.Column('razorpay_order_id', sa.String(length=64), nullable=False),
     sa.Column('razorpay_payment_id', sa.String(length=64), nullable=True),
     sa.Column('razorpay_signature', sa.String(length=255), nullable=True),
+    sa.Column('razorpay_refund_id', sa.String(length=64), nullable=True),
+    sa.Column('refund_requested_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('refund_processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('refund_retry_after', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('refund_attempt_count', sa.Integer(), nullable=True),
+    sa.Column('refund_failure_reason', sa.Text(), nullable=True),
     sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('status', sa.Enum('created', 'paid', 'failed', 'refunded', name='booking_payment_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('refunded_amount', sa.Numeric(precision=10, scale=2), server_default=sa.text('0.00'), nullable=False),
+    sa.Column('status', sa.Enum('created', 'paid', 'failed', 'refunded', name='booking_session_payment_status', native_enum=False, create_constraint=True), server_default=sa.text("'created'"), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('amount > 0', name='ck_booking_payments_amount_positive'),
-    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
+    sa.CheckConstraint('amount > 0', name='ck_booking_session_payments_amount_positive'),
+    sa.CheckConstraint('refund_attempt_count IS NULL OR refund_attempt_count >= 0', name='ck_booking_session_payments_refund_attempt_nonnegative'),
+    sa.CheckConstraint('refunded_amount <= amount', name='ck_booking_session_payments_refunded_not_above_amount'),
+    sa.CheckConstraint('refunded_amount >= 0', name='ck_booking_session_payments_refunded_amount_nonnegative'),
+    sa.ForeignKeyConstraint(['booking_session_id'], ['booking_sessions.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('razorpay_order_id'),
     sa.UniqueConstraint('razorpay_payment_id')
     )
-    op.create_index('ix_booking_payments_booking_status', 'booking_payments', ['booking_id', 'status'], unique=False)
-    op.create_table('booking_ratings',
-    sa.Column('booking_id', sa.String(length=36), nullable=False),
-    sa.Column('passenger_user_id', sa.String(length=36), nullable=False),
-    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
-    sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
-    sa.Column('trip_rating', sa.Integer(), nullable=False),
-    sa.Column('driver_rating', sa.Integer(), nullable=False),
-    sa.Column('review_text', sa.Text(), nullable=True),
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('driver_rating >= 1 AND driver_rating <= 5', name='ck_booking_ratings_driver_range'),
-    sa.CheckConstraint('trip_rating >= 1 AND trip_rating <= 5', name='ck_booking_ratings_trip_range'),
-    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['driver_user_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['passenger_user_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('booking_id')
-    )
-    op.create_table('payout_adjustments',
-    sa.Column('origin_booking_id', sa.String(length=36), nullable=False),
-    sa.Column('adjustment_type', sa.Enum('fine', 'deduction', name='payout_adjustment_type', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('reason_code', sa.String(length=64), nullable=True),
-    sa.Column('reason_text', sa.Text(), nullable=False),
-    sa.Column('admin_note', sa.Text(), nullable=True),
-    sa.Column('decision_status', sa.Enum('pending', 'included', 'excluded', name='payout_adjustment_decision', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('created_by_admin_id', sa.String(length=36), nullable=False),
-    sa.Column('decided_by_admin_id', sa.String(length=36), nullable=True),
-    sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('id', sa.String(length=36), nullable=False),
-    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("((decision_status = 'pending' AND decided_by_admin_id IS NULL AND decided_at IS NULL) OR (decision_status IN ('included', 'excluded') AND decided_by_admin_id IS NOT NULL AND decided_at IS NOT NULL))", name='ck_payout_adjustments_decision_consistent'),
-    sa.CheckConstraint("reason_text <> ''", name='ck_payout_adjustments_reason_text_nonempty'),
-    sa.CheckConstraint('amount > 0', name='ck_payout_adjustments_amount_positive'),
-    sa.ForeignKeyConstraint(['created_by_admin_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['decided_by_admin_id'], ['users.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['origin_booking_id'], ['trip_bookings.id'], ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id')
-    )
-    op.create_index('ix_payout_adjustments_created_by_admin', 'payout_adjustments', ['created_by_admin_id'], unique=False)
-    op.create_index('ix_payout_adjustments_decided_by_admin', 'payout_adjustments', ['decided_by_admin_id'], unique=False)
-    op.create_index('ix_payout_adjustments_origin_booking_decision', 'payout_adjustments', ['origin_booking_id', 'decision_status'], unique=False)
+    op.create_index('ix_booking_session_payments_razorpay_refund', 'booking_session_payments', ['razorpay_refund_id'], unique=False)
+    op.create_index('ix_booking_session_payments_refund_retry', 'booking_session_payments', ['status', 'refund_retry_after'], unique=False)
+    op.create_index('ix_booking_session_payments_session_status', 'booking_session_payments', ['booking_session_id', 'status'], unique=False)
     op.create_table('rfid_funding_lots',
     sa.Column('recharge_id', sa.String(length=36), nullable=False),
     sa.Column('account_id', sa.String(length=36), nullable=False),
@@ -758,50 +735,163 @@ def upgrade() -> None:
     op.create_index('ix_rfid_scan_events_scan_type_created', 'rfid_scan_events', ['scan_type', 'created_at'], unique=False)
     op.create_index('ix_rfid_scan_events_trip_created', 'rfid_scan_events', ['scheduled_trip_id', 'created_at'], unique=False)
     op.create_index('ix_rfid_scan_events_vehicle_created', 'rfid_scan_events', ['vehicle_id', 'created_at'], unique=False)
-    op.create_table('trip_scan_events',
+    op.create_table('trip_bookings',
+    sa.Column('passenger_user_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_session_id', sa.String(length=36), nullable=True),
+    sa.Column('booked_by_user_id', sa.String(length=36), nullable=True),
+    sa.Column('traveller_profile_id', sa.String(length=36), nullable=True),
+    sa.Column('traveller_name_snapshot', sa.String(length=120), nullable=True),
+    sa.Column('traveller_phone_snapshot', sa.String(length=20), nullable=True),
+    sa.Column('traveller_email_snapshot', sa.String(length=255), nullable=True),
+    sa.Column('traveller_relationship_label_snapshot', sa.String(length=80), nullable=True),
+    sa.Column('otp', sa.String(length=10), nullable=True),
     sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
-    sa.Column('booking_id', sa.String(length=36), nullable=False),
-    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
-    sa.Column('scan_type', sa.Enum('board', 'drop', name='scan_type', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('scan_lat', sa.Numeric(precision=9, scale=6), nullable=False),
-    sa.Column('scan_lng', sa.Numeric(precision=9, scale=6), nullable=False),
-    sa.Column('matched_stop_id', sa.String(length=36), nullable=True),
-    sa.Column('within_radius', sa.Boolean(), nullable=False),
-    sa.Column('qr_payload_user_id', sa.String(length=36), nullable=False),
+    sa.Column('route_id', sa.String(length=36), nullable=False),
+    sa.Column('pickup_stop_id', sa.String(length=36), nullable=False),
+    sa.Column('dropoff_stop_id', sa.String(length=36), nullable=False),
+    sa.Column('seat_number', sa.Integer(), nullable=False),
+    sa.Column('booking_status', sa.Enum('pending_payment', 'booked', 'boarded', 'completed', 'cancelled', 'missed', name='booking_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('fare_amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('pickup_sequence_no_snapshot', sa.Integer(), nullable=False),
+    sa.Column('dropoff_sequence_no_snapshot', sa.Integer(), nullable=False),
+    sa.Column('payment_hold_expires_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('commission_percent_snapshot', sa.Numeric(precision=5, scale=2), nullable=False),
+    sa.Column('commission_amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('driver_payout_amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('transfer_status', sa.Enum('not_ready', 'ready', 'transferred', 'withheld', 'reversed', 'failed', name='transfer_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('transfer_ready_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('transfer_processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('withheld_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('boarded_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('completed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('cancelled_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('refund_retry_after', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('refund_attempt_count', sa.Integer(), nullable=True),
+    sa.Column('boarded_near_stop_id', sa.String(length=36), nullable=True),
+    sa.Column('completed_near_stop_id', sa.String(length=36), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('scan_lat >= -90 AND scan_lat <= 90', name='ck_trip_scan_events_lat_range'),
-    sa.CheckConstraint('scan_lng >= -180 AND scan_lng <= 180', name='ck_trip_scan_events_lng_range'),
-    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
-    sa.ForeignKeyConstraint(['driver_user_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['matched_stop_id'], ['stops.id'], ondelete='SET NULL'),
-    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='CASCADE'),
+    sa.CheckConstraint('commission_amount >= 0', name='ck_trip_bookings_commission_amount_nonnegative'),
+    sa.CheckConstraint('commission_percent_snapshot >= 0 AND commission_percent_snapshot <= 100', name='ck_trip_bookings_commission_percent_range'),
+    sa.CheckConstraint('driver_payout_amount >= 0', name='ck_trip_bookings_driver_payout_nonnegative'),
+    sa.CheckConstraint('dropoff_sequence_no_snapshot > pickup_sequence_no_snapshot', name='ck_trip_bookings_dropoff_after_pickup'),
+    sa.CheckConstraint('fare_amount >= 0', name='ck_trip_bookings_fare_nonnegative'),
+    sa.CheckConstraint('pickup_sequence_no_snapshot > 0', name='ck_trip_bookings_pickup_sequence_positive'),
+    sa.CheckConstraint('pickup_stop_id <> dropoff_stop_id', name='ck_trip_bookings_pickup_dropoff_different'),
+    sa.CheckConstraint('seat_number > 0', name='ck_trip_bookings_seat_number_positive'),
+    sa.ForeignKeyConstraint(['boarded_near_stop_id'], ['stops.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['booked_by_user_id'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['booking_session_id'], ['booking_sessions.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['completed_near_stop_id'], ['stops.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['dropoff_stop_id'], ['stops.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['passenger_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['pickup_stop_id'], ['stops.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['route_id'], ['routes.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['traveller_profile_id'], ['passenger_traveller_profiles.id'], ondelete='SET NULL'),
     sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('ix_trip_scan_events_trip_booking', 'trip_scan_events', ['scheduled_trip_id', 'booking_id'], unique=False)
-    op.create_table('booking_transfers',
+    op.create_index('ix_trip_bookings_booked_by_user', 'trip_bookings', ['booked_by_user_id'], unique=False)
+    op.create_index('ix_trip_bookings_booking_session', 'trip_bookings', ['booking_session_id'], unique=False)
+    op.create_index('ix_trip_bookings_status_refund_retry_after', 'trip_bookings', ['booking_status', 'refund_retry_after'], unique=False)
+    op.create_index('ix_trip_bookings_traveller_profile', 'trip_bookings', ['traveller_profile_id'], unique=False)
+    op.create_index('ix_trip_bookings_trip_seat_status', 'trip_bookings', ['scheduled_trip_id', 'seat_number', 'booking_status'], unique=False)
+    op.create_index('ix_trip_bookings_trip_status', 'trip_bookings', ['scheduled_trip_id', 'booking_status'], unique=False)
+    op.create_index('uq_trip_bookings_passenger_trip_active', 'trip_bookings', ['passenger_user_id', 'scheduled_trip_id'], unique=True, postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
+    op.create_table('booking_payments',
     sa.Column('booking_id', sa.String(length=36), nullable=False),
-    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
-    sa.Column('source_booking_payment_id', sa.String(length=36), nullable=False),
-    sa.Column('linked_account_id', sa.String(length=64), nullable=False),
-    sa.Column('razorpay_transfer_id', sa.String(length=64), nullable=True),
+    sa.Column('razorpay_order_id', sa.String(length=64), nullable=False),
+    sa.Column('razorpay_payment_id', sa.String(length=64), nullable=True),
+    sa.Column('razorpay_signature', sa.String(length=255), nullable=True),
     sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('status', sa.Enum('created', 'processed', 'failed', 'reversed', name='booking_transfer_status', native_enum=False, create_constraint=True), nullable=False),
-    sa.Column('failure_reason', sa.Text(), nullable=True),
-    sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('reversed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('status', sa.Enum('created', 'paid', 'failed', 'refunded', name='booking_payment_status', native_enum=False, create_constraint=True), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('amount >= 0', name='ck_booking_transfers_amount_nonnegative'),
+    sa.CheckConstraint('amount > 0', name='ck_booking_payments_amount_positive'),
+    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('razorpay_order_id'),
+    sa.UniqueConstraint('razorpay_payment_id')
+    )
+    op.create_index('ix_booking_payments_booking_status', 'booking_payments', ['booking_id', 'status'], unique=False)
+    op.create_table('booking_ratings',
+    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    sa.Column('passenger_user_id', sa.String(length=36), nullable=False),
+    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
+    sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
+    sa.Column('trip_rating', sa.Integer(), nullable=False),
+    sa.Column('driver_rating', sa.Integer(), nullable=False),
+    sa.Column('review_text', sa.Text(), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('driver_rating >= 1 AND driver_rating <= 5', name='ck_booking_ratings_driver_range'),
+    sa.CheckConstraint('trip_rating >= 1 AND trip_rating <= 5', name='ck_booking_ratings_trip_range'),
     sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
     sa.ForeignKeyConstraint(['driver_user_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['source_booking_payment_id'], ['booking_payments.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['passenger_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='RESTRICT'),
     sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('booking_id'),
-    sa.UniqueConstraint('razorpay_transfer_id')
+    sa.UniqueConstraint('booking_id')
     )
+    op.create_table('booking_seat_refund_requests',
+    sa.Column('booking_session_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_session_payment_id', sa.String(length=36), nullable=False),
+    sa.Column('owner_user_id', sa.String(length=36), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('status', sa.Enum('pending', 'processing', 'succeeded', 'failed', 'skipped', name='booking_seat_refund_request_status', native_enum=False, create_constraint=True), server_default=sa.text("'pending'"), nullable=False),
+    sa.Column('razorpay_refund_id', sa.String(length=64), nullable=True),
+    sa.Column('provider_response_json', sa.Text(), nullable=True),
+    sa.Column('failure_reason', sa.Text(), nullable=True),
+    sa.Column('attempt_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('retry_after', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('requested_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('amount > 0', name='ck_booking_seat_refund_requests_amount_positive'),
+    sa.CheckConstraint('attempt_count >= 0', name='ck_booking_seat_refund_requests_attempt_nonnegative'),
+    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['booking_session_id'], ['booking_sessions.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['booking_session_payment_id'], ['booking_session_payments.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_booking_seat_refund_requests_booking', 'booking_seat_refund_requests', ['booking_id'], unique=False)
+    op.create_index('ix_booking_seat_refund_requests_owner', 'booking_seat_refund_requests', ['owner_user_id'], unique=False)
+    op.create_index('ix_booking_seat_refund_requests_payment', 'booking_seat_refund_requests', ['booking_session_payment_id'], unique=False)
+    op.create_index('ix_booking_seat_refund_requests_razorpay_refund', 'booking_seat_refund_requests', ['razorpay_refund_id'], unique=False)
+    op.create_index('ix_booking_seat_refund_requests_session', 'booking_seat_refund_requests', ['booking_session_id'], unique=False)
+    op.create_index('ix_booking_seat_refund_requests_status_retry', 'booking_seat_refund_requests', ['status', 'retry_after'], unique=False)
+    op.create_table('payout_adjustments',
+    sa.Column('origin_booking_id', sa.String(length=36), nullable=False),
+    sa.Column('adjustment_type', sa.Enum('fine', 'deduction', name='payout_adjustment_type', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('reason_code', sa.String(length=64), nullable=True),
+    sa.Column('reason_text', sa.Text(), nullable=False),
+    sa.Column('admin_note', sa.Text(), nullable=True),
+    sa.Column('decision_status', sa.Enum('pending', 'included', 'excluded', name='payout_adjustment_decision', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('created_by_admin_id', sa.String(length=36), nullable=False),
+    sa.Column('decided_by_admin_id', sa.String(length=36), nullable=True),
+    sa.Column('decided_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint("((decision_status = 'pending' AND decided_by_admin_id IS NULL AND decided_at IS NULL) OR (decision_status IN ('included', 'excluded') AND decided_by_admin_id IS NOT NULL AND decided_at IS NOT NULL))", name='ck_payout_adjustments_decision_consistent'),
+    sa.CheckConstraint("reason_text <> ''", name='ck_payout_adjustments_reason_text_nonempty'),
+    sa.CheckConstraint('amount > 0', name='ck_payout_adjustments_amount_positive'),
+    sa.ForeignKeyConstraint(['created_by_admin_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['decided_by_admin_id'], ['users.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['origin_booking_id'], ['trip_bookings.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_payout_adjustments_created_by_admin', 'payout_adjustments', ['created_by_admin_id'], unique=False)
+    op.create_index('ix_payout_adjustments_decided_by_admin', 'payout_adjustments', ['decided_by_admin_id'], unique=False)
+    op.create_index('ix_payout_adjustments_origin_booking_decision', 'payout_adjustments', ['origin_booking_id', 'decision_status'], unique=False)
     op.create_table('rfid_recharge_funding_allocations',
     sa.Column('funding_lot_id', sa.String(length=36), nullable=False),
     sa.Column('recharge_id', sa.String(length=36), nullable=False),
@@ -857,28 +947,89 @@ def upgrade() -> None:
     op.create_index('ix_rfid_ride_funding_allocations_razorpay_payment', 'rfid_ride_funding_allocations', ['razorpay_payment_id'], unique=False)
     op.create_index('ix_rfid_ride_funding_allocations_recharge', 'rfid_ride_funding_allocations', ['recharge_id'], unique=False)
     op.create_index('ix_rfid_ride_funding_allocations_ride', 'rfid_ride_funding_allocations', ['rfid_ride_id'], unique=False)
-    op.create_table('payout_adjustment_applications',
-    sa.Column('payout_adjustment_id', sa.String(length=36), nullable=False),
-    sa.Column('applied_on_booking_id', sa.String(length=36), nullable=False),
-    sa.Column('booking_transfer_id', sa.String(length=36), nullable=True),
-    sa.Column('applied_by_admin_id', sa.String(length=36), nullable=False),
-    sa.Column('applied_amount', sa.Numeric(precision=10, scale=2), nullable=False),
-    sa.Column('applied_at', sa.DateTime(timezone=True), nullable=False),
+    op.create_table('traveller_contact_notifications',
+    sa.Column('booking_session_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    sa.Column('owner_user_id', sa.String(length=36), nullable=False),
+    sa.Column('traveller_profile_id', sa.String(length=36), nullable=True),
+    sa.Column('traveller_name_snapshot', sa.String(length=120), nullable=True),
+    sa.Column('traveller_phone_snapshot', sa.String(length=20), nullable=True),
+    sa.Column('traveller_email_snapshot', sa.String(length=255), nullable=True),
+    sa.Column('channel', sa.String(length=20), nullable=False),
+    sa.Column('event_type', sa.String(length=80), nullable=False),
+    sa.Column('title', sa.String(length=255), nullable=False),
+    sa.Column('message', sa.Text(), nullable=False),
+    sa.Column('payload_json', sa.Text(), nullable=True),
+    sa.Column('status', sa.Enum('pending', 'sent', 'failed', 'skipped', name='traveller_contact_notification_status', native_enum=False, create_constraint=True), server_default=sa.text("'pending'"), nullable=False),
+    sa.Column('provider_message_id', sa.String(length=120), nullable=True),
+    sa.Column('delivered_channel', sa.String(length=20), nullable=True),
+    sa.Column('failure_reason', sa.Text(), nullable=True),
+    sa.Column('delivery_attempt_count', sa.Integer(), server_default=sa.text('0'), nullable=False),
+    sa.Column('delivery_retry_after', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('sent_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('applied_amount > 0', name='ck_payout_adjustment_applications_amount_positive'),
-    sa.ForeignKeyConstraint(['applied_by_admin_id'], ['users.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['applied_on_booking_id'], ['trip_bookings.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['booking_transfer_id'], ['booking_transfers.id'], ondelete='RESTRICT'),
-    sa.ForeignKeyConstraint(['payout_adjustment_id'], ['payout_adjustments.id'], ondelete='RESTRICT'),
-    sa.PrimaryKeyConstraint('id'),
-    sa.UniqueConstraint('payout_adjustment_id', 'applied_on_booking_id', name='uq_payout_adjustment_application_once_per_booking')
+    sa.CheckConstraint("channel <> ''", name='ck_traveller_contact_notifications_channel_nonempty'),
+    sa.CheckConstraint("event_type <> ''", name='ck_traveller_contact_notifications_event_type_nonempty'),
+    sa.CheckConstraint("message <> ''", name='ck_traveller_contact_notifications_message_nonempty'),
+    sa.CheckConstraint("title <> ''", name='ck_traveller_contact_notifications_title_nonempty'),
+    sa.CheckConstraint('delivery_attempt_count >= 0', name='ck_traveller_contact_notifications_attempt_nonnegative'),
+    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['booking_session_id'], ['booking_sessions.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['owner_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['traveller_profile_id'], ['passenger_traveller_profiles.id'], ondelete='SET NULL'),
+    sa.PrimaryKeyConstraint('id')
     )
-    op.create_index('ix_payout_adjustment_applications_adjustment', 'payout_adjustment_applications', ['payout_adjustment_id'], unique=False)
-    op.create_index('ix_payout_adjustment_applications_applied_booking', 'payout_adjustment_applications', ['applied_on_booking_id'], unique=False)
-    op.create_index('ix_payout_adjustment_applications_applied_by_admin', 'payout_adjustment_applications', ['applied_by_admin_id'], unique=False)
-    op.create_index('ix_payout_adjustment_applications_transfer', 'payout_adjustment_applications', ['booking_transfer_id'], unique=False)
+    op.create_index('ix_traveller_contact_notifications_booking', 'traveller_contact_notifications', ['booking_id'], unique=False)
+    op.create_index('ix_traveller_contact_notifications_booking_session', 'traveller_contact_notifications', ['booking_session_id'], unique=False)
+    op.create_index('ix_traveller_contact_notifications_owner', 'traveller_contact_notifications', ['owner_user_id'], unique=False)
+    op.create_index('ix_traveller_contact_notifications_retry', 'traveller_contact_notifications', ['status', 'delivery_retry_after'], unique=False)
+    op.create_index('ix_traveller_contact_notifications_status_created', 'traveller_contact_notifications', ['status', 'created_at'], unique=False)
+    op.create_table('trip_scan_events',
+    sa.Column('scheduled_trip_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
+    sa.Column('scan_type', sa.Enum('board', 'drop', name='scan_type', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('scan_lat', sa.Numeric(precision=9, scale=6), nullable=False),
+    sa.Column('scan_lng', sa.Numeric(precision=9, scale=6), nullable=False),
+    sa.Column('matched_stop_id', sa.String(length=36), nullable=True),
+    sa.Column('within_radius', sa.Boolean(), nullable=False),
+    sa.Column('qr_payload_user_id', sa.String(length=36), nullable=False),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('scan_lat >= -90 AND scan_lat <= 90', name='ck_trip_scan_events_lat_range'),
+    sa.CheckConstraint('scan_lng >= -180 AND scan_lng <= 180', name='ck_trip_scan_events_lng_range'),
+    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['driver_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['matched_stop_id'], ['stops.id'], ondelete='SET NULL'),
+    sa.ForeignKeyConstraint(['scheduled_trip_id'], ['scheduled_trips.id'], ondelete='CASCADE'),
+    sa.PrimaryKeyConstraint('id')
+    )
+    op.create_index('ix_trip_scan_events_trip_booking', 'trip_scan_events', ['scheduled_trip_id', 'booking_id'], unique=False)
+    op.create_table('booking_transfers',
+    sa.Column('booking_id', sa.String(length=36), nullable=False),
+    sa.Column('driver_user_id', sa.String(length=36), nullable=False),
+    sa.Column('source_booking_payment_id', sa.String(length=36), nullable=False),
+    sa.Column('linked_account_id', sa.String(length=64), nullable=False),
+    sa.Column('razorpay_transfer_id', sa.String(length=64), nullable=True),
+    sa.Column('amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('status', sa.Enum('created', 'processed', 'failed', 'reversed', name='booking_transfer_status', native_enum=False, create_constraint=True), nullable=False),
+    sa.Column('failure_reason', sa.Text(), nullable=True),
+    sa.Column('processed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('reversed_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('amount >= 0', name='ck_booking_transfers_amount_nonnegative'),
+    sa.ForeignKeyConstraint(['booking_id'], ['trip_bookings.id'], ondelete='CASCADE'),
+    sa.ForeignKeyConstraint(['driver_user_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['source_booking_payment_id'], ['booking_payments.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('booking_id'),
+    sa.UniqueConstraint('razorpay_transfer_id')
+    )
     op.create_table('rfid_payout_transfers',
     sa.Column('rfid_ride_id', sa.String(length=36), nullable=False),
     sa.Column('driver_user_id', sa.String(length=36), nullable=False),
@@ -920,6 +1071,28 @@ def upgrade() -> None:
     op.create_index('ix_rfid_payout_transfers_source_recharge', 'rfid_payout_transfers', ['source_recharge_id'], unique=False)
     op.create_index('ix_rfid_payout_transfers_status_created', 'rfid_payout_transfers', ['status', 'created_at'], unique=False)
     op.create_index('ix_rfid_payout_transfers_trip_status', 'rfid_payout_transfers', ['scheduled_trip_id', 'status'], unique=False)
+    op.create_table('payout_adjustment_applications',
+    sa.Column('payout_adjustment_id', sa.String(length=36), nullable=False),
+    sa.Column('applied_on_booking_id', sa.String(length=36), nullable=False),
+    sa.Column('booking_transfer_id', sa.String(length=36), nullable=True),
+    sa.Column('applied_by_admin_id', sa.String(length=36), nullable=False),
+    sa.Column('applied_amount', sa.Numeric(precision=10, scale=2), nullable=False),
+    sa.Column('applied_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('id', sa.String(length=36), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
+    sa.CheckConstraint('applied_amount > 0', name='ck_payout_adjustment_applications_amount_positive'),
+    sa.ForeignKeyConstraint(['applied_by_admin_id'], ['users.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['applied_on_booking_id'], ['trip_bookings.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['booking_transfer_id'], ['booking_transfers.id'], ondelete='RESTRICT'),
+    sa.ForeignKeyConstraint(['payout_adjustment_id'], ['payout_adjustments.id'], ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id'),
+    sa.UniqueConstraint('payout_adjustment_id', 'applied_on_booking_id', name='uq_payout_adjustment_application_once_per_booking')
+    )
+    op.create_index('ix_payout_adjustment_applications_adjustment', 'payout_adjustment_applications', ['payout_adjustment_id'], unique=False)
+    op.create_index('ix_payout_adjustment_applications_applied_booking', 'payout_adjustment_applications', ['applied_on_booking_id'], unique=False)
+    op.create_index('ix_payout_adjustment_applications_applied_by_admin', 'payout_adjustment_applications', ['applied_by_admin_id'], unique=False)
+    op.create_index('ix_payout_adjustment_applications_transfer', 'payout_adjustment_applications', ['booking_transfer_id'], unique=False)
     op.create_table('rfid_payout_transfer_reversals',
     sa.Column('rfid_payout_transfer_id', sa.String(length=36), nullable=False),
     sa.Column('rfid_ride_id', sa.String(length=36), nullable=False),
@@ -964,6 +1137,11 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_payout_transfer_reversals_ride', table_name='rfid_payout_transfer_reversals')
     op.drop_index('ix_rfid_payout_transfer_reversals_razorpay', table_name='rfid_payout_transfer_reversals')
     op.drop_table('rfid_payout_transfer_reversals')
+    op.drop_index('ix_payout_adjustment_applications_transfer', table_name='payout_adjustment_applications')
+    op.drop_index('ix_payout_adjustment_applications_applied_by_admin', table_name='payout_adjustment_applications')
+    op.drop_index('ix_payout_adjustment_applications_applied_booking', table_name='payout_adjustment_applications')
+    op.drop_index('ix_payout_adjustment_applications_adjustment', table_name='payout_adjustment_applications')
+    op.drop_table('payout_adjustment_applications')
     op.drop_index('ix_rfid_payout_transfers_trip_status', table_name='rfid_payout_transfers')
     op.drop_index('ix_rfid_payout_transfers_status_created', table_name='rfid_payout_transfers')
     op.drop_index('ix_rfid_payout_transfers_source_recharge', table_name='rfid_payout_transfers')
@@ -973,11 +1151,15 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_payout_transfers_razorpay_transfer', table_name='rfid_payout_transfers')
     op.drop_index('ix_rfid_payout_transfers_driver_status', table_name='rfid_payout_transfers')
     op.drop_table('rfid_payout_transfers')
-    op.drop_index('ix_payout_adjustment_applications_transfer', table_name='payout_adjustment_applications')
-    op.drop_index('ix_payout_adjustment_applications_applied_by_admin', table_name='payout_adjustment_applications')
-    op.drop_index('ix_payout_adjustment_applications_applied_booking', table_name='payout_adjustment_applications')
-    op.drop_index('ix_payout_adjustment_applications_adjustment', table_name='payout_adjustment_applications')
-    op.drop_table('payout_adjustment_applications')
+    op.drop_table('booking_transfers')
+    op.drop_index('ix_trip_scan_events_trip_booking', table_name='trip_scan_events')
+    op.drop_table('trip_scan_events')
+    op.drop_index('ix_traveller_contact_notifications_status_created', table_name='traveller_contact_notifications')
+    op.drop_index('ix_traveller_contact_notifications_retry', table_name='traveller_contact_notifications')
+    op.drop_index('ix_traveller_contact_notifications_owner', table_name='traveller_contact_notifications')
+    op.drop_index('ix_traveller_contact_notifications_booking_session', table_name='traveller_contact_notifications')
+    op.drop_index('ix_traveller_contact_notifications_booking', table_name='traveller_contact_notifications')
+    op.drop_table('traveller_contact_notifications')
     op.drop_index('ix_rfid_ride_funding_allocations_ride', table_name='rfid_ride_funding_allocations')
     op.drop_index('ix_rfid_ride_funding_allocations_recharge', table_name='rfid_ride_funding_allocations')
     op.drop_index('ix_rfid_ride_funding_allocations_razorpay_payment', table_name='rfid_ride_funding_allocations')
@@ -989,9 +1171,28 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_funding_allocations_lot', table_name='rfid_recharge_funding_allocations')
     op.drop_index('ix_rfid_funding_allocations_driver_trip', table_name='rfid_recharge_funding_allocations')
     op.drop_table('rfid_recharge_funding_allocations')
-    op.drop_table('booking_transfers')
-    op.drop_index('ix_trip_scan_events_trip_booking', table_name='trip_scan_events')
-    op.drop_table('trip_scan_events')
+    op.drop_index('ix_payout_adjustments_origin_booking_decision', table_name='payout_adjustments')
+    op.drop_index('ix_payout_adjustments_decided_by_admin', table_name='payout_adjustments')
+    op.drop_index('ix_payout_adjustments_created_by_admin', table_name='payout_adjustments')
+    op.drop_table('payout_adjustments')
+    op.drop_index('ix_booking_seat_refund_requests_status_retry', table_name='booking_seat_refund_requests')
+    op.drop_index('ix_booking_seat_refund_requests_session', table_name='booking_seat_refund_requests')
+    op.drop_index('ix_booking_seat_refund_requests_razorpay_refund', table_name='booking_seat_refund_requests')
+    op.drop_index('ix_booking_seat_refund_requests_payment', table_name='booking_seat_refund_requests')
+    op.drop_index('ix_booking_seat_refund_requests_owner', table_name='booking_seat_refund_requests')
+    op.drop_index('ix_booking_seat_refund_requests_booking', table_name='booking_seat_refund_requests')
+    op.drop_table('booking_seat_refund_requests')
+    op.drop_table('booking_ratings')
+    op.drop_index('ix_booking_payments_booking_status', table_name='booking_payments')
+    op.drop_table('booking_payments')
+    op.drop_index('uq_trip_bookings_passenger_trip_active', table_name='trip_bookings', postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
+    op.drop_index('ix_trip_bookings_trip_status', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_trip_seat_status', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_traveller_profile', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_status_refund_retry_after', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_booking_session', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_booked_by_user', table_name='trip_bookings')
+    op.drop_table('trip_bookings')
     op.drop_index('ix_rfid_scan_events_vehicle_created', table_name='rfid_scan_events')
     op.drop_index('ix_rfid_scan_events_trip_created', table_name='rfid_scan_events')
     op.drop_index('ix_rfid_scan_events_scan_type_created', table_name='rfid_scan_events')
@@ -1011,19 +1212,12 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_funding_lots_card_status', table_name='rfid_funding_lots')
     op.drop_index('ix_rfid_funding_lots_account_status', table_name='rfid_funding_lots')
     op.drop_table('rfid_funding_lots')
-    op.drop_index('ix_payout_adjustments_origin_booking_decision', table_name='payout_adjustments')
-    op.drop_index('ix_payout_adjustments_decided_by_admin', table_name='payout_adjustments')
-    op.drop_index('ix_payout_adjustments_created_by_admin', table_name='payout_adjustments')
-    op.drop_table('payout_adjustments')
-    op.drop_table('booking_ratings')
-    op.drop_index('ix_booking_payments_booking_status', table_name='booking_payments')
-    op.drop_table('booking_payments')
+    op.drop_index('ix_booking_session_payments_session_status', table_name='booking_session_payments')
+    op.drop_index('ix_booking_session_payments_refund_retry', table_name='booking_session_payments')
+    op.drop_index('ix_booking_session_payments_razorpay_refund', table_name='booking_session_payments')
+    op.drop_table('booking_session_payments')
     op.drop_index('ix_trip_events_trip_stop', table_name='trip_events')
     op.drop_table('trip_events')
-    op.drop_index('uq_trip_bookings_passenger_trip_active', table_name='trip_bookings', postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
-    op.drop_index('ix_trip_bookings_trip_status', table_name='trip_bookings')
-    op.drop_index('ix_trip_bookings_status_refund_retry_after', table_name='trip_bookings')
-    op.drop_table('trip_bookings')
     op.drop_index('ix_rfid_trip_rides_vehicle_status', table_name='rfid_trip_rides')
     op.drop_index('ix_rfid_trip_rides_trip_status', table_name='rfid_trip_rides')
     op.drop_index('ix_rfid_trip_rides_transfer_status', table_name='rfid_trip_rides')
@@ -1038,6 +1232,10 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_recharges_card_created', table_name='rfid_recharges')
     op.drop_index('ix_rfid_recharges_account_created', table_name='rfid_recharges')
     op.drop_table('rfid_recharges')
+    op.drop_index('ix_booking_sessions_trip_status', table_name='booking_sessions')
+    op.drop_index('ix_booking_sessions_owner_status', table_name='booking_sessions')
+    op.drop_index('ix_booking_sessions_hold_expiry', table_name='booking_sessions')
+    op.drop_table('booking_sessions')
     op.drop_index('ix_scheduled_trips_vehicle_start', table_name='scheduled_trips')
     op.drop_index('ix_scheduled_trips_route_start', table_name='scheduled_trips')
     op.drop_index('ix_scheduled_trips_driver_start', table_name='scheduled_trips')
@@ -1065,6 +1263,9 @@ def downgrade() -> None:
     op.drop_index('ix_rfid_cards_authorization_status', table_name='rfid_cards')
     op.drop_index('ix_rfid_cards_assigned_passenger', table_name='rfid_cards')
     op.drop_table('rfid_cards')
+    op.drop_index('ix_passenger_traveller_profiles_owner_self', table_name='passenger_traveller_profiles')
+    op.drop_index('ix_passenger_traveller_profiles_owner_active', table_name='passenger_traveller_profiles')
+    op.drop_table('passenger_traveller_profiles')
     op.drop_table('passenger_profiles')
     op.drop_table('driver_profiles')
     op.drop_table('driver_payout_details')
@@ -1072,7 +1273,7 @@ def downgrade() -> None:
     op.drop_table('stops')
     op.drop_table('routes')
     op.drop_table('platform_settings')
-    op.drop_index('ix_otp_requests_email_expires_at', table_name='otp_requests')
+    op.drop_index('ix_otp_requests_email_role_purpose_expires_at', table_name='otp_requests')
     op.drop_table('otp_requests')
     op.drop_index('ix_job_leases_lease_expires_at', table_name='job_leases')
     op.drop_table('job_leases')
