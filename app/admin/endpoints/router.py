@@ -852,11 +852,13 @@ async def get_passenger_details(
 			{
 				"id": profile.id,
 				"full_name": profile.full_name,
-				"phone_number": profile.phone_number,
+				"phone": profile.phone,
 				"email": profile.email,
 				"relationship_label": profile.relationship_label,
-				"is_default": profile.is_default,
+				"is_self": profile.is_self,
+				"is_active": profile.is_active,
 				"created_at": profile.created_at,
+				"updated_at": profile.updated_at,
 			}
 			for profile in p.traveller_profiles
 		],
