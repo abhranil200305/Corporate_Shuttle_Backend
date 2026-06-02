@@ -83,7 +83,10 @@ async def get_current_trip_passengers(
         )
         .options(
             selectinload(TripBooking.passenger)
-            .selectinload(User.passenger_profile)
+            .selectinload(User.passenger_profile),
+
+            selectinload(TripBooking.pickup_stop),
+            selectinload(TripBooking.dropoff_stop),
         )
     )
 
@@ -95,11 +98,12 @@ async def get_current_trip_passengers(
     for booking in bookings:
         profile = (
             booking.passenger.passenger_profile
-            if booking.passenger else None
+            if booking.passenger
+            else None
         )
 
         # ----------------------------------------------------
-        # CORE FIX: use traveller snapshot (DO NOT REMOVE OLD)
+        # CORE FIX: use traveller snapshot
         # ----------------------------------------------------
         traveller_name = booking.traveller_name_snapshot or (
             profile.full_name if profile else None
@@ -107,26 +111,69 @@ async def get_current_trip_passengers(
 
         traveller_phone = booking.traveller_phone_snapshot
         traveller_email = booking.traveller_email_snapshot
-        traveller_relationship = booking.traveller_relationship_label_snapshot
+        traveller_relationship = (
+            booking.traveller_relationship_label_snapshot
+        )
 
-        passengers.append({
-            # ---------------------------
-            # EXISTING FIELDS (KEEP AS IS)
-            # ---------------------------
-            "booking_id": booking.id,
-            "passenger_id": booking.passenger_user_id,
-            "name": profile.full_name if profile else None,
-            "seat_number": booking.seat_number,
-            "status": booking.booking_status,
+        passengers.append(
+            {
+                # ---------------------------
+                # EXISTING FIELDS
+                # ---------------------------
+                "booking_id": booking.id,
+                "passenger_id": booking.passenger_user_id,
+                "name": profile.full_name if profile else None,
+                "seat_number": booking.seat_number,
+                "status": booking.booking_status,
 
-            # ---------------------------
-            # NEW FIELDS (TRAVELLER SNAPSHOT)
-            # ---------------------------
-            "traveller_name": traveller_name,
-            "traveller_phone": traveller_phone,
-            "traveller_email": traveller_email,
-            "traveller_relationship_label": traveller_relationship,
-        })
+                # ---------------------------
+                # TRAVELLER SNAPSHOT
+                # ---------------------------
+                "traveller_name": traveller_name,
+                "traveller_phone": traveller_phone,
+                "traveller_email": traveller_email,
+                "traveller_relationship_label": traveller_relationship,
+
+                # ---------------------------
+                # FARE
+                # ---------------------------
+                "fare_amount": float(booking.fare_amount or 0),
+
+                # ---------------------------
+                # PICKUP STOP
+                # ---------------------------
+                "pickup_stop": {
+                    "id": (
+                        booking.pickup_stop.id
+                        if booking.pickup_stop
+                        else None
+                    ),
+                    "name": (
+                        booking.pickup_stop.name
+                        if booking.pickup_stop
+                        else None
+                    ),
+                    "sequence": booking.pickup_sequence_no_snapshot,
+                },
+
+                # ---------------------------
+                # DROPOFF STOP
+                # ---------------------------
+                "dropoff_stop": {
+                    "id": (
+                        booking.dropoff_stop.id
+                        if booking.dropoff_stop
+                        else None
+                    ),
+                    "name": (
+                        booking.dropoff_stop.name
+                        if booking.dropoff_stop
+                        else None
+                    ),
+                    "sequence": booking.dropoff_sequence_no_snapshot,
+                },
+            }
+        )
 
     # ---------------------------
     # Response
