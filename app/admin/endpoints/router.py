@@ -398,6 +398,8 @@ async def get_all_passengers_info(
 				else "Not Set"
 			},
 			"total_trips_booked": len(p.passenger_bookings),
+			"traveller_profile_count": len(p.traveller_profiles),
+			"booking_session_count": len(p.owned_booking_sessions),
 		}
 		for p in passengers
 	]
@@ -712,7 +714,8 @@ async def get_admin_booking_trip_detail(
 
 @router.get("/passenger/{user_id}")
 async def get_passenger_details(
-	user_id: str, db: AsyncSession = Depends(get_async_session)
+	user_id: str,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	service = AdminService(db)
 	p = await service.fetch_passenger_by_id(user_id)
@@ -725,14 +728,23 @@ async def get_passenger_details(
 			"id": stop.id if stop else None,
 			"name": stop.name if stop else None,
 			"sequence": sequence,
-			"bus_arrived_at": trip_event.arrival_time if trip_event else None,
-			"bus_departed_at": trip_event.departure_time if trip_event else None,
+			"bus_arrived_at": (
+				trip_event.arrival_time
+				if trip_event
+				else None
+			),
+			"bus_departed_at": (
+				trip_event.departure_time
+				if trip_event
+				else None
+			),
 		}
 
 	bookings_data = []
 
 	for booking in p.passenger_bookings:
 		drop_scan = None
+
 		for scan in booking.scan_events:
 			if scan.scan_type == schema.ScanType.DROP:
 				drop_scan = scan
@@ -759,30 +771,60 @@ async def get_passenger_details(
 
 		booking_info = {
 			"booking_id": booking.id,
+			"booking_session_id": booking.booking_session_id,
+
+			"passenger_user_id": booking.passenger_user_id,
+			"booked_by_user_id": booking.booked_by_user_id,
+
+			"traveller_profile_id": booking.traveller_profile_id,
+
+			"traveller_name": booking.traveller_name_snapshot,
+			"traveller_phone": booking.traveller_phone_snapshot,
+			"traveller_email": booking.traveller_email_snapshot,
+			"traveller_relationship_label": (
+				booking.traveller_relationship_label_snapshot
+			),
+
+			"seat_number": booking.seat_number,
+
 			"status": booking.booking_status,
-			"fare": float(booking.fare_amount),
+			"fare": float(booking.fare_amount or 0),
 			"created_at": booking.created_at,
+
 			"pickup_stop": stop_with_bus_timing(
 				stop=booking.pickup_stop,
 				sequence=booking.pickup_sequence_no_snapshot,
 				trip_event=pickup_trip_event,
 			),
+
 			"dropoff_stop": stop_with_bus_timing(
 				stop=booking.dropoff_stop,
 				sequence=booking.dropoff_sequence_no_snapshot,
 				trip_event=dropoff_trip_event,
 			),
+
 			"actual_drop_stop_id": (
 				drop_scan.matched_stop_id
 				if drop_scan
 				else None
 			),
+
 			"actual_drop_stop_name": (
 				drop_scan.matched_stop.name
 				if drop_scan and drop_scan.matched_stop
 				else None
 			),
-			"actual_dropped_at": drop_scan.created_at if drop_scan else None,
+
+			"actual_dropped_at": (
+				drop_scan.created_at
+				if drop_scan
+				else None
+			),
+
+			"boarded_at": booking.boarded_at,
+			"completed_at": booking.completed_at,
+			"cancelled_at": booking.cancelled_at,
+			"updated_at": booking.updated_at,
 		}
 
 		bookings_data.append(booking_info)
@@ -792,6 +834,7 @@ async def get_passenger_details(
 		"email": p.email,
 		"joined_at": p.created_at,
 		"is_active": p.is_active,
+
 		"profile": {
 			"full_name": (
 				p.passenger_profile.full_name
@@ -804,12 +847,39 @@ async def get_passenger_details(
 				else None
 			),
 		},
+
+		"traveller_profiles": [
+			{
+				"id": profile.id,
+				"full_name": profile.full_name,
+				"phone_number": profile.phone_number,
+				"email": profile.email,
+				"relationship_label": profile.relationship_label,
+				"is_default": profile.is_default,
+				"created_at": profile.created_at,
+			}
+			for profile in p.traveller_profiles
+		],
+
+		"booking_sessions_summary": {
+			"total_count": len(p.owned_booking_sessions),
+			"sessions": [
+				{
+					"id": session.id,
+					"status": session.status,
+					"booking_count": len(session.bookings),
+					"payment_count": len(session.payments),
+					"created_at": session.created_at,
+				}
+				for session in p.owned_booking_sessions
+			],
+		},
+
 		"booking_history": {
 			"total_count": len(p.passenger_bookings),
 			"bookings": bookings_data,
 		},
 	}
-
 # -----------------------------
 # Admin: Specific Vehicals Details Using Vehicle_id
 # -----------------------------
@@ -2617,46 +2687,92 @@ async def get_specific_trip_status(
 		raise HTTPException(status_code=404, detail="Trip not found")
 
 	passengers_data = []
+
 	for booking in trip.bookings:
-		# Safely access eagerly loaded relationships
-		# These won't trigger lazy loading now
 		pickup_stop_name = (
-			booking.pickup_stop.name if booking.pickup_stop else None
-		)
-		dropoff_stop_name = (
-			booking.dropoff_stop.name if booking.dropoff_stop else None
+			booking.pickup_stop.name
+			if booking.pickup_stop
+			else None
 		)
 
-		# Find drop scan event from eagerly loaded scan_events
+		dropoff_stop_name = (
+			booking.dropoff_stop.name
+			if booking.dropoff_stop
+			else None
+		)
+
 		drop_scan = None
 
-		# Scan events are already loaded via joinedload
 		for scan in booking.scan_events:
 			if scan.scan_type == schema.ScanType.DROP:
 				drop_scan = scan
-			elif scan.scan_type == schema.ScanType.BOARD:
-				pass
+
+		passenger_name = (
+			booking.traveller_name_snapshot
+			or (
+				booking.passenger.passenger_profile.full_name
+				if booking.passenger
+				and booking.passenger.passenger_profile
+				else None
+			)
+			or "Unknown Passenger"
+		)
 
 		passenger_info = {
-			"passenger_id": booking.passenger.passenger_profile.user_id,
-			"name": booking.passenger.passenger_profile.full_name
-			if booking.passenger and booking.passenger.passenger_profile
-			else "Unknown Passenger",
+			"booking_id": booking.id,
+			"booking_session_id": booking.booking_session_id,
+
+			"passenger_user_id": booking.passenger_user_id,
+			"booked_by_user_id": booking.booked_by_user_id,
+
+			"traveller_profile_id": booking.traveller_profile_id,
+
+			"name": passenger_name,
+
+			"traveller_name": booking.traveller_name_snapshot,
+			"traveller_phone": booking.traveller_phone_snapshot,
+			"traveller_email": booking.traveller_email_snapshot,
+			"traveller_relationship_label": (
+				booking.traveller_relationship_label_snapshot
+			),
+
+			"seat_number": booking.seat_number,
+
 			"status": booking.booking_status,
-			# Booked locations
+
+			"fare": float(booking.fare_amount or 0),
+			"created_at": booking.created_at,
+
 			"pickup_stop_id": booking.pickup_stop_id,
 			"pickup_stop_name": pickup_stop_name,
+
 			"dropoff_stop_id": booking.dropoff_stop_id,
 			"dropoff_stop_name": dropoff_stop_name,
-			# Actual drop location from scan event
-			"actual_drop_stop_id": drop_scan.matched_stop_id
-			if drop_scan
-			else None,
-			"actual_drop_stop_name": drop_scan.matched_stop.name
-			if drop_scan and drop_scan.matched_stop
-			else None,
-			"actual_dropped_at": drop_scan.created_at if drop_scan else None,
+
+			"actual_drop_stop_id": (
+				drop_scan.matched_stop_id
+				if drop_scan
+				else None
+			),
+
+			"actual_drop_stop_name": (
+				drop_scan.matched_stop.name
+				if drop_scan and drop_scan.matched_stop
+				else None
+			),
+
+			"actual_dropped_at": (
+				drop_scan.created_at
+				if drop_scan
+				else None
+			),
+
+			"boarded_at": booking.boarded_at,
+			"completed_at": booking.completed_at,
+			"cancelled_at": booking.cancelled_at,
+			"updated_at": booking.updated_at,
 		}
+
 		passengers_data.append(passenger_info)
 
 	PickupStop = aliased(schema.Stop)
@@ -2754,15 +2870,77 @@ async def get_specific_trip_status(
 # -----------------------------
 @router.get("/trips/{trip_id}/bookings")
 async def get_all_bookings_for_trip(
-	trip_id: str, db: AsyncSession = Depends(get_async_session)
+	trip_id: str,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	service = AdminService(db)
 	bookings = await service.get_trip_bookings(trip_id)
 
 	if not bookings:
-		return []  # Return empty list if no one has booked yet
+		return []
 
-	return bookings
+	serialized_bookings = []
+
+	for booking in bookings:
+		passenger_name = (
+			booking.traveller_name_snapshot
+			or (
+				booking.passenger.passenger_profile.full_name
+				if booking.passenger
+				and booking.passenger.passenger_profile
+				else None
+			)
+			or "Unknown Passenger"
+		)
+
+		serialized_bookings.append(
+			{
+				"booking_id": booking.id,
+				"booking_session_id": booking.booking_session_id,
+
+				"passenger_user_id": booking.passenger_user_id,
+				"booked_by_user_id": booking.booked_by_user_id,
+
+				"traveller_profile_id": booking.traveller_profile_id,
+
+				"name": passenger_name,
+
+				"traveller_name": booking.traveller_name_snapshot,
+				"traveller_phone": booking.traveller_phone_snapshot,
+				"traveller_email": booking.traveller_email_snapshot,
+				"traveller_relationship_label": (
+					booking.traveller_relationship_label_snapshot
+				),
+
+				"seat_number": booking.seat_number,
+
+				"status": booking.booking_status,
+
+				"fare": float(booking.fare_amount or 0),
+
+				"pickup_stop_id": booking.pickup_stop_id,
+				"pickup_stop_name": (
+					booking.pickup_stop.name
+					if booking.pickup_stop
+					else None
+				),
+
+				"dropoff_stop_id": booking.dropoff_stop_id,
+				"dropoff_stop_name": (
+					booking.dropoff_stop.name
+					if booking.dropoff_stop
+					else None
+				),
+
+				"created_at": booking.created_at,
+				"boarded_at": booking.boarded_at,
+				"completed_at": booking.completed_at,
+				"cancelled_at": booking.cancelled_at,
+				"updated_at": booking.updated_at,
+			}
+		)
+
+	return serialized_bookings
 
 
 @router.patch("/bookings/{booking_id}/noshow")
@@ -4293,3 +4471,143 @@ async def set_commercial_rule_status(
 ):
 	service = AdminService(db)
 	return await service.set_commercial_rule_active(rule_id, payload.is_active)
+
+
+@router.get("/booking-sessions/{booking_session_id}")
+async def get_booking_session_details(
+	booking_session_id: str,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+
+	session = await service.get_booking_session_by_id(
+		booking_session_id
+	)
+
+	if not session:
+		raise HTTPException(
+			status_code=404,
+			detail="Booking session not found",
+		)
+
+	return {
+		"booking_session_id": session.id,
+
+		"owner": {
+			"user_id": session.owner.id,
+			"email": session.owner.email,
+		}
+		if session.owner
+		else None,
+
+		"status": session.status,
+
+		"trip": {
+			"scheduled_trip_id": session.scheduled_trip_id,
+			"route_id": session.route_id,
+
+			"route_name": (
+				session.route.name
+				if session.route
+				else None
+			),
+
+			"pickup_stop": (
+				session.pickup_stop.name
+				if session.pickup_stop
+				else None
+			),
+
+			"dropoff_stop": (
+				session.dropoff_stop.name
+				if session.dropoff_stop
+				else None
+			),
+		},
+
+		"fare": {
+			"total_fare_amount": float(
+				session.total_fare_amount or 0
+			),
+		},
+
+		"timestamps": {
+			"created_at": session.created_at,
+			"confirmed_at": session.confirmed_at,
+			"cancelled_at": session.cancelled_at,
+			"expired_at": session.expired_at,
+			"payment_hold_expires_at":
+				session.payment_hold_expires_at,
+		},
+
+		"bookings": [
+			{
+				"booking_id": booking.id,
+
+				"traveller_profile_id":
+					booking.traveller_profile_id,
+
+				"traveller_name":
+					booking.traveller_name_snapshot,
+
+				"traveller_phone":
+					booking.traveller_phone_snapshot,
+
+				"traveller_email":
+					booking.traveller_email_snapshot,
+
+				"traveller_relationship_label":
+					booking.traveller_relationship_label_snapshot,
+
+				"seat_number":
+					booking.seat_number,
+
+				"status":
+					booking.booking_status,
+
+				"fare":
+					float(booking.fare_amount or 0),
+			}
+			for booking in session.bookings
+		],
+
+		"payments": [
+			{
+				"payment_id": payment.id,
+				"status": payment.status,
+				"amount": float(
+					payment.amount or 0
+				),
+				"created_at": payment.created_at,
+			}
+			for payment in session.payments
+		],
+	}
+
+@router.get("/booking-sessions")
+async def get_booking_sessions(
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+
+	sessions = await service.get_booking_sessions()
+
+	return [
+		{
+			"booking_session_id": session.id,
+			"owner_user_id": session.owner_user_id,
+			"scheduled_trip_id": session.scheduled_trip_id,
+			"route_id": session.route_id,
+			"status": session.status,
+			"booking_count": len(session.bookings),
+			"payment_count": len(session.payments),
+			"total_fare_amount": float(
+				session.total_fare_amount or 0
+			),
+			"created_at": session.created_at,
+			"confirmed_at": session.confirmed_at,
+			"cancelled_at": session.cancelled_at,
+			"expired_at": session.expired_at,
+		}
+		for session in sessions
+	]

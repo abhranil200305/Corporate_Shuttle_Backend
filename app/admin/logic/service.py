@@ -59,6 +59,8 @@ class AdminService:
 			.options(
 				joinedload(schema.User.passenger_profile),
 				joinedload(schema.User.passenger_bookings),
+				selectinload(schema.User.traveller_profiles),
+				selectinload(schema.User.owned_booking_sessions),
 			)
 		)
 		result = await self.db.execute(stmt)
@@ -103,12 +105,25 @@ class AdminService:
 			select(schema.User)
 			.options(
 				joinedload(schema.User.passenger_profile),
+
+				selectinload(schema.User.traveller_profiles),
+
+				selectinload(schema.User.owned_booking_sessions).selectinload(
+					schema.BookingSession.bookings
+				),
+
+				selectinload(schema.User.owned_booking_sessions).selectinload(
+					schema.BookingSession.payments
+				),
+
 				selectinload(schema.User.passenger_bookings).options(
 					joinedload(schema.TripBooking.pickup_stop),
 					joinedload(schema.TripBooking.dropoff_stop),
+
 					selectinload(schema.TripBooking.scan_events).joinedload(
 						schema.TripScanEvent.matched_stop
 					),
+
 					joinedload(schema.TripBooking.scheduled_trip).selectinload(
 						schema.ScheduledTrip.trip_events
 					),
@@ -4604,3 +4619,57 @@ class AdminService:
 				"message": "Commercial rule not found.",
 			},
 		)
+	async def get_booking_sessions(self):
+		stmt = (
+			select(schema.BookingSession)
+			.options(
+				joinedload(schema.BookingSession.owner),
+				joinedload(schema.BookingSession.scheduled_trip),
+				joinedload(schema.BookingSession.route),
+				joinedload(schema.BookingSession.pickup_stop),
+				joinedload(schema.BookingSession.dropoff_stop),
+				selectinload(schema.BookingSession.bookings),
+				selectinload(schema.BookingSession.payments),
+			)
+			.order_by(schema.BookingSession.created_at.desc())
+		)
+
+		result = await self.db.execute(stmt)
+		return result.unique().scalars().all()
+
+
+async def get_booking_session_by_id(
+	self,
+	booking_session_id: str,
+):
+	stmt = (
+		select(schema.BookingSession)
+		.options(
+			joinedload(schema.BookingSession.owner),
+
+			joinedload(
+				schema.BookingSession.scheduled_trip
+			)
+			.joinedload(schema.ScheduledTrip.driver)
+			.joinedload(schema.User.driver_profile),
+
+			joinedload(
+				schema.BookingSession.scheduled_trip
+			)
+			.joinedload(schema.ScheduledTrip.vehicle),
+
+			joinedload(schema.BookingSession.route),
+			joinedload(schema.BookingSession.pickup_stop),
+			joinedload(schema.BookingSession.dropoff_stop),
+
+			selectinload(schema.BookingSession.bookings),
+
+			selectinload(schema.BookingSession.payments),
+		)
+		.where(
+			schema.BookingSession.id == booking_session_id
+		)
+	)
+
+	result = await self.db.execute(stmt)
+	return result.unique().scalar_one_or_none()
