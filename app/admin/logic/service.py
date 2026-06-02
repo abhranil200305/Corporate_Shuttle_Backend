@@ -4638,38 +4638,38 @@ class AdminService:
 		return result.unique().scalars().all()
 
 
-async def get_booking_session_by_id(
-	self,
-	booking_session_id: str,
-):
-	stmt = (
-		select(schema.BookingSession)
-		.options(
-			joinedload(schema.BookingSession.owner),
+	async def get_booking_session_by_id(
+		self,
+		booking_session_id: str,
+	):
+		stmt = (
+			select(schema.BookingSession)
+			.options(
+				joinedload(schema.BookingSession.owner),
 
-			joinedload(
-				schema.BookingSession.scheduled_trip
+				joinedload(
+					schema.BookingSession.scheduled_trip
+				)
+				.joinedload(schema.ScheduledTrip.driver)
+				.joinedload(schema.User.driver_profile),
+
+				joinedload(
+					schema.BookingSession.scheduled_trip
+				)
+				.joinedload(schema.ScheduledTrip.vehicle),
+
+				joinedload(schema.BookingSession.route),
+				joinedload(schema.BookingSession.pickup_stop),
+				joinedload(schema.BookingSession.dropoff_stop),
+
+				selectinload(schema.BookingSession.bookings),
+
+				selectinload(schema.BookingSession.payments),
 			)
-			.joinedload(schema.ScheduledTrip.driver)
-			.joinedload(schema.User.driver_profile),
-
-			joinedload(
-				schema.BookingSession.scheduled_trip
+			.where(
+				schema.BookingSession.id == booking_session_id
 			)
-			.joinedload(schema.ScheduledTrip.vehicle),
-
-			joinedload(schema.BookingSession.route),
-			joinedload(schema.BookingSession.pickup_stop),
-			joinedload(schema.BookingSession.dropoff_stop),
-
-			selectinload(schema.BookingSession.bookings),
-
-			selectinload(schema.BookingSession.payments),
 		)
-		.where(
-			schema.BookingSession.id == booking_session_id
-		)
-	)
 
-	result = await self.db.execute(stmt)
-	return result.unique().scalar_one_or_none()
+		result = await self.db.execute(stmt)
+		return result.unique().scalar_one_or_none()
