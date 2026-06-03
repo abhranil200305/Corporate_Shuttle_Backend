@@ -12,6 +12,7 @@ from app.auth.dependencies import get_current_user
 from app.db.database import get_async_session
 from app.db.schema import (
     BookingPaymentStatus,
+    BookingSession,
     BookingStatus,
     Route,
     RouteStop,
@@ -94,10 +95,21 @@ def _resolve_driver_traveller_display(
 def _resolve_fare_paid(
     booking: TripBooking,
 ) -> Decimal:
+
+    booking_session = getattr(
+        booking,
+        "booking_session",
+        None,
+    )
+
+    if not booking_session:
+        return Decimal("0.00")
+
     paid_payments = [
         payment
-        for payment in booking.payments
-        if payment.status == BookingPaymentStatus.PAID
+        for payment in booking_session.payments
+        if payment.status
+        == BookingPaymentStatus.PAID
     ]
 
     if not paid_payments:
@@ -169,7 +181,10 @@ async def get_booking_details(
                 ScheduledTrip.bookings
             )
             .selectinload(
-                TripBooking.payments
+                TripBooking.booking_session
+            )
+            .selectinload(
+                BookingSession.payments
             ),
 
             selectinload(
