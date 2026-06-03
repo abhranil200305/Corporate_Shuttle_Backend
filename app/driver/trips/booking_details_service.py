@@ -123,8 +123,24 @@ def _resolve_fare_paid(
         reverse=True,
     )
 
-    return _money(
+    session_paid = _money(
         paid_payments[0].amount
+    )
+
+    bookings = getattr(
+        booking_session,
+        "bookings",
+        [],
+    )
+
+    booking_count = max(
+        1,
+        len(bookings),
+    )
+
+    return _money(
+        session_paid
+        / Decimal(booking_count)
     )
 
 
@@ -177,6 +193,7 @@ async def get_booking_details(
                 TripBooking.dropoff_stop
             ),
 
+            # Load booking session payments
             selectinload(
                 ScheduledTrip.bookings
             )
@@ -185,6 +202,18 @@ async def get_booking_details(
             )
             .selectinload(
                 BookingSession.payments
+            ),
+
+            # Load all bookings inside same session
+            # (needed for fare split calculation)
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.booking_session
+            )
+            .selectinload(
+                BookingSession.bookings
             ),
 
             selectinload(
@@ -197,7 +226,7 @@ async def get_booking_details(
                 User.passenger_profile
             ),
         )
-    )
+    )    
 
     trip = result.scalar_one_or_none()
 
