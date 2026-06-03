@@ -567,14 +567,13 @@ class AdminService:
 		*,
 		trip_event_by_stop_id: dict[str, schema.TripEvent],
 	) -> dict[str, Any]:
-		pickup_event = trip_event_by_stop_id.get(booking.pickup_stop_id)
-		dropoff_event = trip_event_by_stop_id.get(booking.dropoff_stop_id)
 
 		actual_drop_stop = booking.completed_near_stop
 
 		status = (
 			booking.booking_status.value
-			if hasattr(booking.booking_status, "value")
+			if booking.booking_status
+			and hasattr(booking.booking_status, "value")
 			else str(booking.booking_status)
 		)
 
@@ -583,43 +582,53 @@ class AdminService:
 			"booking_session_id": booking.booking_session_id,
 
 			"passenger_user_id": booking.passenger_user_id,
-			"account_owner_user_id": booking.passenger_user_id,
-			"booked_by_user_id": booking.booked_by_user_id,
-
-			"traveller_profile_id": booking.traveller_profile_id,
-			"traveller_name": booking.traveller_name_snapshot,
-			"traveller_phone": booking.traveller_phone_snapshot,
-			"traveller_email": booking.traveller_email_snapshot,
-			"traveller_relationship_label": booking.traveller_relationship_label_snapshot,
 
 			"seat_number": booking.seat_number,
-			"otp": booking.otp,
 
 			"status": status,
 			"booking_status": status,
 
-			"fare": float(booking.fare_amount or 0),
-			"fare_amount": booking.fare_amount,
+			# FIXED
+			"fare": (
+				float(booking.fare_amount)
+				if booking.fare_amount is not None
+				else None
+			),
+
+			"fare_amount": (
+				float(booking.fare_amount)
+				if booking.fare_amount is not None
+				else None
+			),
+
 			"created_at": booking.created_at,
 
-			"pickup_stop": {
-				"id": booking.pickup_stop_id,
-				"name": None if booking.pickup_stop is None else booking.pickup_stop.name,
-				"sequence": booking.pickup_sequence_no_snapshot,
-				"bus_arrived_at": None if pickup_event is None else pickup_event.arrival_time,
-				"bus_departed_at": None if pickup_event is None else pickup_event.departure_time,
-			},
+			"pickup_stop": (
+				self._serialize_admin_current_trip_stop(
+					booking.pickup_stop
+				)
+				if booking.pickup_stop
+				else None
+			),
 
-			"dropoff_stop": {
-				"id": booking.dropoff_stop_id,
-				"name": None if booking.dropoff_stop is None else booking.dropoff_stop.name,
-				"sequence": booking.dropoff_sequence_no_snapshot,
-				"bus_arrived_at": None if dropoff_event is None else dropoff_event.arrival_time,
-				"bus_departed_at": None if dropoff_event is None else dropoff_event.departure_time,
-			},
+			"dropoff_stop": (
+				self._serialize_admin_current_trip_stop(
+					booking.dropoff_stop
+				)
+				if booking.dropoff_stop
+				else None
+			),
 
+			# FIXED
 			"actual_drop_stop_id": booking.completed_near_stop_id,
-			"actual_drop_stop_name": None if actual_drop_stop is None else actual_drop_stop.name,
+
+			"actual_drop_stop_name": (
+				actual_drop_stop.name
+				if actual_drop_stop
+				else None
+			),
+
+			# FIXED
 			"actual_dropped_at": booking.completed_at,
 
 			"boarded_at": booking.boarded_at,
@@ -671,33 +680,73 @@ class AdminService:
 		booking_id: str,
 	) -> dict[str, Any]:
 
-		# Step 1 → load requested booking
 		stmt = (
 			select(schema.TripBooking)
 			.where(schema.TripBooking.id == booking_id)
 			.options(
-				selectinload(schema.TripBooking.pickup_stop),
-				selectinload(schema.TripBooking.dropoff_stop),
-				selectinload(schema.TripBooking.completed_near_stop),
+				# Root booking relations
+				selectinload(
+					schema.TripBooking.pickup_stop
+				),
 
-				selectinload(schema.TripBooking.passenger)
-				.selectinload(schema.User.passenger_profile),
+				selectinload(
+					schema.TripBooking.dropoff_stop
+				),
 
-				# IMPORTANT
-				selectinload(schema.TripBooking.booking_session)
-				.selectinload(schema.BookingSession.bookings),
+				selectinload(
+					schema.TripBooking.completed_near_stop
+				),
 
-				selectinload(schema.TripBooking.scheduled_trip)
-				.selectinload(schema.ScheduledTrip.route),
+				# Passenger
+				selectinload(
+					schema.TripBooking.passenger
+				).selectinload(
+					schema.User.passenger_profile
+				),
 
-				selectinload(schema.TripBooking.scheduled_trip)
-				.selectinload(schema.ScheduledTrip.vehicle),
+				# Booking session + nested bookings
+				selectinload(
+					schema.TripBooking.booking_session
+				).selectinload(
+					schema.BookingSession.bookings
+				).options(
+					selectinload(
+						schema.TripBooking.pickup_stop
+					),
 
-				selectinload(schema.TripBooking.scheduled_trip)
-				.selectinload(schema.ScheduledTrip.driver),
+					selectinload(
+						schema.TripBooking.dropoff_stop
+					),
 
-				selectinload(schema.TripBooking.scheduled_trip)
-				.selectinload(schema.ScheduledTrip.trip_events),
+					selectinload(
+						schema.TripBooking.completed_near_stop
+					),
+				),
+
+				# Trip details
+				selectinload(
+					schema.TripBooking.scheduled_trip
+				).selectinload(
+					schema.ScheduledTrip.route
+				),
+
+				selectinload(
+					schema.TripBooking.scheduled_trip
+				).selectinload(
+					schema.ScheduledTrip.vehicle
+				),
+
+				selectinload(
+					schema.TripBooking.scheduled_trip
+				).selectinload(
+					schema.ScheduledTrip.driver
+				),
+
+				selectinload(
+					schema.TripBooking.scheduled_trip
+				).selectinload(
+					schema.ScheduledTrip.trip_events
+				),
 			)
 		)
 
@@ -712,7 +761,10 @@ class AdminService:
 			)
 
 		trip = booking.scheduled_trip
-		trip_event_by_stop_id = self._build_admin_trip_event_map(trip)
+
+		trip_event_by_stop_id = (
+			self._build_admin_trip_event_map(trip)
+		)
 
 		session_bookings = (
 			booking.booking_session.bookings
@@ -727,11 +779,21 @@ class AdminService:
 		)
 
 		return {
-			"booking_session_id": booking.booking_session_id,
+			"booking_session_id": (
+				booking.booking_session_id
+			),
 
 			"passenger": {
-				"user_id": booking.passenger_user_id,
-				"email": booking.passenger.email if booking.passenger else None,
+				"user_id": (
+					booking.passenger_user_id
+				),
+
+				"email": (
+					booking.passenger.email
+					if booking.passenger
+					else None
+				),
+
 				"full_name": (
 					account_owner_profile.full_name
 					if account_owner_profile
@@ -739,12 +801,15 @@ class AdminService:
 				),
 			},
 
-			"trip": self._serialize_admin_booking_trip_detail_trip(
-				trip
+			"trip": (
+				self._serialize_admin_booking_trip_detail_trip(
+					trip
+				)
 			),
 
-			# RETURN ALL SEATS
-			"seat_count": len(session_bookings),
+			"seat_count": (
+				len(session_bookings)
+			),
 
 			"bookings": [
 				self._serialize_admin_booking_trip_detail_booking(
@@ -754,7 +819,6 @@ class AdminService:
 				for b in session_bookings
 			],
 
-			# optional
 			"seat_numbers": [
 				b.seat_number
 				for b in session_bookings
