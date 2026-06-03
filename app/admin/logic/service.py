@@ -670,70 +670,95 @@ class AdminService:
 		self,
 		booking_id: str,
 	) -> dict[str, Any]:
-		booking_stmt = (
+
+		# Step 1 → load requested booking
+		stmt = (
 			select(schema.TripBooking)
 			.where(schema.TripBooking.id == booking_id)
 			.options(
 				selectinload(schema.TripBooking.pickup_stop),
 				selectinload(schema.TripBooking.dropoff_stop),
 				selectinload(schema.TripBooking.completed_near_stop),
-				selectinload(schema.TripBooking.passenger).selectinload(
-					schema.User.passenger_profile
-				),
-				selectinload(schema.TripBooking.scheduled_trip).selectinload(
-					schema.ScheduledTrip.route
-				),
-				selectinload(schema.TripBooking.scheduled_trip).selectinload(
-					schema.ScheduledTrip.vehicle
-				),
-				selectinload(schema.TripBooking.scheduled_trip).selectinload(
-					schema.ScheduledTrip.driver
-				),
-				selectinload(schema.TripBooking.scheduled_trip).selectinload(
-					schema.ScheduledTrip.trip_events
-				),
+
+				selectinload(schema.TripBooking.passenger)
+				.selectinload(schema.User.passenger_profile),
+
+				# IMPORTANT
+				selectinload(schema.TripBooking.booking_session)
+				.selectinload(schema.BookingSession.bookings),
+
+				selectinload(schema.TripBooking.scheduled_trip)
+				.selectinload(schema.ScheduledTrip.route),
+
+				selectinload(schema.TripBooking.scheduled_trip)
+				.selectinload(schema.ScheduledTrip.vehicle),
+
+				selectinload(schema.TripBooking.scheduled_trip)
+				.selectinload(schema.ScheduledTrip.driver),
+
+				selectinload(schema.TripBooking.scheduled_trip)
+				.selectinload(schema.ScheduledTrip.trip_events),
 			)
-			.limit(1)
 		)
 
-		booking_result = await self.db.execute(booking_stmt)
-		booking = booking_result.scalar_one_or_none()
+		result = await self.db.execute(stmt)
 
-		if booking is None:
+		booking = result.scalar_one_or_none()
+
+		if not booking:
 			raise HTTPException(
 				status_code=404,
-				detail={
-					"error": "booking_not_found",
-					"message": "Booking not found.",
-					"booking_id": booking_id,
-				},
+				detail="Booking not found",
 			)
 
 		trip = booking.scheduled_trip
 		trip_event_by_stop_id = self._build_admin_trip_event_map(trip)
 
+		session_bookings = (
+			booking.booking_session.bookings
+			if booking.booking_session
+			else [booking]
+		)
+
 		account_owner_profile = (
 			booking.passenger.passenger_profile
-			if booking.passenger is not None
+			if booking.passenger
 			else None
 		)
 
 		return {
-			"booking_id": booking.id,
+			"booking_session_id": booking.booking_session_id,
+
 			"passenger": {
 				"user_id": booking.passenger_user_id,
-				"email": None if booking.passenger is None else booking.passenger.email,
+				"email": booking.passenger.email if booking.passenger else None,
 				"full_name": (
-					None
-					if account_owner_profile is None
-					else account_owner_profile.full_name
+					account_owner_profile.full_name
+					if account_owner_profile
+					else None
 				),
 			},
-			"trip": self._serialize_admin_booking_trip_detail_trip(trip),
-			"booking": self._serialize_admin_booking_trip_detail_booking(
-				booking,
-				trip_event_by_stop_id=trip_event_by_stop_id,
+
+			"trip": self._serialize_admin_booking_trip_detail_trip(
+				trip
 			),
+
+			# RETURN ALL SEATS
+			"seat_count": len(session_bookings),
+
+			"bookings": [
+				self._serialize_admin_booking_trip_detail_booking(
+					b,
+					trip_event_by_stop_id=trip_event_by_stop_id,
+				)
+				for b in session_bookings
+			],
+
+			# optional
+			"seat_numbers": [
+				b.seat_number
+				for b in session_bookings
+			],
 		}
 		
 	async def get_passenger_current_trip_detail(
