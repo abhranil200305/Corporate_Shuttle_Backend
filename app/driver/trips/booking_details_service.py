@@ -205,15 +205,35 @@ async def get_booking_details(
     )
 
     # 3️⃣ Keep only driver-useful bookings
-    visible_bookings = [
-        booking
-        for booking in trip.bookings
-        if booking.booking_status in (
-            BookingStatus.BOOKED,
-            BookingStatus.BOARDED,
-            BookingStatus.COMPLETED,
+    # 3️⃣ Keep driver-visible bookings
+
+    trip_finished = (
+        getattr(trip.status, "value", trip.status)
+        in (
+            "completed",
+            "premature_end",
         )
-    ]
+    )
+
+    if trip_finished:
+        # After trip ends → show history
+        visible_bookings = [
+            booking
+            for booking in trip.bookings
+            if booking.booking_status
+            != BookingStatus.PENDING_PAYMENT
+        ]
+    else:
+        # Active trip → only operational bookings
+        visible_bookings = [
+            booking
+            for booking in trip.bookings
+            if booking.booking_status in (
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED,
+                BookingStatus.COMPLETED,
+            )
+        ]
 
     visible_bookings.sort(
         key=lambda booking: (
