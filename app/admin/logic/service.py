@@ -577,18 +577,44 @@ class AdminService:
 			else str(booking.booking_status)
 		)
 
+		passenger_profile = (
+			booking.passenger.passenger_profile
+			if booking.passenger
+			else None
+		)
+
 		return {
 			"booking_id": booking.id,
 			"booking_session_id": booking.booking_session_id,
 
+			# NEW
 			"passenger_user_id": booking.passenger_user_id,
+			"passenger_name": (
+				passenger_profile.full_name
+				if passenger_profile
+				else None
+			),
+
+			"passenger_email": (
+				booking.passenger.email
+				if booking.passenger
+				else None
+			),
+
+			# Existing traveller snapshot
+			"traveller_profile_id": booking.traveller_profile_id,
+			"traveller_name": booking.traveller_name_snapshot,
+			"traveller_phone": booking.traveller_phone_snapshot,
+			"traveller_email": booking.traveller_email_snapshot,
+			"traveller_relationship_label": (
+				booking.traveller_relationship_label_snapshot
+			),
 
 			"seat_number": booking.seat_number,
 
 			"status": status,
 			"booking_status": status,
 
-			# FIXED
 			"fare": (
 				float(booking.fare_amount)
 				if booking.fare_amount is not None
@@ -619,7 +645,6 @@ class AdminService:
 				else None
 			),
 
-			# FIXED
 			"actual_drop_stop_id": booking.completed_near_stop_id,
 
 			"actual_drop_stop_name": (
@@ -628,7 +653,6 @@ class AdminService:
 				else None
 			),
 
-			# FIXED
 			"actual_dropped_at": booking.completed_at,
 
 			"boarded_at": booking.boarded_at,
@@ -697,7 +721,7 @@ class AdminService:
 					schema.TripBooking.completed_near_stop
 				),
 
-				# Passenger
+				# Root passenger
 				selectinload(
 					schema.TripBooking.passenger
 				).selectinload(
@@ -710,6 +734,7 @@ class AdminService:
 				).selectinload(
 					schema.BookingSession.bookings
 				).options(
+
 					selectinload(
 						schema.TripBooking.pickup_stop
 					),
@@ -720,6 +745,13 @@ class AdminService:
 
 					selectinload(
 						schema.TripBooking.completed_near_stop
+					),
+
+					# ADD THIS (for passenger_name)
+					selectinload(
+						schema.TripBooking.passenger
+					).selectinload(
+						schema.User.passenger_profile
 					),
 				),
 
