@@ -11,12 +11,12 @@ from pathlib import Path as FSPath
 from fastapi import Header
 from app.notifications.service import NotificationService
 from app.notifications.hub import WSHub
-from fastapi import Request  # ✅ ADD THIS
+from fastapi import Request  
 
 
 from app.db.database import get_async_session
 from app.db.schema import SupportTicket, SupportStatus, User, UserRole
-from app.auth.dependencies import get_current_user  # adjust path if needed
+from app.auth.dependencies import get_current_user  
 
 router = APIRouter(prefix="/support", tags=["Support"])
 
@@ -195,7 +195,7 @@ async def driver_view_support_ticket(
     tickets = result.scalars().all()
 
     if not tickets:
-        raise HTTPException(status_code=404, detail="No support tickets found")
+        raise HTTPException(status_code=204, detail="No support tickets found")
 
     return [
         {
