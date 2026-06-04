@@ -935,6 +935,66 @@ class PassengerService:
             )
         return booking
 
+    async def _list_booking_session_current_trip_bookings(
+        self,
+        *,
+        booking_session_id: str,
+        owner_user_id: str,
+    ) -> list[TripBooking]:
+        now = utcnow()
+
+        stmt = (
+            select(TripBooking)
+            .join(ScheduledTrip, ScheduledTrip.id == TripBooking.scheduled_trip_id)
+            .where(
+                TripBooking.booking_session_id == booking_session_id,
+                TripBooking.passenger_user_id == owner_user_id,
+                TripBooking.booking_status.in_(
+                    (
+                        BookingStatus.BOOKED,
+                        BookingStatus.BOARDED,
+                    )
+                ),
+                ScheduledTrip.planned_start_at <= now,
+                ScheduledTrip.planned_end_at >= now,
+            )
+            .options(
+                selectinload(TripBooking.pickup_stop),
+                selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.payments),
+                selectinload(TripBooking.rating),
+                selectinload(TripBooking.scan_events),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+                selectinload(TripBooking.scheduled_trip).selectinload(
+                    ScheduledTrip.vehicle
+                ),
+                selectinload(TripBooking.scheduled_trip).selectinload(
+                    ScheduledTrip.driver
+                ),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
+            )
+            .order_by(
+                TripBooking.seat_number.asc(),
+                TripBooking.created_at.asc(),
+            )
+        )
+
+        result = await self.db.execute(stmt)
+        bookings = list(result.scalars().unique().all())
+
+        if not bookings:
+            await self._get_booking_session_obj(
+                booking_session_id=booking_session_id,
+                owner_user_id=owner_user_id,
+            )
+
+        return bookings
+
     async def _get_route_sequence_map(self, route_id: str) -> dict[str, RouteStop]:
         stmt = select(RouteStop).where(RouteStop.route_id == route_id)
         result = await self.db.execute(stmt)
@@ -2004,6 +2064,18 @@ class PassengerService:
 
         return {
             "booking_id": booking.id,
+            "booking_session_id": booking.booking_session_id,
+            "passenger_user_id": booking.passenger_user_id,
+            "booked_by_user_id": booking.booked_by_user_id,
+
+            "traveller_profile_id": booking.traveller_profile_id,
+            "traveller_name_snapshot": booking.traveller_name_snapshot,
+            "traveller_phone_snapshot": booking.traveller_phone_snapshot,
+            "traveller_email_snapshot": booking.traveller_email_snapshot,
+            "traveller_relationship_label_snapshot": (
+                booking.traveller_relationship_label_snapshot
+            ),
+
             "seat_number": booking.seat_number,
             "scheduled_trip_id": booking.scheduled_trip_id,
             "otp": self._serialize_booking_otp(booking),
@@ -6837,6 +6909,182 @@ class PassengerService:
             "count": len(bookings),
         }
 
+    async def _serialize_current_booking_session(
+        self,
+        booking_session: BookingSession,
+        bookings: list[TripBooking],
+    ) -> dict[str, Any]:
+        serialized_bookings: list[dict[str, Any]] = []
+
+        for booking in bookings:
+            serialized_bookings.append(
+                await self._serialize_current_booking(booking)
+            )
+
+        return {
+            "booking_session_id": booking_session.id,
+            "owner_user_id": booking_session.owner_user_id,
+            "scheduled_trip_id": booking_session.scheduled_trip_id,
+            "route_id": booking_session.route_id,
+            "pickup_stop_id": booking_session.pickup_stop_id,
+            "dropoff_stop_id": booking_session.dropoff_stop_id,
+            "status": booking_session.status,
+            "total_fare_amount": booking_session.total_fare_amount,
+            "payment_hold_expires_at": booking_session.payment_hold_expires_at,
+            "confirmed_at": booking_session.confirmed_at,
+            "cancelled_at": booking_session.cancelled_at,
+            "expired_at": booking_session.expired_at,
+            "bookings": serialized_bookings,
+            "booking_count": len(serialized_bookings),
+            "created_at": booking_session.created_at,
+            "updated_at": booking_session.updated_at,
+        }
+
+    async def list_current_booking_sessions(
+        self,
+        current_user: User,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+        now = utcnow()
+
+        session_stmt = (
+            select(BookingSession)
+            .join(
+                TripBooking,
+                TripBooking.booking_session_id == BookingSession.id,
+            )
+            .join(
+                ScheduledTrip,
+                ScheduledTrip.id == BookingSession.scheduled_trip_id,
+            )
+            .where(
+                BookingSession.owner_user_id == current_user.id,
+                TripBooking.booking_status.in_(
+                    (
+                        BookingStatus.BOOKED,
+                        BookingStatus.BOARDED,
+                    )
+                ),
+                ScheduledTrip.planned_start_at <= now,
+                ScheduledTrip.planned_end_at >= now,
+            )
+            .options(
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.pickup_stop
+                ),
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.dropoff_stop
+                ),
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.payments
+                ),
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.rating
+                ),
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.scan_events
+                ),
+                selectinload(BookingSession.bookings)
+                .selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+                selectinload(BookingSession.bookings)
+                .selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.vehicle),
+                selectinload(BookingSession.bookings)
+                .selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.driver),
+                selectinload(BookingSession.bookings)
+                .selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.trip_events)
+                .selectinload(TripEvent.stop),
+            )
+            .order_by(BookingSession.created_at.desc())
+        )
+
+        result = await self.db.execute(session_stmt)
+        booking_sessions = list(result.scalars().unique().all())
+
+        items: list[dict[str, Any]] = []
+
+        for booking_session in booking_sessions:
+            current_bookings = [
+                booking
+                for booking in booking_session.bookings
+                if booking.booking_status
+                in (
+                    BookingStatus.BOOKED,
+                    BookingStatus.BOARDED,
+                )
+                and booking.scheduled_trip.planned_start_at <= now
+                and booking.scheduled_trip.planned_end_at >= now
+            ]
+
+            current_bookings.sort(
+                key=lambda booking: (
+                    booking.seat_number,
+                    booking.created_at,
+                )
+            )
+
+            if not current_bookings:
+                continue
+
+            items.append(
+                await self._serialize_current_booking_session(
+                    booking_session,
+                    current_bookings,
+                )
+            )
+
+        return {
+            "items": items,
+            "count": len(items),
+        }
+
+    async def get_booking_session_current_trip_status(
+        self,
+        current_user: User,
+        booking_session_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        bookings = await self._list_booking_session_current_trip_bookings(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        return {
+            "booking_session_id": booking_session_id,
+            "items": [
+                self._serialize_current_trip_status(booking)
+                for booking in bookings
+            ],
+            "count": len(bookings),
+        }
+
+    async def get_booking_session_live_location(
+        self,
+        current_user: User,
+        booking_session_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        bookings = await self._list_booking_session_current_trip_bookings(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+
+        return {
+            "booking_session_id": booking_session_id,
+            "items": [
+                self._serialize_booking_live_location(booking)
+                for booking in bookings
+            ],
+            "count": len(bookings),
+        }
+
     async def list_current_bookings(self, current_user: User) -> dict[str, Any]:
         self.ensure_passenger(current_user)
         now = utcnow()
@@ -7172,17 +7420,10 @@ class PassengerService:
         return self._serialize_current_trip_status(booking)
     
 
-    async def get_booking_live_location(
+    def _serialize_booking_live_location(
         self,
-        current_user: User,
-        booking_id: str,
+        booking: TripBooking,
     ) -> dict[str, Any]:
-        self.ensure_passenger(current_user)
-
-        booking = await self._get_booking_obj(
-            booking_id=booking_id,
-            passenger_user_id=current_user.id,
-        )
         trip = booking.scheduled_trip
         now = utcnow()
 
@@ -7207,6 +7448,18 @@ class PassengerService:
 
         return {
             "booking_id": booking.id,
+            "booking_session_id": booking.booking_session_id,
+            "passenger_user_id": booking.passenger_user_id,
+            "booked_by_user_id": booking.booked_by_user_id,
+
+            "traveller_profile_id": booking.traveller_profile_id,
+            "traveller_name_snapshot": booking.traveller_name_snapshot,
+            "traveller_phone_snapshot": booking.traveller_phone_snapshot,
+            "traveller_email_snapshot": booking.traveller_email_snapshot,
+            "traveller_relationship_label_snapshot": (
+                booking.traveller_relationship_label_snapshot
+            ),
+
             "scheduled_trip_id": booking.scheduled_trip_id,
             "booking_status": booking.booking_status,
             "trip_status": trip.status,
@@ -7218,6 +7471,20 @@ class PassengerService:
             "actual_end_at": trip.actual_end_at,
             "updated_at": trip.updated_at,
         }
+
+    async def get_booking_live_location(
+        self,
+        current_user: User,
+        booking_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking = await self._get_booking_obj(
+            booking_id=booking_id,
+            passenger_user_id=current_user.id,
+        )
+
+        return self._serialize_booking_live_location(booking)
 
     # ------------------------------------------------------------------
     # rating

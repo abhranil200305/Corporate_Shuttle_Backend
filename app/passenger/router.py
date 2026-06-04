@@ -19,6 +19,9 @@ from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
     CurrentTripBookingListResponse,
+    CurrentTripBookingSessionListResponse,
+    BookingSessionCurrentTripStatusResponse,
+    BookingSessionCurrentTripLiveLocationResponse,
     CurrentTripLiveLocationResponse,
     CurrentTripStatusResponse,
     FarePreviewRequest,
@@ -436,6 +439,47 @@ async def list_booking_sessions(
     return await service.list_booking_sessions(
         current_user,
         status=status,
+    )
+
+
+@router.get(
+    "/booking-sessions/current",
+    response_model=CurrentTripBookingSessionListResponse,
+)
+async def list_current_booking_sessions(
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> CurrentTripBookingSessionListResponse:
+    return await service.list_current_booking_sessions(current_user)
+
+
+@router.get(
+    "/booking-sessions/{booking_session_id}/current-status",
+    response_model=BookingSessionCurrentTripStatusResponse,
+)
+async def get_booking_session_current_trip_status(
+    booking_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionCurrentTripStatusResponse:
+    return await service.get_booking_session_current_trip_status(
+        current_user,
+        booking_session_id,
+    )
+
+
+@router.get(
+    "/booking-sessions/{booking_session_id}/live-location",
+    response_model=BookingSessionCurrentTripLiveLocationResponse,
+)
+async def get_booking_session_live_location(
+    booking_session_id: str,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionCurrentTripLiveLocationResponse:
+    return await service.get_booking_session_live_location(
+        current_user,
+        booking_session_id,
     )
 
 

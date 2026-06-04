@@ -592,6 +592,16 @@ class CurrentTripSegmentStopResponse(BaseModel):
 
 class CurrentTripStatusResponse(BaseModel):
     booking_id: str
+    booking_session_id: str | None
+    passenger_user_id: str
+    booked_by_user_id: str | None
+
+    traveller_profile_id: str | None
+    traveller_name_snapshot: str | None
+    traveller_phone_snapshot: str | None
+    traveller_email_snapshot: str | None
+    traveller_relationship_label_snapshot: str | None
+
     seat_number: int
     scheduled_trip_id: str
     otp: str | None
@@ -613,6 +623,16 @@ class CurrentTripStatusResponse(BaseModel):
 
 class CurrentTripLiveLocationResponse(BaseModel):
     booking_id: str
+    booking_session_id: str | None
+    passenger_user_id: str
+    booked_by_user_id: str | None
+
+    traveller_profile_id: str | None
+    traveller_name_snapshot: str | None
+    traveller_phone_snapshot: str | None
+    traveller_email_snapshot: str | None
+    traveller_relationship_label_snapshot: str | None
+
     scheduled_trip_id: str
     booking_status: str
     trip_status: str
@@ -623,6 +643,43 @@ class CurrentTripLiveLocationResponse(BaseModel):
     completed_at: datetime | None
     actual_end_at: datetime | None
     updated_at: datetime
+
+
+
+class CurrentTripBookingSessionResponse(BaseModel):
+    booking_session_id: str
+    owner_user_id: str
+    scheduled_trip_id: str
+    route_id: str
+    pickup_stop_id: str
+    dropoff_stop_id: str
+    status: str
+    total_fare_amount: Decimal
+    payment_hold_expires_at: datetime | None
+    confirmed_at: datetime | None
+    cancelled_at: datetime | None
+    expired_at: datetime | None
+    bookings: list[CurrentTripBookingResponse]
+    booking_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class CurrentTripBookingSessionListResponse(BaseModel):
+    items: list[CurrentTripBookingSessionResponse]
+    count: int
+
+
+class BookingSessionCurrentTripStatusResponse(BaseModel):
+    booking_session_id: str
+    items: list[CurrentTripStatusResponse]
+    count: int
+
+
+class BookingSessionCurrentTripLiveLocationResponse(BaseModel):
+    booking_session_id: str
+    items: list[CurrentTripLiveLocationResponse]
+    count: int
 
 
 class SupportTicketResponse(BaseModel):
