@@ -12,6 +12,7 @@ from app.auth.dependencies import get_current_user
 from app.db.database import get_async_session
 from app.db.schema import (
     BookingPaymentStatus,
+    BookingSession,
     BookingStatus,
     Route,
     RouteStop,
@@ -94,10 +95,21 @@ def _resolve_driver_traveller_display(
 def _resolve_fare_paid(
     booking: TripBooking,
 ) -> Decimal:
+
+    booking_session = getattr(
+        booking,
+        "booking_session",
+        None,
+    )
+
+    if not booking_session:
+        return Decimal("0.00")
+
     paid_payments = [
         payment
-        for payment in booking.payments
-        if payment.status == BookingPaymentStatus.PAID
+        for payment in booking_session.payments
+        if payment.status
+        == BookingPaymentStatus.PAID
     ]
 
     if not paid_payments:
@@ -111,8 +123,24 @@ def _resolve_fare_paid(
         reverse=True,
     )
 
-    return _money(
+    session_paid = _money(
         paid_payments[0].amount
+    )
+
+    bookings = getattr(
+        booking_session,
+        "bookings",
+        [],
+    )
+
+    booking_count = max(
+        1,
+        len(bookings),
+    )
+
+    return _money(
+        session_paid
+        / Decimal(booking_count)
     )
 
 
@@ -165,11 +193,27 @@ async def get_booking_details(
                 TripBooking.dropoff_stop
             ),
 
+            # Load booking session payments
             selectinload(
                 ScheduledTrip.bookings
             )
             .selectinload(
-                TripBooking.payments
+                TripBooking.booking_session
+            )
+            .selectinload(
+                BookingSession.payments
+            ),
+
+            # Load all bookings inside same session
+            # (needed for fare split calculation)
+            selectinload(
+                ScheduledTrip.bookings
+            )
+            .selectinload(
+                TripBooking.booking_session
+            )
+            .selectinload(
+                BookingSession.bookings
             ),
 
             selectinload(
@@ -182,7 +226,7 @@ async def get_booking_details(
                 User.passenger_profile
             ),
         )
-    )
+    )    
 
     trip = result.scalar_one_or_none()
 
@@ -205,15 +249,35 @@ async def get_booking_details(
     )
 
     # 3️⃣ Keep only driver-useful bookings
-    visible_bookings = [
-        booking
-        for booking in trip.bookings
-        if booking.booking_status in (
-            BookingStatus.BOOKED,
-            BookingStatus.BOARDED,
-            BookingStatus.COMPLETED,
+    # 3️⃣ Keep driver-visible bookings
+
+    trip_finished = (
+        getattr(trip.status, "value", trip.status)
+        in (
+            "completed",
+            "premature_end",
         )
-    ]
+    )
+
+    if trip_finished:
+        # After trip ends → show history
+        visible_bookings = [
+            booking
+            for booking in trip.bookings
+            if booking.booking_status
+            != BookingStatus.PENDING_PAYMENT
+        ]
+    else:
+        # Active trip → only operational bookings
+        visible_bookings = [
+            booking
+            for booking in trip.bookings
+            if booking.booking_status in (
+                BookingStatus.BOOKED,
+                BookingStatus.BOARDED,
+                BookingStatus.COMPLETED,
+            )
+        ]
 
     visible_bookings.sort(
         key=lambda booking: (
