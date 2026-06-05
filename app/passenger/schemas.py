@@ -445,6 +445,13 @@ class BookingRatingResponse(BaseModel):
 class TripBookingResponse(BaseModel):
     id: str
     passenger_user_id: str
+    booking_session_id: str | None
+    booked_by_user_id: str | None
+    traveller_profile_id: str | None
+    traveller_name_snapshot: str | None
+    traveller_phone_snapshot: str | None
+    traveller_email_snapshot: str | None
+    traveller_relationship_label_snapshot: str | None
     scheduled_trip_id: str
     route_id: str
     pickup_stop_id: str
@@ -473,6 +480,13 @@ class TripBookingResponse(BaseModel):
 class BookingDetailResponse(BaseModel):
     id: str
     passenger_user_id: str
+    booking_session_id: str | None
+    booked_by_user_id: str | None
+    traveller_profile_id: str | None
+    traveller_name_snapshot: str | None
+    traveller_phone_snapshot: str | None
+    traveller_email_snapshot: str | None
+    traveller_relationship_label_snapshot: str | None
     scheduled_trip_id: str
     route_id: str
     pickup_stop_id: str
