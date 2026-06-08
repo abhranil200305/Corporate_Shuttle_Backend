@@ -120,17 +120,6 @@ async def _get_refund_request_for_update(
     stmt = (
         select(BookingSeatRefundRequest)
         .where(BookingSeatRefundRequest.id == refund_request_id)
-        .options(
-            selectinload(BookingSeatRefundRequest.__mapper__.relationships)
-        )
-        .with_for_update(skip_locked=True)
-        .limit(1)
-    )
-
-    # Avoid relying on relationship declarations, because this model may not have them.
-    stmt = (
-        select(BookingSeatRefundRequest)
-        .where(BookingSeatRefundRequest.id == refund_request_id)
         .with_for_update(skip_locked=True)
         .limit(1)
     )
