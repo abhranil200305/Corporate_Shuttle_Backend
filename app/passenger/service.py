@@ -7531,6 +7531,27 @@ class PassengerService:
                 },
             )
 
+        trip_end_at = (
+            booking.scheduled_trip.actual_end_at
+            or booking.scheduled_trip.planned_end_at
+        )
+
+        if trip_end_at.tzinfo is None:
+            trip_end_at = trip_end_at.replace(tzinfo=timezone.utc)
+
+        rating_deadline_at = trip_end_at + timedelta(hours=48)
+
+        if datetime.now(timezone.utc) > rating_deadline_at:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "rating_window_expired",
+                    "message": "Rating is allowed only within 48 hours after trip end.",
+                    "trip_end_at": trip_end_at.isoformat(),
+                    "rating_deadline_at": rating_deadline_at.isoformat(),
+                },
+            )
+
         if booking.rating is not None:
             raise HTTPException(
                 status_code=409,
