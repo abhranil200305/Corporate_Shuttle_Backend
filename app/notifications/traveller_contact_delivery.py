@@ -7,6 +7,8 @@ import smtplib
 import ssl
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import html
+import json
 from email.message import EmailMessage
 from typing import Any
 from uuid import uuid4
@@ -98,6 +100,7 @@ class SMTPEmailSender:
         to_email: str,
         subject: str,
         body: str,
+        html_body: str | None = None,
     ) -> str:
         config = self.load_config()
         if config is None:
@@ -113,7 +116,13 @@ class SMTPEmailSender:
         message["Subject"] = subject
         message["From"] = f"{config.from_name} <{config.from_email}>"
         message["To"] = recipient
+
+        # Plain-text fallback for clients that block HTML.
         message.set_content(body)
+
+        # Rich HTML version for normal email clients.
+        if html_body:
+            message.add_alternative(html_body, subtype="html")
 
         provider_message_id = f"email:{uuid4().hex}"
 
@@ -253,6 +262,171 @@ class TravellerContactDeliveryService:
             reason=f"Unsupported traveller contact channel: {channel or 'empty'}.",
         )
 
+    @staticmethod
+    def _parse_message_lines(message: str) -> dict[str, str]:
+        parsed: dict[str, str] = {
+            "intro": "",
+            "route": "",
+            "pickup": "",
+            "drop": "",
+            "seat": "",
+            "otp": "",
+            "vehicle": "",
+            "footer": "",
+        }
+
+        lines = [
+            line.strip()
+            for line in (message or "").splitlines()
+            if line.strip()
+        ]
+
+        if lines:
+            parsed["intro"] = lines[0]
+
+        for line in lines[1:]:
+            lowered = line.lower()
+
+            if lowered.startswith("route:"):
+                parsed["route"] = line.split(":", 1)[1].strip()
+            elif lowered.startswith("pickup:"):
+                parsed["pickup"] = line.split(":", 1)[1].strip()
+            elif lowered.startswith("drop:"):
+                parsed["drop"] = line.split(":", 1)[1].strip()
+            elif lowered.startswith("seat:"):
+                parsed["seat"] = line.split(":", 1)[1].strip()
+            elif lowered.startswith("boarding otp:"):
+                parsed["otp"] = line.split(":", 1)[1].strip()
+            elif lowered.startswith("vehicle:"):
+                parsed["vehicle"] = line.split(":", 1)[1].strip()
+            else:
+                parsed["footer"] = line
+
+        return parsed
+
+    @classmethod
+    def _build_traveller_email_html(
+        cls,
+        notification: TravellerContactNotification,
+    ) -> str:
+        parsed = cls._parse_message_lines(notification.message or "")
+
+        intro = html.escape(parsed["intro"] or "Your shuttle booking has been updated.")
+        route = html.escape(parsed["route"] or "Your shuttle route")
+        pickup = html.escape(parsed["pickup"] or "TBA")
+        drop = html.escape(parsed["drop"] or "TBA")
+        seat = html.escape(parsed["seat"] or "TBA")
+        vehicle = html.escape(parsed["vehicle"] or "TBA")
+        otp = html.escape(parsed["otp"])
+        footer = html.escape(
+            parsed["footer"]
+            or "For changes or cancellation, contact the person who booked this ride."
+        )
+
+        otp_block = ""
+        if otp:
+            otp_block = f"""
+              <tr>
+                <td style="padding: 18px 0 4px;">
+                  <div style="font-size: 13px; color: #64748b; margin-bottom: 8px;">
+                    Boarding OTP
+                  </div>
+                  <div style="
+                    display: inline-block;
+                    letter-spacing: 6px;
+                    font-size: 32px;
+                    font-weight: 800;
+                    color: #0f172a;
+                    background: #f8fafc;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 14px;
+                    padding: 16px 22px;
+                  ">
+                    {otp}
+                  </div>
+                  <div style="font-size: 12px; color: #64748b; margin-top: 8px;">
+                    Show this OTP to the driver while boarding.
+                  </div>
+                </td>
+              </tr>
+            """
+
+        return f"""<!doctype html>
+<html>
+  <body style="margin:0; padding:0; background:#f1f5f9; font-family: Arial, Helvetica, sans-serif;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9; padding: 28px 12px;">
+      <tr>
+        <td align="center">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width: 560px; background:#ffffff; border-radius: 18px; overflow:hidden; border:1px solid #e2e8f0;">
+            <tr>
+              <td style="background:#0f172a; padding: 24px 28px;">
+                <div style="font-size: 13px; color:#cbd5e1; text-transform: uppercase; letter-spacing: 1px;">
+                  Shuttle Booking
+                </div>
+                <div style="font-size: 24px; line-height: 32px; color:#ffffff; font-weight: 800; margin-top: 6px;">
+                  Seat confirmed
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding: 26px 28px;">
+                <div style="font-size: 17px; line-height: 26px; color:#0f172a; font-weight: 700;">
+                  {intro}
+                </div>
+
+                <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top: 22px;">
+                  <tr>
+                    <td style="padding: 12px 0; border-top:1px solid #e2e8f0;">
+                      <div style="font-size: 12px; color:#64748b;">Route</div>
+                      <div style="font-size: 15px; color:#0f172a; font-weight: 700;">{route}</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 12px 0; border-top:1px solid #e2e8f0;">
+                      <div style="font-size: 12px; color:#64748b;">Pickup</div>
+                      <div style="font-size: 15px; color:#0f172a;">{pickup}</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 12px 0; border-top:1px solid #e2e8f0;">
+                      <div style="font-size: 12px; color:#64748b;">Drop</div>
+                      <div style="font-size: 15px; color:#0f172a;">{drop}</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 12px 0; border-top:1px solid #e2e8f0;">
+                      <div style="font-size: 12px; color:#64748b;">Seat</div>
+                      <div style="font-size: 15px; color:#0f172a; font-weight: 700;">{seat}</div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style="padding: 12px 0; border-top:1px solid #e2e8f0;">
+                      <div style="font-size: 12px; color:#64748b;">Vehicle</div>
+                      <div style="font-size: 15px; color:#0f172a;">{vehicle}</div>
+                    </td>
+                  </tr>
+                  {otp_block}
+                </table>
+
+                <div style="margin-top: 24px; padding: 14px 16px; background:#f8fafc; border-radius: 12px; color:#475569; font-size: 13px; line-height: 20px;">
+                  {footer}
+                </div>
+              </td>
+            </tr>
+
+            <tr>
+              <td style="padding: 18px 28px; background:#f8fafc; color:#94a3b8; font-size: 12px; line-height: 18px;">
+                This is an automated message from Shuttle. Please do not reply to this email.
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>"""
+
     async def _process_email(
         self,
         notification: TravellerContactNotification,
@@ -272,6 +446,7 @@ class TravellerContactDeliveryService:
                 to_email=recipient,
                 subject=notification.title,
                 body=notification.message,
+                html_body=self._build_traveller_email_html(notification),
             )
         except Exception as exc:
             await self._mark_failed(notification, exc)
