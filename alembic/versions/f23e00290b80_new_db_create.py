@@ -1,8 +1,8 @@
-"""Fresh migration
+"""new db create
 
-Revision ID: e2f23e0966f0
+Revision ID: f23e00290b80
 Revises: 
-Create Date: 2026-06-02 11:00:33.902617
+Create Date: 2026-06-16 14:28:33.914115
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'e2f23e0966f0'
+revision: str = 'f23e00290b80'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -794,11 +794,11 @@ def upgrade() -> None:
     )
     op.create_index('ix_trip_bookings_booked_by_user', 'trip_bookings', ['booked_by_user_id'], unique=False)
     op.create_index('ix_trip_bookings_booking_session', 'trip_bookings', ['booking_session_id'], unique=False)
+    op.create_index('ix_trip_bookings_passenger_trip_active', 'trip_bookings', ['passenger_user_id', 'scheduled_trip_id'], unique=False, postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.create_index('ix_trip_bookings_status_refund_retry_after', 'trip_bookings', ['booking_status', 'refund_retry_after'], unique=False)
     op.create_index('ix_trip_bookings_traveller_profile', 'trip_bookings', ['traveller_profile_id'], unique=False)
     op.create_index('ix_trip_bookings_trip_seat_status', 'trip_bookings', ['scheduled_trip_id', 'seat_number', 'booking_status'], unique=False)
     op.create_index('ix_trip_bookings_trip_status', 'trip_bookings', ['scheduled_trip_id', 'booking_status'], unique=False)
-    op.create_index('uq_trip_bookings_passenger_trip_active', 'trip_bookings', ['passenger_user_id', 'scheduled_trip_id'], unique=True, postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.create_table('booking_payments',
     sa.Column('booking_id', sa.String(length=36), nullable=False),
     sa.Column('razorpay_order_id', sa.String(length=64), nullable=False),
@@ -1185,11 +1185,11 @@ def downgrade() -> None:
     op.drop_table('booking_ratings')
     op.drop_index('ix_booking_payments_booking_status', table_name='booking_payments')
     op.drop_table('booking_payments')
-    op.drop_index('uq_trip_bookings_passenger_trip_active', table_name='trip_bookings', postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.drop_index('ix_trip_bookings_trip_status', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_trip_seat_status', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_traveller_profile', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_status_refund_retry_after', table_name='trip_bookings')
+    op.drop_index('ix_trip_bookings_passenger_trip_active', table_name='trip_bookings', postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.drop_index('ix_trip_bookings_booking_session', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_booked_by_user', table_name='trip_bookings')
     op.drop_table('trip_bookings')
