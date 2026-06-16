@@ -2268,12 +2268,19 @@ class PassengerService:
         else:
             first_line = f"Hi {traveller_name}, your shuttle booking has an update."
 
+        otp = self._serialize_booking_otp(booking)
+
+        otp_line = ""
+        if event_type == "traveller_seat_confirmed" and otp:
+            otp_line = f"Boarding OTP: {otp}\n"
+
         return (
             f"{first_line}\n"
             f"Route: {route_text}\n"
             f"Pickup: {context['pickup_stop_name']} at {pickup_time_text}\n"
             f"Drop: {context['dropoff_stop_name']} around {dropoff_time_text}\n"
             f"Seat: {booking.seat_number}\n"
+            f"{otp_line}"
             f"Vehicle: {vehicle_text}\n"
             f"For changes or cancellation, contact the person who booked this ride."
         )
