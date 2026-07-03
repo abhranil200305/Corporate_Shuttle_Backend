@@ -56,6 +56,11 @@ async def record_rfid_scan(
                 data=event_data,
                 user_ids=[driver_user_id],
             )
+        await refresh_hub.publish(
+            UserRole.ADMIN,
+            event="rfid.scan_completed",
+            data=event_data,
+        )
         if response.get("scheduled_trip_id"):
             await refresh_hub.publish(
                 UserRole.PASSENGER,

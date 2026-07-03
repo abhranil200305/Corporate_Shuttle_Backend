@@ -29,6 +29,19 @@ def get_api_refresh_hub(app: Any) -> APIRefreshHub:
     return hub
 
 
+async def publish_admin_event(
+    hub: APIRefreshHub,
+    *,
+    event: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    await hub.publish(
+        UserRole.ADMIN,
+        event=event,
+        data=data or {},
+    )
+
+
 async def passenger_user_ids_for_trip(
     db: AsyncSession,
     trip_id: str,
@@ -60,6 +73,7 @@ async def publish_route_event(
 ) -> None:
     await hub.publish(UserRole.PASSENGER, event=event, data=data)
     await hub.publish(UserRole.DRIVER, event=event, data=data)
+    await hub.publish(UserRole.ADMIN, event=event, data=data)
 
 
 async def publish_trip_event(
@@ -75,6 +89,13 @@ async def publish_trip_event(
     notify_driver: bool = True,
 ) -> None:
     event_data = {"trip_id": trip_id, **(data or {})}
+
+    if supports_audience(event, UserRole.ADMIN):
+        await hub.publish(
+            UserRole.ADMIN,
+            event=event,
+            data=event_data,
+        )
 
     if notify_driver and supports_audience(event, UserRole.DRIVER):
         driver_user_id = await driver_user_id_for_trip(db, trip_id)
@@ -137,6 +158,12 @@ async def publish_booking_change(
             data=private_data,
             user_ids=[driver_user_id],
         )
+
+    await hub.publish(
+        UserRole.ADMIN,
+        event="booking.changed",
+        data=private_data,
+    )
 
     await hub.publish(
         UserRole.PASSENGER,
@@ -260,6 +287,16 @@ async def publish_departure_allowed_if_eligible(
         },
         user_ids=[trip.driver_user_id],
     )
+    await hub.publish(
+        UserRole.ADMIN,
+        event="trip.departure_allowed",
+        data={
+            "trip_id": trip.id,
+            "route_id": trip.route_id,
+            "stop_id": stop_id,
+            "sequence_no": route_stop.sequence_no,
+        },
+    )
     return True
 
 
@@ -291,6 +328,17 @@ async def schedule_start_allowed(
                     "gps_check_still_required": True,
                 },
                 user_ids=[driver_user_id],
+            )
+            await hub.publish(
+                UserRole.ADMIN,
+                event="trip.start_allowed",
+                data={
+                    "trip_id": trip.id,
+                    "route_id": trip.route_id,
+                    "planned_start_at": start_at.isoformat(),
+                    "start_window_ends_at": grace_ends_at.isoformat(),
+                    "gps_check_still_required": True,
+                },
             )
 
     await hub.schedule_callback(

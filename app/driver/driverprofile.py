@@ -1,11 +1,10 @@
 # app/driver/driverprofile.py
 
 from pydantic import BaseModel
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.exc import IntegrityError
 from pathlib import Path
-import shutil
 import uuid
 from typing import Optional
 import aiofiles
@@ -17,6 +16,7 @@ from app.db.schema import BookingRating
 from app.db.schema import DriverProfile, User, DriverVerificationStatus
 from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
+from app.realtime.events import get_api_refresh_hub, publish_admin_event
 
 
 router = APIRouter(prefix="/driver-profile", tags=["DriverProfile"])
@@ -78,6 +78,7 @@ async def save_upload_async(file: UploadFile, folder: Path = UPLOAD_DIR) -> str:
 # ------------------------------
 @router.post("/")
 async def create_driver_profile(
+    request: Request,
     full_name: str = Form(...),
     phone: str = Form(...),
 
@@ -237,6 +238,14 @@ async def create_driver_profile(
             detail=str(e.orig),
         )
 
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.drivers_changed",
+        data={
+            "driver_user_id": current_user.id,
+            "reason": "driver_profile_created",
+        },
+    )
     return driver_profile
 
 
@@ -297,6 +306,7 @@ async def get_my_driver_profile(
 # ------------------------------
 @router.patch("/update", response_model=DriverProfileResponse)
 async def update_driver_profile(
+    request: Request,
     full_name: Optional[str] = Form(None),
     phone: Optional[str] = Form(None),
 
@@ -369,7 +379,7 @@ async def update_driver_profile(
     avg_rating = round(sum(ratings) / len(ratings), 2) if ratings else None
     total_reviews = len(ratings)
 
-    return DriverProfileResponse(
+    response = DriverProfileResponse(
         id=profile.id,
         user_id=profile.user_id,
         full_name=profile.full_name,
@@ -391,3 +401,12 @@ async def update_driver_profile(
         created_at=profile.created_at,
         updated_at=profile.updated_at,
     )
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.drivers_changed",
+        data={
+            "driver_user_id": current_user.id,
+            "reason": "driver_profile_updated",
+        },
+    )
+    return response

@@ -24,6 +24,7 @@ from app.auth.schemas import (
 )
 from app.auth.service import AuthService
 from app.auth.session_utils import extract_bearer_token
+from app.realtime.events import get_api_refresh_hub, publish_admin_event
 from app.db.schema import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -121,10 +122,20 @@ async def signup(
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthTokenResponse:
     try:
-        return await auth_service.signup(
+        result = await auth_service.signup(
             payload,
             **_device_metadata_from_request(request, payload.device),
         )
+        await publish_admin_event(
+            get_api_refresh_hub(request.app),
+            event="admin.users_changed",
+            data={
+                "user_id": result.user.user_id,
+                "role": result.user.role.value,
+                "reason": "user_signed_up",
+            },
+        )
+        return result
     except AuthError as exc:
         raise to_http_exception(exc) from exc
 
@@ -161,10 +172,20 @@ async def login(
     auth_service: AuthService = Depends(get_auth_service),
 ) -> AuthTokenResponse:
     try:
-        return await auth_service.login(
+        result = await auth_service.login(
             payload,
             **_device_metadata_from_request(request, payload.device),
         )
+        await publish_admin_event(
+            get_api_refresh_hub(request.app),
+            event="admin.users_changed",
+            data={
+                "user_id": result.user.user_id,
+                "role": result.user.role.value,
+                "reason": "user_logged_in",
+            },
+        )
+        return result
     except AuthError as exc:
         raise to_http_exception(exc) from exc
 
@@ -174,11 +195,23 @@ async def login(
 # -----------------------------
 @router.post("/logout", response_model=MessageResponse)
 async def logout(
+    request: Request,
     token: str = Depends(get_bearer_token_from_request),
+    current_user: User = Depends(get_current_active_user),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
     try:
-        return await auth_service.logout(token)
+        result = await auth_service.logout(token)
+        await publish_admin_event(
+            get_api_refresh_hub(request.app),
+            event="admin.users_changed",
+            data={
+                "user_id": current_user.id,
+                "role": current_user.role.value,
+                "reason": "user_logged_out",
+            },
+        )
+        return result
     except AuthError as exc:
         raise to_http_exception(exc) from exc
     
@@ -203,14 +236,26 @@ async def list_my_devices(
 @router.delete("/devices/{session_id}", response_model=MessageResponse)
 async def remove_my_device(
     session_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     auth_service: AuthService = Depends(get_auth_service),
 ) -> MessageResponse:
     try:
-        return await auth_service.remove_current_user_device(
+        result = await auth_service.remove_current_user_device(
             user=current_user,
             session_id=session_id,
         )
+        await publish_admin_event(
+            get_api_refresh_hub(request.app),
+            event="admin.users_changed",
+            data={
+                "user_id": current_user.id,
+                "role": current_user.role.value,
+                "session_id": session_id,
+                "reason": "user_device_removed",
+            },
+        )
+        return result
     except AuthError as exc:
         raise to_http_exception(exc) from exc
     

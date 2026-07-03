@@ -1,10 +1,11 @@
 # API refresh WebSockets: architecture and migration guide
 
 This document explains the complete feature at system level. The frontend
-handoff is split into two standalone guides:
+handoff is split into three standalone guides:
 
 - [Passenger integration](PASSENGER_API_REFRESH_WEBSOCKET.md)
 - [Driver integration](DRIVER_API_REFRESH_WEBSOCKET.md)
+- [Admin integration](ADMIN_API_REFRESH_WEBSOCKET.md)
 
 Each role guide contains its own connection code, event table, API-invalidation
 mapping, UI behavior, and acceptance checklist. A developer implementing only
@@ -12,12 +13,13 @@ one application does not need to read the other role guide.
 
 ## 1. Executive contract
 
-The backend now exposes two authenticated event channels:
+The backend now exposes three authenticated event channels:
 
 | Client | WebSocket path | Required token role |
 | --- | --- | --- |
 | Passenger | `/passenger/ws/refresh?token=<access_token>` | `passenger` |
 | Driver | `/driver/ws/refresh?token=<access_token>` | `driver` |
+| Admin | `/admin/ws/refresh?token=<access_token>` | `admin` |
 
 These channels do not stream complete domain objects. They tell a client that
 server state changed and identify the resource groups and API patterns that may
@@ -45,6 +47,7 @@ remain in place and have different jobs.
 | Passenger seat map | `/passenger/seatmap/ws?token=...` | Topic-specific, authoritative seat availability snapshots for one trip and leg | No | Yes, for the subscribed seat-map topic |
 | Passenger API refresh | `/passenger/ws/refresh?token=...` | Invalidates passenger route, trip, booking, status, and RFID API state | No | No |
 | Driver API refresh | `/driver/ws/refresh?token=...` | Invalidates driver route, current-trip, manifest, and RFID state; signals action eligibility | No | No |
+| Admin API refresh | `/admin/ws/refresh?token=...` | Invalidates admin user, operations, route/trip/booking, RFID, support/review, payout, and settings state | No | No |
 
 The new sockets supplement the old ones; they do not replace them.
 
@@ -69,6 +72,16 @@ A logged-in driver normally keeps these connections:
 
 There is no driver seat-map socket.
 
+### 2.3 Admin application connection set
+
+A logged-in admin normally keeps:
+
+- `/notifications/ws` for notification-center content.
+- `/admin/ws/refresh` for application-wide admin cache invalidation.
+
+The admin socket receives shared operational broadcasts. See the standalone
+admin guide for the exhaustive surface/resource mapping.
+
 ## 3. Authentication and transport
 
 The token is the `access_token` returned by `POST /auth/login` or
@@ -80,6 +93,7 @@ Browser connection:
 ```text
 wss://api.example.com/passenger/ws/refresh?token=<URL-encoded-access-token>
 wss://api.example.com/driver/ws/refresh?token=<URL-encoded-access-token>
+wss://api.example.com/admin/ws/refresh?token=<URL-encoded-access-token>
 ```
 
 Native/non-browser clients may omit the query token and send:
@@ -94,8 +108,8 @@ HTTPS environment and avoid logging full WebSocket URLs because they contain a
 session credential.
 
 Missing, invalid, expired, logged-out, or role-mismatched credentials are
-rejected with WebSocket close code `1008`. A passenger token cannot open the
-driver channel, and a driver token cannot open the passenger channel.
+rejected with WebSocket close code `1008`. Tokens cannot open another role's
+channel.
 
 ## 4. Connection protocol
 
@@ -146,7 +160,7 @@ button stale.
 ### 4.3 Common event envelope
 
 ```ts
-type RefreshAudience = "passenger" | "driver";
+type RefreshAudience = "passenger" | "driver" | "admin";
 
 interface ApiRefreshMessage {
   type: "api.refresh";
@@ -179,7 +193,8 @@ The hub is deliberately an invalidation bus, not a durable event log.
 - A disconnected client can miss events.
 - Multiple devices/sockets for the same user are supported; targeted events go
   to every currently connected device for that user.
-- Broadcast events go to every currently connected user of that role.
+- Broadcast events go to every currently connected user of that role. Admin
+  events are broadcasts to all admins so operator consoles and tabs converge.
 - Per-connection writes are serialized, but frontend correctness must not rely
   on a global event order across independent backend requests.
 - Duplicate invalidations are safe and may occur. Coalesce them for roughly
@@ -195,7 +210,8 @@ The following committed mutations produce events.
 
 ### 6.1 Route and stop catalog
 
-Admin operations broadcast `route.created` or `route.updated` to both roles:
+Admin operations broadcast `route.created` or `route.updated` to all three
+roles:
 
 - Route identity creation.
 - Stop bulk upload.
@@ -223,6 +239,8 @@ Admin operations broadcast `route.created` or `route.updated` to both roles:
   catalog refresh.
 - Admin manual completion emits `trip.completed` and a passenger catalog
   refresh.
+- Every trip lifecycle event above also refreshes all connected admin trip
+  monitor/detail surfaces.
 
 ### 6.3 Booking and seat state
 
@@ -233,6 +251,8 @@ reconciliation outcomes produce:
 - Private `booking.changed` to the booking owner and assigned driver.
 - Broadcast `trip.seat_availability_changed` to passenger clients. This event
   intentionally contains no private booking identifier.
+- Broadcast private-detail-capable `booking.changed` to the trusted admin role
+  so booking/session/transaction/analytics surfaces refresh.
 
 The existing passenger seat-map hub also continues pushing full
 `seat_map.snapshot` messages to subscribers for matching trip/leg topics.
@@ -246,6 +266,7 @@ The existing passenger seat-map hub also continues pushing full
   passenger and assigned driver.
 - Accepted RFID scans also broadcast `trip.rfid_occupancy_changed` to
   passengers so RFID discovery/availability screens can refresh.
+- Accepted QR/OTP and RFID scans also refresh admin manifest/RFID operations.
 - Rejected RFID scans do not produce refresh events.
 
 ### 6.5 Background jobs
@@ -256,26 +277,25 @@ The existing passenger seat-map hub also continues pushing full
   window expires and the trip is automatically cancelled.
 - Existing notification and seat-map emissions from those jobs remain active.
 
-### 6.6 Current coverage boundaries
+### 6.6 Admin surface events
 
-The refresh catalog is exhaustive for the route/trip/booking/scan flows listed
-above, but it is not a universal change-data-capture system. The following
-areas currently do not emit through these new sockets:
+The admin channel additionally covers users/devices, passenger and driver
+profiles, traveller profiles, KYC, vehicles/inspection, RFID administration and
+recharges, support/incidents, reviews, payout operations, device settings, and
+commercial rules. Successful admin mutations are classified by path after the
+response; richer route/trip/booking emitters are used where entity IDs and
+domain reasons are available. Passenger/driver-originated mutations explicitly
+publish the corresponding admin group event.
 
-- Passenger or driver profile edits, traveller-profile edits, KYC, vehicle
-  edits/verification, support tickets, ratings, fines, and payout operations.
-- Notification read/unread mutations; those belong to the notification APIs
-  and notification WebSocket.
-- Every live driver location write. The driver near-stop API updates persisted
-  coordinates, but there is no location-stream event here.
-- Passenger RFID recharge/order verification and every refund reconciliation
-  transition. Accepted RFID board/drop scans are covered.
-- Admin RFID policy/device/card changes unless they lead to a covered scan or
-  trip/booking event.
+### 6.7 Current coverage boundaries
 
-Frontend screens for these areas continue using their existing mutation
-responses, polling/focus refetch, and notification behavior. Add a cataloged
-event explicitly if cross-device live invalidation is later required.
+This is an explicit invalidation bus, not universal database change capture.
+Notification read/unread state remains on notification APIs/socket. Every live
+driver location write is not streamed. Driver fines are currently read-only in
+the exposed driver API. Background jobs other than the wired payment
+reconciler and unstarted-trip canceller must add explicit refresh publication
+if they introduce admin-visible state transitions. Screens must always fetch on
+mount and use mutation responses even when no event is expected.
 
 ## 7. Driver action eligibility semantics
 
@@ -328,19 +348,22 @@ emitters.
 | --- | --- |
 | `app/realtime/catalog.py` | Canonical event-to-role resource and endpoint mappings. An event cannot be emitted to a role unless it is registered here. |
 | `app/realtime/hub.py` | Role/user/connection registry, multi-device delivery, per-connection send locks, JSON encoding, failure cleanup, delayed callback scheduling, and shutdown. |
-| `app/realtime/router.py` | Passenger/driver WebSocket routes, session authentication, role enforcement, ready/initial-sync messages, heartbeat, and inbound ping/pong handling. |
+| `app/realtime/router.py` | Passenger/driver/admin WebSocket routes, session authentication, role enforcement, ready/initial-sync messages, heartbeat, and inbound ping/pong handling. |
 | `app/realtime/events.py` | Target resolution, trip passenger/driver lookup, booking privacy split, eligibility evaluation, timer creation/restoration, and reconnect eligibility. |
-| `main.py` | Creates `app.state.api_refresh_hub`, restores timers at startup, injects the hub into relevant background jobs, includes the router, and shuts the hub down. |
+| `app/realtime/admin_middleware.py` | Publishes classified admin surface invalidations after successful admin mutations. |
+| `main.py` | Creates `app.state.api_refresh_hub`, installs admin refresh middleware, restores timers at startup, injects the hub into relevant background jobs, includes the router, and shuts the hub down. |
 | `app/admin/endpoints/router.py` | Route/stop/fare, admin trip lifecycle, manual completion, and no-show emitters. |
 | `app/driver/trips/scheduled_trip.py` | Trip create/start/arrive/depart/end/emergency events and eligibility scheduling. |
 | `app/driver/trips/cancel_trip.py` | Driver cancellation event and start-timer cancellation. |
 | `app/driver/scan_events/scan.py` | QR board/drop event and post-drop departure recheck. |
 | `app/driver/scan_events/otp.py` | OTP board/drop event and post-drop departure recheck. |
 | `app/passenger/router.py` | Booking/session mutation emitters through one shared helper. |
+| `app/auth/router.py` | User/session/device invalidations for admin surfaces. |
+| `app/driver/driverprofile.py`, `driver_kyc.py`, `vehicle.py`, `support/support.py` | Cross-role admin driver/vehicle/support invalidations. |
 | `app/rfid/router.py` | Accepted RFID private and occupancy-broadcast events. |
 | `app/jobs/payment_reconciler.py` | Material background payment outcome events. |
 | `app/jobs/unstarted_scheduled_trip_canceller.py` | Automatic trip-cancellation event. |
-| `tests/test_api_refresh_hub.py` | Role isolation, multi-device targeting, delayed callbacks, and departure-policy coverage. |
+| `tests/test_api_refresh_hub.py` | Role isolation, admin mutation mapping, multi-device targeting, delayed callbacks, and departure-policy coverage. |
 
 ### 8.1 Connection storage
 
@@ -352,7 +375,7 @@ role -> user_id -> connection_id -> RefreshConnection
 
 This structure provides:
 
-- Strict passenger/driver fan-out separation.
+- Strict passenger/driver/admin fan-out separation.
 - Multiple tabs/devices per user.
 - Targeted user delivery without exposing private IDs to role broadcasts.
 - Per-socket send serialization with an async lock.
@@ -364,7 +387,7 @@ This structure provides:
 HTTP mutation/background job
     -> validate and mutate database
     -> commit transaction
-    -> resolve affected driver/passenger IDs
+    -> resolve affected driver/passenger IDs or choose admin role broadcast
     -> build payload from catalog
     -> send to all matching live connections
     -> frontend invalidates active HTTP cache
@@ -451,8 +474,9 @@ logical timer execution per trip/stop.
 
 ## 11. Verification and observability
 
-Current automated checks cover hub role isolation, multi-device targeted
-delivery, scheduled callback execution, and route-policy gating for departure.
+Current automated checks cover hub/admin role isolation, admin mutation
+classification, multi-device targeted delivery, scheduled callback execution,
+and route-policy gating for departure.
 The complete backend verification command used for this feature also compiles
 all modules and runs undefined-name/static checks.
 
@@ -478,6 +502,7 @@ Recommended production telemetry additions before broader scale:
 - Keep the existing notification socket.
 - Keep the passenger seat-map socket on seat-selection screens.
 - Add the role-specific refresh socket after login/session restoration.
+- Admin clients use only `/admin/ws/refresh` and the admin resource map.
 - Shut it down on logout or role/account switch.
 - Respond to heartbeat ping.
 - Implement reconnect with `1008` auth handling.

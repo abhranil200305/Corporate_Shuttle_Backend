@@ -299,6 +299,11 @@ async def scan_passenger(
         data=event_data,
         user_ids=[current_user.id],
     )
+    await refresh_hub.publish(
+        UserRole.ADMIN,
+        event="passenger.scan_completed",
+        data=event_data,
+    )
     if scan_type == ScanType.DROP:
         await publish_departure_allowed_if_eligible(
             refresh_hub,

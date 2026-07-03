@@ -73,7 +73,11 @@ from app.passenger.schemas import (
     VerifyBookingSessionPaymentRequest,
 )
 from app.passenger.service import PassengerService
-from app.realtime.events import get_api_refresh_hub, publish_booking_change
+from app.realtime.events import (
+    get_api_refresh_hub,
+    publish_admin_event,
+    publish_booking_change,
+)
 
 router = APIRouter(prefix="/passenger", tags=["passenger"])
 
@@ -122,13 +126,31 @@ async def emit_booking_refresh(
     )
     return result
 
+
+async def emit_admin_passenger_refresh(
+    request: Request,
+    current_user: User,
+    *,
+    reason: str,
+) -> None:
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.passengers_changed",
+        data={"user_id": current_user.id, "reason": reason},
+    )
+
 @router.post("/profile", response_model=PassengerProfileMutationResponse)
 async def create_profile(
     payload: PassengerProfileUpsertRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
-    return await service.create_profile(current_user, payload)
+    result = await service.create_profile(current_user, payload)
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="passenger_profile_created"
+    )
+    return result
 
 
 @router.get("/profile", response_model=PassengerProfileResponse)
@@ -142,18 +164,28 @@ async def get_profile(
 @router.patch("/profile", response_model=PassengerProfileMutationResponse)
 async def patch_profile(
     payload: PassengerProfileUpsertRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
-    return await service.patch_profile(current_user, payload)
+    result = await service.patch_profile(current_user, payload)
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="passenger_profile_updated"
+    )
+    return result
 
 @router.post("/profile/picture", response_model=PassengerProfileMutationResponse)
 async def upsert_profile_picture(
+    request: Request,
     file: UploadFile = File(...),
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerProfileMutationResponse:
-    return await service.upsert_profile_picture(current_user, file)
+    result = await service.upsert_profile_picture(current_user, file)
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="passenger_profile_picture_updated"
+    )
+    return result
 
 @router.get(
     "/traveller-profiles",
@@ -176,10 +208,15 @@ async def list_traveller_profiles(
 )
 async def create_traveller_profile(
     payload: PassengerTravellerProfileCreateRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerTravellerProfileMutationResponse:
-    return await service.create_traveller_profile(current_user, payload)
+    result = await service.create_traveller_profile(current_user, payload)
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="traveller_profile_created"
+    )
+    return result
 
 
 @router.patch(
@@ -189,14 +226,19 @@ async def create_traveller_profile(
 async def patch_traveller_profile(
     profile_id: str,
     payload: PassengerTravellerProfileUpdateRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerTravellerProfileMutationResponse:
-    return await service.patch_traveller_profile(
+    result = await service.patch_traveller_profile(
         current_user,
         profile_id,
         payload,
     )
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="traveller_profile_updated"
+    )
+    return result
 
 
 @router.delete(
@@ -205,10 +247,15 @@ async def patch_traveller_profile(
 )
 async def delete_traveller_profile(
     profile_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerTravellerProfileMutationResponse:
-    return await service.delete_traveller_profile(current_user, profile_id)
+    result = await service.delete_traveller_profile(current_user, profile_id)
+    await emit_admin_passenger_refresh(
+        request, current_user, reason="traveller_profile_deleted"
+    )
+    return result
 
 
 @router.get("/rfid/summary", response_model=PassengerRFIDSummaryResponse)
@@ -247,11 +294,20 @@ async def list_rfid_ledger(
 )
 async def create_rfid_recharge_order(
     payload: PassengerRFIDRechargeCreateOrderRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerRFIDRechargeCreateOrderResponse:
     result = await service.create_rfid_recharge_order(current_user, payload)
     await service.db.commit()
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.rfid_changed",
+        data={
+            "user_id": current_user.id,
+            "reason": "passenger_rfid_recharge_created",
+        },
+    )
     return result
 
 
@@ -262,6 +318,7 @@ async def create_rfid_recharge_order(
 async def verify_rfid_recharge_payment(
     recharge_id: str,
     payload: PassengerRFIDRechargeVerifyPaymentRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> PassengerRFIDRechargeMutationResponse:
@@ -271,6 +328,15 @@ async def verify_rfid_recharge_payment(
         payload=payload,
     )
     await service.db.commit()
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.rfid_changed",
+        data={
+            "user_id": current_user.id,
+            "recharge_id": recharge_id,
+            "reason": "passenger_rfid_recharge_verified",
+        },
+    )
     return result
 
 
@@ -739,10 +805,21 @@ async def get_booking_live_location(
 async def create_rating(
     booking_id: str,
     payload: CreateBookingRatingRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingRatingMutationResponse:
-    return await service.create_rating(current_user, booking_id, payload)
+    result = await service.create_rating(current_user, booking_id, payload)
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.reviews_changed",
+        data={
+            "user_id": current_user.id,
+            "booking_id": booking_id,
+            "reason": "passenger_rating_created",
+        },
+    )
+    return result
 
 
 @router.get("/bookings/{booking_id}/rating", response_model=BookingRatingResponse)
@@ -755,18 +832,28 @@ async def get_rating(
 
 @router.post("/support", response_model=SupportTicketCreateResponse)
 async def create_support_ticket(
+    request: Request,
     subject: str = Form(...),
     description: str = Form(...),
     file: UploadFile | None = File(default=None),
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> SupportTicketCreateResponse:
-    return await service.create_support_ticket(
+    result = await service.create_support_ticket(
         current_user,
         subject=subject,
         description=description,
         file=file,
     )
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.support_changed",
+        data={
+            "user_id": current_user.id,
+            "reason": "passenger_support_ticket_created",
+        },
+    )
+    return result
 
 @router.get("/support", response_model=SupportTicketListResponse)
 async def list_support_tickets(

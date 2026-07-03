@@ -75,6 +75,7 @@ from app.passenger.router import router as passenger_route
 from app.passenger.seatmap_ws import router as passenger_seatmap_router
 from app.passenger.seatmap_ws import seatmap_hub
 from app.realtime.events import bootstrap_api_refresh_schedules
+from app.realtime.admin_middleware import AdminRefreshMiddleware
 from app.realtime.hub import APIRefreshHub
 from app.realtime.router import router as api_refresh_router
 from app.rfid.router import router as rfid_router
@@ -262,6 +263,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AdminRefreshMiddleware)
 
 # ---------------------------
 # Static files

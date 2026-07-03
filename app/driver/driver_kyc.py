@@ -1,6 +1,6 @@
 # app/driver/driver_kyc.py
 
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from pathlib import Path
@@ -10,15 +10,13 @@ from datetime import datetime, timezone
 from typing import Optional
 from app.notifications.service import NotificationService
 from app.db.schema import User, UserRole
-from sqlalchemy import select
-from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, Request
-
 from app.db.database import get_async_session
 from app.db.schema import (
     DriverProfile,
     DriverVerificationStatus,
 )
 from app.auth.dependencies import get_current_user
+from app.realtime.events import get_api_refresh_hub, publish_admin_event
 
 from app.driver.validators import (
     validate_aadhaar,
@@ -67,6 +65,7 @@ async def get_driver(db: AsyncSession, user_id: str) -> Optional[DriverProfile]:
 # -----------------------------
 @router.patch("/upload-document")
 async def upload_documents(
+    request: Request,
     aadhaar_card: Optional[UploadFile] = File(None),
     pan: Optional[UploadFile] = File(None),
     driving_license: Optional[UploadFile] = File(None),
@@ -129,6 +128,15 @@ async def upload_documents(
         raise HTTPException(status_code=400, detail="No files or numbers provided")
 
     await db.commit()
+
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.drivers_changed",
+        data={
+            "driver_user_id": current_user.id,
+            "reason": "driver_kyc_documents_updated",
+        },
+    )
 
     return {
         "message": "Documents, IDs, and bank details updated successfully",
@@ -201,6 +209,15 @@ async def submit_kyc(
                 "type": "DRIVER_KYC_SUBMITTED"
             }
         )
+
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.drivers_changed",
+        data={
+            "driver_user_id": current_user.id,
+            "reason": "driver_kyc_submitted",
+        },
+    )
 
     return {
         "message": "KYC submitted successfully",

@@ -5,7 +5,6 @@ from pathlib import Path
 import shutil
 from datetime import datetime, timezone
 from app.notifications.service import NotificationService
-from app.notifications.hub import WSHub
 from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException, status, Request
 from app.db.schema import PlatformSettings
 
@@ -23,11 +22,30 @@ from app.db.schema import (
 from app.driver.schemas import VehicleOut
 from app.auth.dependencies import get_current_active_user
 from app.driver.validators import validate_registration_number
+from app.realtime.events import get_api_refresh_hub, publish_admin_event
 
 router = APIRouter(prefix="/driver/vehicle", tags=["Driver Vehicle"])
 
 UPLOAD_DIR = Path("uploads/upload_vehicledetails_photo")
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+
+async def emit_admin_vehicle_refresh(
+    request: Request,
+    *,
+    driver_user_id: str,
+    vehicle_id: str,
+    reason: str,
+) -> None:
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.vehicles_changed",
+        data={
+            "driver_user_id": driver_user_id,
+            "vehicle_id": vehicle_id,
+            "reason": reason,
+        },
+    )
 
 
 # ============================================================
@@ -65,6 +83,7 @@ def parse_registration_date(date_str: str) -> datetime:
     status_code=status.HTTP_201_CREATED
 )
 async def register_vehicle(
+    request: Request,
     registration_number: str = Form(...),
     registration_valid_till: str = Form(...),
 
@@ -501,6 +520,12 @@ async def register_vehicle(
             existing_vehicle
         )
 
+        await emit_admin_vehicle_refresh(
+            request,
+            driver_user_id=current_driver.id,
+            vehicle_id=existing_vehicle.id,
+            reason="driver_vehicle_registration_updated",
+        )
         return existing_vehicle
 
     # ---------------------------
@@ -556,6 +581,12 @@ async def register_vehicle(
 
     await session.refresh(vehicle)
 
+    await emit_admin_vehicle_refresh(
+        request,
+        driver_user_id=current_driver.id,
+        vehicle_id=vehicle.id,
+        reason="driver_vehicle_registered",
+    )
     return vehicle
 # ---------------------------
 # View Vehicle
@@ -641,6 +672,7 @@ async def get_my_vehicle(
 # ---------------------------
 @router.patch("/update", response_model=VehicleOut)
 async def update_vehicle(
+    request: Request,
     # ---------------------------
     # BASIC FIELDS
     # ---------------------------
@@ -1081,6 +1113,12 @@ async def update_vehicle(
     await session.commit()
     await session.refresh(vehicle)
 
+    await emit_admin_vehicle_refresh(
+        request,
+        driver_user_id=current_driver.id,
+        vehicle_id=vehicle.id,
+        reason="driver_vehicle_updated",
+    )
     return vehicle
 # ---------------------------
 # SUBMIT VEHICLE
@@ -1342,6 +1380,12 @@ async def submit_vehicle(
             },
         )
 
+    await emit_admin_vehicle_refresh(
+        request,
+        driver_user_id=current_driver.id,
+        vehicle_id=vehicle.id,
+        reason="driver_vehicle_submitted",
+    )
     return vehicle
 # ---------------------------
 # Get Inspection Status

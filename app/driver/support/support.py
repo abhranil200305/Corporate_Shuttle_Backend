@@ -4,11 +4,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, H
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from typing import Optional
-from datetime import datetime, timezone
 import shutil
 import uuid
 from pathlib import Path as FSPath
-from fastapi import Header
 from app.notifications.service import NotificationService
 from app.notifications.hub import WSHub
 from fastapi import Request  
@@ -17,6 +15,7 @@ from fastapi import Request
 from app.db.database import get_async_session
 from app.db.schema import SupportTicket, SupportStatus, User, UserRole
 from app.auth.dependencies import get_current_user  
+from app.realtime.events import get_api_refresh_hub, publish_admin_event
 
 router = APIRouter(prefix="/support", tags=["Support"])
 
@@ -103,6 +102,16 @@ async def create_support_ticket(
                 "description": description,
             },
         )
+
+    await publish_admin_event(
+        get_api_refresh_hub(request.app),
+        event="admin.support_changed",
+        data={
+            "ticket_id": ticket.id,
+            "user_id": current_user.id,
+            "reason": "driver_support_ticket_created",
+        },
+    )
 
     # ===========================
     # RESPONSE

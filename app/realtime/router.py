@@ -169,3 +169,8 @@ async def passenger_refresh_ws(websocket: WebSocket) -> None:
 @router.websocket("/driver/ws/refresh")
 async def driver_refresh_ws(websocket: WebSocket) -> None:
     await _serve_refresh_socket(websocket, UserRole.DRIVER)
+
+
+@router.websocket("/admin/ws/refresh")
+async def admin_refresh_ws(websocket: WebSocket) -> None:
+    await _serve_refresh_socket(websocket, UserRole.ADMIN)
