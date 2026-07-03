@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from app.rfid.card_uid import RFIDCardUID
 
 # ============================================================
 # shared helpers
@@ -95,7 +96,7 @@ class RFIDDeviceMutationResponse(BaseModel):
 
 
 class RFIDCardRegisterRequest(BaseModel):
-    card_uid: str = Field(..., min_length=1, max_length=255)
+    card_uid: RFIDCardUID
     notes: str | None = Field(default=None, max_length=2000)
 
     @field_validator("card_uid")
@@ -110,7 +111,7 @@ class RFIDCardRegisterRequest(BaseModel):
 
 
 class RFIDCardBulkRegisterRequest(BaseModel):
-    card_uids: list[str] = Field(..., min_length=1, max_length=500)
+    card_uids: list[RFIDCardUID] = Field(..., min_length=1, max_length=500)
     notes: str | None = Field(default=None, max_length=2000)
 
     @field_validator("card_uids")

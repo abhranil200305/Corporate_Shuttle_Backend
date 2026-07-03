@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from app.rfid.card_uid import RFIDCardUID
+
 
 def _clean_optional_text(value: str | None) -> str | None:
     if value is None:
@@ -25,7 +27,7 @@ def _clean_required_text(value: str) -> str:
 
 class RFIDScanRequest(BaseModel):
     device_serial_number: str = Field(..., min_length=1, max_length=120)
-    card_uid: str = Field(..., min_length=1, max_length=255)
+    card_uid: RFIDCardUID
 
     scan_lat: Decimal | None = Field(default=None, ge=Decimal("-90"), le=Decimal("90"))
     scan_lng: Decimal | None = Field(default=None, ge=Decimal("-180"), le=Decimal("180"))
