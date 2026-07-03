@@ -13,46 +13,47 @@ from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
+
 from app.admin.logic.service import AdminService
-from app.admin.rfid_service import AdminRFIDService
 from app.admin.rfid_schemas import (
-	RFIDPayoutOperationsSummaryResponse,
-	RFIDRideMoneyDetailResponse,
-	RFIDPayoutTransferDetailResponse,
-	RFIDPayoutTransferReversalListResponse,
-	RFIDPayoutTransferReversalRequest,
-	RFIDRideDeductionReversalRequest,
-	RFIDGenericMutationResponse,
-	RFIDPayoutTransferReconcileCreatedRequest,
-	RFIDPayoutTransferRefreshWithheldRequest,
-	RFIDPayoutTransferBulkTriggerRequest,
-	RFIDTripRideListResponse,
-	RFIDPayoutTransferListResponse,
+	AdminRFIDSeatPolicyResponse,
+	AdminRFIDSeatPolicyUpdateRequest,
 	RFIDCardAssignRequest,
+	RFIDCardBlockRequest,
 	RFIDCardBulkRegisterRequest,
 	RFIDCardBulkRegisterResponse,
+	RFIDCardDecommissionRequest,
 	RFIDCardDetailResponse,
 	RFIDCardListResponse,
 	RFIDCardMutationResponse,
+	RFIDCardOptionListResponse,
 	RFIDCardRegisterRequest,
+	RFIDCardReturnRequest,
 	RFIDCardUnassignRequest,
 	RFIDDeviceCreateRequest,
 	RFIDDeviceListResponse,
 	RFIDDeviceMutationResponse,
 	RFIDDeviceUpdateRequest,
-	RFIDRechargeCreateRequest,
-	RFIDRechargeMutationResponse,
-	RFIDLedgerEntryListResponse,
-	RFIDRechargeListResponse,
-	RFIDCardBlockRequest,
-	RFIDCardDecommissionRequest,
-	RFIDCardReturnRequest,
-	AdminRFIDSeatPolicyResponse,
-    AdminRFIDSeatPolicyUpdateRequest,
 	RFIDDeviceVehicleOptionListResponse,
-	RFIDCardOptionListResponse,
+	RFIDGenericMutationResponse,
+	RFIDLedgerEntryListResponse,
+	RFIDPayoutOperationsSummaryResponse,
+	RFIDPayoutTransferBulkTriggerRequest,
+	RFIDPayoutTransferDetailResponse,
+	RFIDPayoutTransferListResponse,
+	RFIDPayoutTransferReconcileCreatedRequest,
+	RFIDPayoutTransferRefreshWithheldRequest,
+	RFIDPayoutTransferReversalListResponse,
+	RFIDPayoutTransferReversalRequest,
+	RFIDRechargeCreateRequest,
+	RFIDRechargeListResponse,
+	RFIDRechargeMutationResponse,
+	RFIDRideDeductionReversalRequest,
+	RFIDRideMoneyDetailResponse,
 )
+from app.admin.rfid_service import AdminRFIDService
 from app.admin.structs.dto import (
+	AdminVehicleInspectionStatusListResponse,
 	BookingFullDetailsResponsee,
 	BulkPayoutTriggerRequest,
 	BulkStopAddRequest,
@@ -76,17 +77,7 @@ from app.admin.structs.dto import (
 	VehicleInspectionUpdate,
 	VehicleVerificationUpdate,
 	VerificationUpdate,
-	AdminVehicleInspectionStatusListResponse,
 )
-from app.auth.schemas import (
-    AdminDeviceUserListResponse,
-    AdminUserDeviceListResponse,
-    DriverDeviceSettingsResponse,
-    DriverDeviceSettingsUpdateRequest,
-    MessageResponse,
-)
-from app.auth.service import AuthService
-from app.auth.exceptions import AuthError
 from app.auth.dependencies import (
 	get_auth_service,
 	get_current_active_user,
@@ -94,6 +85,15 @@ from app.auth.dependencies import (
 	get_current_user,
 	to_http_exception,
 )
+from app.auth.exceptions import AuthError
+from app.auth.schemas import (
+	AdminDeviceUserListResponse,
+	AdminUserDeviceListResponse,
+	DriverDeviceSettingsResponse,
+	DriverDeviceSettingsUpdateRequest,
+	MessageResponse,
+)
+from app.auth.service import AuthService
 from app.db import schema
 from app.db.database import get_async_session
 from app.notifications import hub
@@ -101,6 +101,12 @@ from app.notifications.hub import WSHub
 from app.notifications.schemas import NotificationDataPayload
 from app.notifications.service import NotificationService
 from app.payments.service import RoutePayoutService
+from app.realtime.events import (
+	get_api_refresh_hub,
+	publish_booking_change,
+	publish_route_event,
+	publish_trip_event,
+)
 
 # Create ONE router for all admin tasks
 router = APIRouter(
@@ -1986,11 +1992,18 @@ async def get_fully_verified_fleet(
 
 @router.post("/stops/bulk-upload")
 async def bulk_upload_stops(
-	file: UploadFile = File(...), db: AsyncSession = Depends(get_async_session)
+	request: Request,
+	file: UploadFile = File(...),
+	db: AsyncSession = Depends(get_async_session),
 ):
 	content = await file.read()
 	service = AdminService(db)
 	total = await service.upsert_stops_from_jsonl(content.decode("utf-8"))
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={"reason": "stops_bulk_uploaded", "count": total},
+	)
 	return {"status": "success", "imported": total}
 
 
@@ -2020,7 +2033,9 @@ async def get_all_stops(db: AsyncSession = Depends(get_async_session)):
 # -----------------------------
 @router.post("/stops/add-single")
 async def add_single_stop(
-	data: StopCreate, db: AsyncSession = Depends(get_async_session)
+	data: StopCreate,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	# 1. Check if the stop already exists by name
 	stmt = select(schema.Stop).where(schema.Stop.name == data.name)
@@ -2045,6 +2060,11 @@ async def add_single_stop(
 		message = f"Stop '{data.name}' created successfully."
 
 	await db.commit()
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={"reason": "stop_upserted", "stop_name": data.name},
+	)
 
 	return {
 		"status": "success",
@@ -2058,7 +2078,9 @@ async def add_single_stop(
 # -----------------------------
 @router.delete("/stops/{stop_id}")
 async def delete_stop(
-	stop_id: str, db: AsyncSession = Depends(get_async_session)
+	stop_id: str,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	# 1. Search for the stop
 	stmt = select(schema.Stop).where(schema.Stop.id == stop_id)
@@ -2082,6 +2104,11 @@ async def delete_stop(
 	# 3. Delete the stop
 	await db.delete(stop)
 	await db.commit()
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={"reason": "stop_deleted", "stop_id": stop_id},
+	)
 
 	return {
 		"status": "success",
@@ -2098,7 +2125,9 @@ async def delete_stop(
 
 @router.post("/routes/create")
 async def create_route_identity(
-	data: RouteCreate, db: AsyncSession = Depends(get_async_session)
+	data: RouteCreate,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	try:
 		new_route = schema.Route(
@@ -2109,6 +2138,15 @@ async def create_route_identity(
 		db.add(new_route)
 		await db.commit()
 		await db.refresh(new_route)
+		await publish_route_event(
+			get_api_refresh_hub(request.app),
+			event="route.created",
+			data={
+				"route_id": new_route.id,
+				"route_name": new_route.name,
+				"is_active": new_route.is_active,
+			},
+		)
 
 		return {
 			"status": "success",
@@ -2144,6 +2182,7 @@ async def create_route_identity(
 async def add_bulk_stops(
 	route_id: str,
 	data: BulkStopAddRequest,
+	request: Request,
 	db: AsyncSession = Depends(get_async_session),
 ) -> dict:
 	# 1. Check if the route exists
@@ -2223,6 +2262,17 @@ async def add_bulk_stops(
 				"debug": str(e),
 			},
 		)
+
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={
+			"reason": "route_stops_added",
+			"route_id": route_id,
+			"is_active": route.is_active,
+			"added_count": len(new_entries),
+		},
+	)
 
 	# Returning exact same names for frontend compatibility
 	return {
@@ -2317,6 +2367,7 @@ async def get_route_details(
 async def toggle_route(
 	route_id: str,
 	data: RouteStatusUpdate,
+	request: Request,
 	db: AsyncSession = Depends(get_async_session),
 ):
 	service = AdminService(db)
@@ -2324,6 +2375,16 @@ async def toggle_route(
 
 	if not route:
 		raise HTTPException(status_code=404, detail="Route not found")
+
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={
+			"reason": "route_status_changed",
+			"route_id": route.id,
+			"is_active": route.is_active,
+		},
+	)
 
 	status_text = "Activated" if route.is_active else "Deactivated"
 	return {
@@ -2339,7 +2400,9 @@ async def toggle_route(
 # -----------------------------
 @router.post("/routes/fares/bulk-set")
 async def set_route_fares(
-	data: RouteFareCreate, db: AsyncSession = Depends(get_async_session)
+	data: RouteFareCreate,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
 	# 1. Verify the route exists
 	route_stmt = select(schema.Route).where(schema.Route.id == data.route_id)
@@ -2374,6 +2437,14 @@ async def set_route_fares(
 			new_fares_count += 1
 
 	await db.commit()
+	await publish_route_event(
+		get_api_refresh_hub(request.app),
+		event="route.updated",
+		data={
+			"reason": "route_fares_changed",
+			"route_id": data.route_id,
+		},
+	)
 
 	return {
 		"status": "success",
@@ -2594,6 +2665,14 @@ async def cancel_trip_by_id(
 
 	# 4. Final single commit for the cancellation AND all notification records
 	await db.commit()
+	await publish_trip_event(
+		get_api_refresh_hub(request.app),
+		db,
+		event="trip.cancelled",
+		trip_id=trip_id,
+		data={"route_id": trip.route_id, "reason": reason},
+		broadcast_catalog=True,
+	)
 
 	return {
 		"status": "success",
@@ -2612,7 +2691,15 @@ async def premature_end_trip(
 ):
 	hub = get_ws_hub(request)
 	service = AdminService(db, ws_hub=hub)
-	return await service.handle_premature_trip_end(trip_id)
+	result = await service.handle_premature_trip_end(trip_id)
+	await publish_trip_event(
+		get_api_refresh_hub(request.app),
+		db,
+		event="trip.premature_ended",
+		trip_id=trip_id,
+		broadcast_catalog=True,
+	)
+	return result
 
 
 # -----------------------------
@@ -2947,14 +3034,29 @@ async def get_all_bookings_for_trip(
 
 @router.patch("/bookings/{booking_id}/noshow")
 async def record_passenger_no_show(
-	booking_id: str, db: AsyncSession = Depends(get_async_session)
+	booking_id: str,
+	request: Request,
+	db: AsyncSession = Depends(get_async_session),
 ):
+	booking = await db.get(schema.TripBooking, booking_id)
 	service = AdminService(db)
 	success = await service.mark_no_show(booking_id)
 
 	if not success:
 		raise HTTPException(
 			status_code=404, detail="Booking record not found."
+		)
+
+	if booking is not None:
+		await publish_booking_change(
+			get_api_refresh_hub(request.app),
+			db,
+			trip_id=booking.scheduled_trip_id,
+			passenger_user_id=booking.passenger_user_id,
+			reason="passenger_marked_no_show",
+			booking_id=booking.id,
+			booking_session_id=booking.booking_session_id,
+			route_id=booking.route_id,
 		)
 
 	return {
@@ -4007,6 +4109,7 @@ async def get_top_pickup_stops(
 @router.post("/trips/{trip_id}/complete-manually")
 async def admin_complete_trip(
     trip_id: str,
+    request: Request,
     note: str = None,
     db: AsyncSession = Depends(get_async_session),
     current_admin: schema.User = Depends(get_current_admin),
@@ -4030,11 +4133,20 @@ async def admin_complete_trip(
 
     service = AdminService(db)
 
-    return await service.manually_complete_trip(
+    result = await service.manually_complete_trip(
         trip_id=trip_id,
         admin_id=current_admin.id,
         note=note,
     )
+    await publish_trip_event(
+        get_api_refresh_hub(request.app),
+        db,
+        event="trip.completed",
+        trip_id=trip_id,
+        data={"route_id": trip.route_id, "reason": "admin_completed"},
+        broadcast_catalog=True,
+    )
+    return result
 
 # -----------------------------
 # Admin: Get all passengers details

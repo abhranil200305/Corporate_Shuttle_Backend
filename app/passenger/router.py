@@ -1,12 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from datetime import datetime
 
 from app.auth.dependencies import get_current_active_user
 from app.db.database import get_async_session
-from app.db.schema import BookingPaymentStatus, BookingSessionStatus, BookingStatus, User
+from app.db.schema import (
+    BookingPaymentStatus,
+    BookingSessionStatus,
+    BookingStatus,
+    User,
+)
 from app.notifications.hub import WSHub
 from app.passenger.schemas import (
     BookingCreateResponse,
@@ -16,12 +22,17 @@ from app.passenger.schemas import (
     BookingQRResponse,
     BookingRatingMutationResponse,
     BookingRatingResponse,
+    BookingSessionCreateResponse,
+    BookingSessionCurrentTripLiveLocationResponse,
+    BookingSessionCurrentTripStatusResponse,
+    BookingSessionListResponse,
+    BookingSessionMutationResponse,
+    BookingSessionResponse,
     CreateBookingRatingRequest,
     CreateBookingRequest,
+    CreateBookingSessionRequest,
     CurrentTripBookingListResponse,
     CurrentTripBookingSessionListResponse,
-    BookingSessionCurrentTripStatusResponse,
-    BookingSessionCurrentTripLiveLocationResponse,
     CurrentTripLiveLocationResponse,
     CurrentTripStatusResponse,
     FarePreviewRequest,
@@ -32,7 +43,22 @@ from app.passenger.schemas import (
     PassengerProfileMutationResponse,
     PassengerProfileResponse,
     PassengerProfileUpsertRequest,
+    PassengerRFIDLedgerListResponse,
+    PassengerRFIDMeResponse,
+    PassengerRFIDRechargeCreateOrderRequest,
+    PassengerRFIDRechargeCreateOrderResponse,
+    PassengerRFIDRechargeListResponse,
+    PassengerRFIDRechargeMutationResponse,
+    PassengerRFIDRechargeVerifyPaymentRequest,
+    PassengerRFIDRideDetailResponse,
+    PassengerRFIDRideListResponse,
+    PassengerRFIDRouteTripDiscoveryResponse,
+    PassengerRFIDSummaryResponse,
     PassengerTransactionHistoryResponse,
+    PassengerTravellerProfileCreateRequest,
+    PassengerTravellerProfileListResponse,
+    PassengerTravellerProfileMutationResponse,
+    PassengerTravellerProfileUpdateRequest,
     RouteListResponse,
     RouteResponse,
     RouteTripDiscoveryResponse,
@@ -44,30 +70,10 @@ from app.passenger.schemas import (
     SupportTicketListResponse,
     SupportTicketResponse,
     VerifyBookingPaymentRequest,
-    PassengerRFIDLedgerListResponse,
-    PassengerRFIDMeResponse,
-    PassengerRFIDRechargeListResponse,
-    PassengerRFIDRideDetailResponse,
-    PassengerRFIDRideListResponse,
-    PassengerRFIDRechargeCreateOrderRequest,
-    PassengerRFIDRechargeCreateOrderResponse,
-    PassengerRFIDRechargeMutationResponse,
-    PassengerRFIDRechargeVerifyPaymentRequest,
-    PassengerRFIDSummaryResponse,
-    PassengerRFIDRouteTripDiscoveryResponse,
-    PassengerTravellerProfileCreateRequest,
-    PassengerTravellerProfileListResponse,
-    PassengerTravellerProfileMutationResponse,
-    PassengerTravellerProfileUpdateRequest,
-    BookingSessionCreateResponse,
-    CreateBookingSessionRequest,
-    BookingSessionMutationResponse,
     VerifyBookingSessionPaymentRequest,
-    BookingSessionListResponse,
-    BookingSessionResponse,
 )
-
 from app.passenger.service import PassengerService
+from app.realtime.events import get_api_refresh_hub, publish_booking_change
 
 router = APIRouter(prefix="/passenger", tags=["passenger"])
 
@@ -83,6 +89,38 @@ async def get_passenger_service(
         db,
         ws_hub=get_ws_hub(request),
     )
+
+
+async def emit_booking_refresh(
+    request: Request,
+    current_user: User,
+    service: PassengerService,
+    result: dict,
+    *,
+    reason: str,
+    booking_id: str | None = None,
+) -> dict:
+    booking_session = result.get("booking_session")
+    booking = result.get("booking")
+    changed = booking_session or booking
+    if not isinstance(changed, dict):
+        return result
+
+    trip_id = changed.get("scheduled_trip_id")
+    if not trip_id:
+        return result
+
+    await publish_booking_change(
+        get_api_refresh_hub(request.app),
+        service.db,
+        trip_id=trip_id,
+        passenger_user_id=current_user.id,
+        reason=reason,
+        booking_id=booking_id or (booking or {}).get("id"),
+        booking_session_id=(booking_session or {}).get("id"),
+        route_id=changed.get("route_id"),
+    )
+    return result
 
 @router.post("/profile", response_model=PassengerProfileMutationResponse)
 async def create_profile(
@@ -392,10 +430,18 @@ async def get_leg_available_seats(
 )
 async def create_booking_session(
     payload: CreateBookingSessionRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingSessionCreateResponse:
-    return await service.create_booking_session(current_user, payload)
+    result = await service.create_booking_session(current_user, payload)
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_session_created",
+    )
 
 @router.post(
     "/booking-sessions/{booking_session_id}/verify-payment",
@@ -404,13 +450,21 @@ async def create_booking_session(
 async def verify_booking_session_payment(
     booking_session_id: str,
     payload: VerifyBookingSessionPaymentRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingSessionMutationResponse:
-    return await service.verify_booking_session_payment(
+    result = await service.verify_booking_session_payment(
         current_user,
         booking_session_id,
         payload,
+    )
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_session_payment_verified",
     )
 
 @router.post(
@@ -419,12 +473,20 @@ async def verify_booking_session_payment(
 )
 async def cancel_booking_session(
     booking_session_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingSessionMutationResponse:
-    return await service.cancel_booking_session(
+    result = await service.cancel_booking_session(
         current_user,
         booking_session_id,
+    )
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_session_cancelled",
     )
 
 @router.get(
@@ -504,32 +566,58 @@ async def get_booking_session_detail(
 async def cancel_booking_session_seat(
     booking_session_id: str,
     booking_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingSessionMutationResponse:
-    return await service.cancel_booking_session_seat(
+    result = await service.cancel_booking_session_seat(
         current_user,
         booking_session_id,
         booking_id,
+    )
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_session_seat_cancelled",
+        booking_id=booking_id,
     )
 
 @router.post("/bookings", response_model=BookingCreateResponse)
 async def create_booking(
     payload: CreateBookingRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingCreateResponse:
-    return await service.create_booking(current_user, payload)
+    result = await service.create_booking(current_user, payload)
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_created",
+    )
 
 
 @router.post("/bookings/{booking_id}/verify-payment", response_model=BookingMutationResponse)
 async def verify_booking_payment(
     booking_id: str,
     payload: VerifyBookingPaymentRequest,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingMutationResponse:
-    return await service.verify_booking_payment(current_user, booking_id, payload)
+    result = await service.verify_booking_payment(current_user, booking_id, payload)
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_payment_verified",
+        booking_id=booking_id,
+    )
 
 
 @router.get("/bookings", response_model=BookingListResponse)
@@ -605,10 +693,19 @@ async def get_booking_invoice(
 @router.post("/bookings/{booking_id}/cancel", response_model=BookingMutationResponse)
 async def cancel_booking(
     booking_id: str,
+    request: Request,
     current_user: User = Depends(get_current_active_user),
     service: PassengerService = Depends(get_passenger_service),
 ) -> BookingMutationResponse:
-    return await service.cancel_booking(current_user, booking_id)
+    result = await service.cancel_booking(current_user, booking_id)
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_cancelled",
+        booking_id=booking_id,
+    )
 
 
 @router.get("/bookings/{booking_id}/qr", response_model=BookingQRResponse)

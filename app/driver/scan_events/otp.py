@@ -1,26 +1,31 @@
 # app/driver/scan_events/otp.py
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 from datetime import datetime, timezone
 from decimal import Decimal
-from math import radians, cos, sin, asin, sqrt
+from math import asin, cos, radians, sin, sqrt
 
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
-from app.db.database import get_async_session
 from app.auth.dependencies import get_current_user
+from app.db.database import get_async_session
 from app.db.schema import (
-    TripBooking,
-    ScheduledTrip,
-    TripScanEvent,
-    ScanType,
     BookingStatus,
-    Stop,
     RouteStop,
+    ScanType,
+    ScheduledTrip,
+    Stop,
+    TripBooking,
     TripEvent,
+    TripScanEvent,
     User,
+    UserRole,
+)
+from app.realtime.events import (
+    get_api_refresh_hub,
+    publish_departure_allowed_if_eligible,
 )
 
 router = APIRouter(prefix="/driver/otp", tags=["Driver OTP"])
@@ -52,6 +57,7 @@ def haversine(lat1, lon1, lat2, lon2):
 @router.post("/{trip_id}/verify")
 async def verify_otp_scan(
     trip_id: str,
+    request: Request,
     data: OTPVerifyRequest,
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
@@ -226,6 +232,34 @@ async def verify_otp_scan(
     # 9. COMMIT
     # =====================================================
     await db.commit()
+
+    refresh_hub = get_api_refresh_hub(request.app)
+    event_data = {
+        "trip_id": trip_id,
+        "booking_id": booking.id,
+        "stop_id": stop.id,
+        "scan_type": scan_type.value,
+        "booking_status": booking.booking_status.value,
+    }
+    await refresh_hub.publish(
+        UserRole.PASSENGER,
+        event="passenger.scan_completed",
+        data=event_data,
+        user_ids=[booking.passenger_user_id],
+    )
+    await refresh_hub.publish(
+        UserRole.DRIVER,
+        event="passenger.scan_completed",
+        data=event_data,
+        user_ids=[current_user.id],
+    )
+    if scan_type == ScanType.DROP:
+        await publish_departure_allowed_if_eligible(
+            refresh_hub,
+            db,
+            trip_id=trip_id,
+            stop_id=stop.id,
+        )
 
     # =====================================================
     # RESPONSE

@@ -19,6 +19,8 @@ from app.jobs.lease import (
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
 from app.passenger.service import PassengerService
+from app.realtime.events import publish_booking_change
+from app.realtime.hub import APIRefreshHub
 
 logger = logging.getLogger(__name__)
 
@@ -166,6 +168,7 @@ async def _process_booking_id(
     db: AsyncSession,
     booking_id: str,
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> str:
     service = PassengerService(db, ws_hub=ws_hub)
 
@@ -201,6 +204,24 @@ async def _process_booking_id(
             outcome=outcome,
         )
 
+        unchanged_outcomes = {
+            "skip_non_pending",
+            "pending_without_local_payment",
+            "pending_without_provider_payment",
+            "pending_authorized_without_payment_id",
+        }
+        if api_refresh_hub is not None and outcome not in unchanged_outcomes:
+            await publish_booking_change(
+                api_refresh_hub,
+                db,
+                trip_id=booking.scheduled_trip_id,
+                passenger_user_id=booking.passenger_user_id,
+                reason=f"payment_reconcile:{outcome}",
+                booking_id=booking.id,
+                booking_session_id=booking.booking_session_id,
+                route_id=booking.route_id,
+            )
+
         return outcome
     except Exception:
         await db.rollback()
@@ -209,6 +230,7 @@ async def _process_booking_id(
 
 async def reconcile_pending_booking_payments_once(
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> None:
     batch_size = _get_batch_size()
     lease_seconds = _get_lease_seconds()
@@ -246,6 +268,7 @@ async def reconcile_pending_booking_payments_once(
                             db,
                             booking_id,
                             ws_hub=ws_hub,
+                            api_refresh_hub=api_refresh_hub,
                         )
                         total_processed += 1
                         logger.info(
@@ -278,15 +301,22 @@ async def reconcile_pending_booking_payments_once(
 
 async def payment_reconcile_loop(
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> None:
     logger.info("payment_reconcile loop started")
     try:
-        await reconcile_pending_booking_payments_once(ws_hub=ws_hub)
+        await reconcile_pending_booking_payments_once(
+            ws_hub=ws_hub,
+            api_refresh_hub=api_refresh_hub,
+        )
 
         while True:
             await asyncio.sleep(_seconds_until_next_minute())
             try:
-                await reconcile_pending_booking_payments_once(ws_hub=ws_hub)
+                await reconcile_pending_booking_payments_once(
+                    ws_hub=ws_hub,
+                    api_refresh_hub=api_refresh_hub,
+                )
             except Exception:
                 logger.exception("payment_reconcile tick failed")
     except asyncio.CancelledError:

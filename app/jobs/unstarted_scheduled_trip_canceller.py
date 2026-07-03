@@ -24,6 +24,8 @@ from app.jobs.lease import (
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
+from app.realtime.events import publish_trip_event
+from app.realtime.hub import APIRefreshHub
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +112,7 @@ async def _cancel_trip_and_bookings(
     db: AsyncSession,
     trip_id: str,
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> str:
     stmt = (
         select(ScheduledTrip)
@@ -199,6 +202,20 @@ async def _cancel_trip_and_bookings(
         },
     )
 
+    if api_refresh_hub is not None:
+        await publish_trip_event(
+            api_refresh_hub,
+            db,
+            event="trip.cancelled",
+            trip_id=trip.id,
+            data={
+                "route_id": trip.route_id,
+                "reason": trip.cancellation_reason,
+                "automatic": True,
+            },
+            broadcast_catalog=True,
+        )
+
     return (
         f"cancelled_trip"
         f"_bookings={cancelled_booking_count}"
@@ -208,6 +225,7 @@ async def _cancel_trip_and_bookings(
 
 async def cancel_unstarted_trips_once(
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> None:
     batch_size = _get_batch_size()
     lease_seconds = _get_lease_seconds()
@@ -245,6 +263,7 @@ async def cancel_unstarted_trips_once(
                             db,
                             trip_id,
                             ws_hub=ws_hub,
+                            api_refresh_hub=api_refresh_hub,
                         )
                         total_processed += 1
                         logger.info(
@@ -277,15 +296,22 @@ async def cancel_unstarted_trips_once(
 
 async def unstarted_trip_cancel_loop(
     ws_hub: WSHub | None = None,
+    api_refresh_hub: APIRefreshHub | None = None,
 ) -> None:
     logger.info("unstarted_trip_cancel loop started")
     try:
-        await cancel_unstarted_trips_once(ws_hub=ws_hub)
+        await cancel_unstarted_trips_once(
+            ws_hub=ws_hub,
+            api_refresh_hub=api_refresh_hub,
+        )
 
         while True:
             await asyncio.sleep(_seconds_until_next_minute())
             try:
-                await cancel_unstarted_trips_once(ws_hub=ws_hub)
+                await cancel_unstarted_trips_once(
+                    ws_hub=ws_hub,
+                    api_refresh_hub=api_refresh_hub,
+                )
             except Exception:
                 logger.exception("unstarted_trip_cancel tick failed")
     except asyncio.CancelledError:

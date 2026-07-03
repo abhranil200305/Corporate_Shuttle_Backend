@@ -1,66 +1,84 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager, suppress
+import logging
 import os
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from sqlalchemy import text
 
 from app.admin.endpoints.router import router as admin_router
-from app.rfid.router import router as rfid_router
-from app.system_user import ensure_system_fine_register_user
 from app.auth import router as auth_router
-from app.db.database import AsyncSessionLocal, dispose_database_engine, ping_database
-from app.db.schema import User, UserRole
+from app.db.database import (
+    AsyncSessionLocal,
+    dispose_database_engine,
+    ping_database,
+)
 from app.driver import driver_kyc, vehicle
 from app.driver.driverprofile import router as driverprofile_router
 from app.driver.driverprofileshow import router as driverprofileshow_router
-from app.driver.trips import booking_details_service, payout_details, route_trip_details, trip_details
+from app.driver.fines.fine import router as fines_router
+from app.driver.ratings.driver_ratings import router as driver_ratings_router
+from app.driver.rfid.rf_scan_details import router as driver_rfid_router
+from app.driver.rfid.rfid_allow import router as driver_rfid_allow_router
+from app.driver.scan_events.otp import router as otp_router
+from app.driver.scan_events.scan import router as driver_scan_router
+from app.driver.stats.driver_stats import router as driver_stats_router
+from app.driver.support.support import router as support_router
+from app.driver.trips import (
+    booking_details_service,
+    cancel_trip,
+    payout_details,
+    route_trip_details,
+    trip_details,
+)
+from app.driver.trips.current_trip import router as current_trip_router
+from app.driver.trips.current_trip import router as driver_current_trip_router
+from app.driver.trips.current_trip_passengers import (
+    router as driver_trip_passengers_router,
+)
+from app.driver.trips.drop_events import router as drop_events_router
+from app.driver.trips.emergencytrip_status import (
+    router as emergency_status_router,
+)
+from app.driver.trips.near_stop import router as driver_trip_router
+from app.driver.trips.route_stops import router as trip_stops_router
 from app.driver.trips.routes import router as driver_routes_router
 from app.driver.trips.scheduled_trip import router as scheduled_trip_router
-from app.notifications.traveller_contact_delivery import (
-    run_traveller_contact_delivery_loop,
-)
+from app.driver.trips.stop_passengers import router as stop_passengers_router
+from app.driver.trips.trip_bookings import router as trip_bookings_router
 from app.jobs.booking_seat_refund_reconciler import booking_seat_refund_loop
-from app.jobs.payment_reconciler import payment_reconcile_loop
-from app.jobs.cancelled_booking_refund_reconciler import cancelled_booking_refund_loop
-from app.jobs.unstarted_scheduled_trip_canceller import unstarted_trip_cancel_loop
+from app.jobs.cancelled_booking_refund_reconciler import (
+    cancelled_booking_refund_loop,
+)
 from app.jobs.driver_trip_start_reminder import driver_trip_reminder_loop
+from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.jobs.trip_reminder import trip_reminder_loop
-from app.jobs.vehicle_registration_expiry_reminder import (
-    vehicle_registration_expiry_reminder_loop,
+from app.jobs.unstarted_scheduled_trip_canceller import (
+    unstarted_trip_cancel_loop,
 )
 from app.jobs.vehicle_inspection_status_reminder import (
     vehicle_inspection_status_reminder_loop,
 )
-from app.driver.trips.drop_events import router as drop_events_router
-from app.passenger.router import router as passenger_route
-from app.passenger.seatmap_ws import router as passenger_seatmap_router, seatmap_hub
-from app.driver.support.support import router as support_router
-from app.driver.trips import cancel_trip  
-from app.driver.scan_events.scan import router as driver_scan_router
-from app.driver.trips.current_trip import router as driver_current_trip_router
-from app.driver.trips.current_trip import router as current_trip_router
-from app.driver.stats.driver_stats import router as driver_stats_router
-from app.driver.ratings.driver_ratings import router as driver_ratings_router
+from app.jobs.vehicle_registration_expiry_reminder import (
+    vehicle_registration_expiry_reminder_loop,
+)
 from app.notifications import router as notifications_router
 from app.notifications.hub import WSHub
-from app.driver.trips.route_stops import router as trip_stops_router
-from app.driver.trips.emergencytrip_status import router as emergency_status_router
-from app.driver.scan_events.otp import router as otp_router
-from app.driver.trips.near_stop import router as driver_trip_router
-from app.driver.fines.fine import router as fines_router
-from app.driver.trips.current_trip_passengers import router as driver_trip_passengers_router
-from app.driver.trips.trip_bookings import router as trip_bookings_router
-from app.driver.trips.stop_passengers import router as stop_passengers_router
-from app.driver.rfid.rfid_allow import router as driver_rfid_allow_router
-from app.driver.rfid.rf_scan_details import router as driver_rfid_router
-
-import logging
+from app.notifications.traveller_contact_delivery import (
+    run_traveller_contact_delivery_loop,
+)
+from app.passenger.router import router as passenger_route
+from app.passenger.seatmap_ws import router as passenger_seatmap_router
+from app.passenger.seatmap_ws import seatmap_hub
+from app.realtime.events import bootstrap_api_refresh_schedules
+from app.realtime.hub import APIRefreshHub
+from app.realtime.router import router as api_refresh_router
+from app.rfid.router import router as rfid_router
+from app.system_user import ensure_system_fine_register_user
 
 logging.basicConfig(
     level=logging.INFO,
@@ -109,9 +127,7 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
     ws_hub = app.state.ws_hub
 
     ws_hub_task_specs: list[tuple[str, object]] = [
-        ("payment-reconcile-loop", payment_reconcile_loop),
         ("cancelled-booking-refund-loop", cancelled_booking_refund_loop),
-        ("unstarted-trip-cancel-loop", unstarted_trip_cancel_loop),
         ("trip-reminder-loop", trip_reminder_loop),
         ("driver-trip-reminder-loop", driver_trip_reminder_loop),
         ("booking-seat-refund-loop", booking_seat_refund_loop),
@@ -134,6 +150,25 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
 
     tasks: list[asyncio.Task] = []
 
+    tasks.append(
+        asyncio.create_task(
+            unstarted_trip_cancel_loop(
+                ws_hub,
+                app.state.api_refresh_hub,
+            ),
+            name="unstarted-trip-cancel-loop",
+        )
+    )
+    tasks.append(
+        asyncio.create_task(
+            payment_reconcile_loop(
+                ws_hub,
+                app.state.api_refresh_hub,
+            ),
+            name="payment-reconcile-loop",
+        )
+    )
+
     for task_name, runner in ws_hub_task_specs:
         task = asyncio.create_task(
             runner(ws_hub),
@@ -154,10 +189,16 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.ws_hub = WSHub()
+    app.state.api_refresh_hub = APIRefreshHub()
     try:
         await ping_database(retries=3, delay_seconds=1.0)
         print("✅ Database connected successfully")
         await ensure_system_fine_register_user(AsyncSessionLocal)
+        async with AsyncSessionLocal() as db:
+            await bootstrap_api_refresh_schedules(
+                app.state.api_refresh_hub,
+                db,
+            )
     except Exception as e:
         print("❌ Database connection failed:", e)
         # fail fast so the app does not boot into a half-broken state
@@ -194,6 +235,11 @@ async def lifespan(app: FastAPI):
             with suppress(Exception):
                 await ws_hub.shutdown(code=1001)
 
+        api_refresh_hub = getattr(app.state, "api_refresh_hub", None)
+        if api_refresh_hub is not None:
+            with suppress(Exception):
+                await api_refresh_hub.shutdown(code=1001)
+
         with suppress(Exception):
             await seatmap_hub.shutdown(code=1001)
         
@@ -227,6 +273,7 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 # ---------------------------
 app.include_router(auth_router)
 app.include_router(notifications_router)
+app.include_router(api_refresh_router)
 app.include_router(admin_router)
 app.include_router(rfid_router)
 app.include_router(driverprofile_router)

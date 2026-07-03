@@ -1,25 +1,24 @@
 # app/driver/trips/cancel_trip.py
 
-from fastapi import APIRouter, Depends, HTTPException, status, Form, Request
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
-from sqlalchemy import update
 from datetime import datetime, timezone
 
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+
+from app.auth.dependencies import get_current_user
+from app.db.database import get_async_session
 from app.db.schema import (
+    BookingStatus,
     ScheduledTrip,
     ScheduledTripStatus,
     TripBooking,
-    BookingStatus,
     User,
 )
-
-from app.db.database import get_async_session
-from app.auth.dependencies import get_current_user
-
-from app.payments.fine_register_service import FineRegisterService
 from app.notifications.service import NotificationService
-
+from app.payments.fine_register_service import FineRegisterService
+from app.realtime.events import get_api_refresh_hub, publish_trip_event
 
 router = APIRouter(
     prefix="/trips",
@@ -200,6 +199,20 @@ async def cancel_trip(
     await db.commit()
 
     await db.refresh(trip)
+
+    refresh_hub = get_api_refresh_hub(request.app)
+    await refresh_hub.cancel_scheduled(f"trip-start-{trip.id}")
+    await publish_trip_event(
+        refresh_hub,
+        db,
+        event="trip.cancelled",
+        trip_id=trip.id,
+        data={
+            "route_id": trip.route_id,
+            "reason": cancellation_reason,
+        },
+        broadcast_catalog=True,
+    )
 
     # ---------------------------
     # RESPONSE

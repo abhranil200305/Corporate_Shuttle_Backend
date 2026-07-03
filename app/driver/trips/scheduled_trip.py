@@ -1,39 +1,45 @@
 # app/driver/trips/scheduled_trip.py
 
-from fastapi import APIRouter, Depends, HTTPException, Form
+from datetime import datetime, timedelta, timezone
+
+from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from geopy.distance import geodesic
+from sqlalchemy import func, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func, update
-from datetime import datetime, timezone, timedelta
 from sqlalchemy.orm import selectinload
 
-from fastapi import Request
-from app.notifications.service import NotificationService
-
-from geopy.distance import geodesic
+from app.auth.dependencies import get_current_user
 from app.db.database import get_async_session
+
+#from app.db.schema import RFIDTripRide, RFIDRideStatus
 from app.db.schema import (
-    ScheduledTrip,
-    ScheduledTripStatus,
-    Vehicle,
+    BookingStatus,
+    PlatformSettings,
     Route,
     RouteStop,
+    ScanType,
+    ScheduledTrip,
+    ScheduledTripStatus,
     Stop,
-    TripEvent,
     TripBooking,
-    BookingStatus,
+    TripEvent,
+    TripScanEvent,
     User,
     UserRole,
-    TripScanEvent,
-    PlatformSettings,          
+    Vehicle,
+    VehicleInspectionStatus,
     VehicleVerificationStatus,
-    VehicleInspectionStatus,  
 )
-#from app.db.schema import RFIDTripRide, RFIDRideStatus
-from app.db.schema import ScanType  
+from app.notifications.service import NotificationService
+from app.realtime.events import (
+    get_api_refresh_hub,
+    publish_departure_allowed_if_eligible,
+    publish_trip_event,
+    schedule_next_stop_departure_check,
+    schedule_start_allowed,
+)
 from app.rfid.scan_service import RFIDScanService
-from app.db.schema import EmergencyStopRequestStatus
-from app.auth.dependencies import get_current_user
 
 router = APIRouter(
     prefix="/driver/scheduled-trips",
@@ -72,6 +78,7 @@ def is_within_radius(stop: Stop, lat: float, lng: float, radius=150) -> bool:
 # ============================================================
 @router.post("/create")
 async def create_trip(
+    request: Request,
     route_name: str = Form(...),
 
     planned_start_at: datetime = Form(...),
@@ -347,6 +354,22 @@ async def create_trip(
     await session.commit()
     await session.refresh(trip)
 
+    refresh_hub = get_api_refresh_hub(request.app)
+    await publish_trip_event(
+        refresh_hub,
+        session,
+        event="trip.created",
+        trip_id=trip.id,
+        data={"route_id": trip.route_id},
+        broadcast_passengers=True,
+    )
+    await schedule_start_allowed(
+        refresh_hub,
+        trip_id=trip.id,
+        driver_user_id=trip.driver_user_id,
+        planned_start_at=trip.planned_start_at,
+    )
+
     # ---------------------------------------------------
     # RESPONSE
     # ---------------------------------------------------
@@ -493,6 +516,16 @@ async def start_trip(
     trip.status = ScheduledTripStatus.IN_PROGRESS
 
     await session.commit()
+    refresh_hub = get_api_refresh_hub(request.app)
+    await refresh_hub.cancel_scheduled(f"trip-start-{trip.id}")
+    await publish_trip_event(
+        refresh_hub,
+        session,
+        event="trip.started",
+        trip_id=trip.id,
+        data={"route_id": trip.route_id},
+        broadcast_catalog=True,
+    )
     # =========================
     # SEND NOTIFICATIONS
     # =========================
@@ -740,6 +773,30 @@ async def stop_action(
 
     await session.commit()
 
+    refresh_hub = get_api_refresh_hub(request.app)
+    stop_event_name = (
+        "trip.stop_arrived" if mode == "arrive" else "trip.stop_departed"
+    )
+
+    if mode == "arrive":
+        await publish_departure_allowed_if_eligible(
+            refresh_hub,
+            session,
+            trip_id=trip.id,
+            stop_id=stop_id,
+        )
+    else:
+        await refresh_hub.cancel_scheduled(
+            f"trip-depart-{trip.id}-{stop_id}"
+        )
+        await schedule_next_stop_departure_check(
+            refresh_hub,
+            session,
+            trip=trip,
+            departed_route_stop=route_stop,
+            departed_at=current_time,
+        )
+
     # -------------------------------
     # Notifications
     # -------------------------------
@@ -804,6 +861,19 @@ async def stop_action(
 
     await session.commit()
 
+    await publish_trip_event(
+        refresh_hub,
+        session,
+        event=stop_event_name,
+        trip_id=trip.id,
+        data={
+            "route_id": trip.route_id,
+            "stop_id": stop_id,
+            "sequence_no": current_sequence,
+            "mode": mode,
+        },
+    )
+
     return {
         "message": f"{mode} success",
         "time": to_ist(current_time),
@@ -821,6 +891,7 @@ async def stop_action(
 @router.post("/{trip_id}/end")
 async def end_trip(
     trip_id: str,
+    request: Request,
     lat: float = Form(...),
     lng: float = Form(...),
     session: AsyncSession = Depends(get_async_session),
@@ -1023,6 +1094,16 @@ async def end_trip(
 
     await session.commit()
 
+    refresh_hub = get_api_refresh_hub(request.app)
+    await publish_trip_event(
+        refresh_hub,
+        session,
+        event="trip.completed",
+        trip_id=trip.id,
+        data={"route_id": trip.route_id},
+        broadcast_catalog=True,
+    )
+
     # =========================
     # RESPONSE
     # =========================
@@ -1128,6 +1209,19 @@ async def emergency_end_trip(
     trip.premature_end_reason = reason
 
     await session.commit()
+
+    refresh_hub = get_api_refresh_hub(request.app)
+    await publish_trip_event(
+        refresh_hub,
+        session,
+        event="trip.premature_ended",
+        trip_id=trip.id,
+        data={
+            "route_id": trip.route_id,
+            "reason": reason,
+        },
+        broadcast_catalog=True,
+    )
 
     # -----------------------------
     # 5. Notify admins
