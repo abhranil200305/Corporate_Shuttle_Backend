@@ -778,25 +778,6 @@ async def stop_action(
         "trip.stop_arrived" if mode == "arrive" else "trip.stop_departed"
     )
 
-    if mode == "arrive":
-        await publish_departure_allowed_if_eligible(
-            refresh_hub,
-            session,
-            trip_id=trip.id,
-            stop_id=stop_id,
-        )
-    else:
-        await refresh_hub.cancel_scheduled(
-            f"trip-depart-{trip.id}-{stop_id}"
-        )
-        await schedule_next_stop_departure_check(
-            refresh_hub,
-            session,
-            trip=trip,
-            departed_route_stop=route_stop,
-            departed_at=current_time,
-        )
-
     # -------------------------------
     # Notifications
     # -------------------------------
@@ -873,6 +854,25 @@ async def stop_action(
             "mode": mode,
         },
     )
+
+    if mode == "arrive":
+        await publish_departure_allowed_if_eligible(
+            refresh_hub,
+            session,
+            trip_id=trip.id,
+            stop_id=stop_id,
+        )
+    else:
+        await refresh_hub.cancel_scheduled(
+            f"trip-depart-{trip.id}-{stop_id}"
+        )
+        await schedule_next_stop_departure_check(
+            refresh_hub,
+            session,
+            trip=trip,
+            departed_route_stop=route_stop,
+            departed_at=current_time,
+        )
 
     return {
         "message": f"{mode} success",

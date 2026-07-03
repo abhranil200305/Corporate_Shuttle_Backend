@@ -160,6 +160,8 @@ async def _departure_allowed(
         return False
     if event.arrival_time is None or event.departure_time is not None:
         return False
+    if not route_stop.deboarding_allowed:
+        return False
 
     if route_stop.sequence_no > 1:
         previous_route_stop_result = await db.execute(

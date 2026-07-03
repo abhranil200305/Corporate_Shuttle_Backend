@@ -1,4 +1,7 @@
 # Corporate Shuttle Backend
 
-See [API refresh WebSockets](docs/API_REFRESH_WEBSOCKETS.md) for the passenger
-and driver real-time refresh channels.
+API refresh WebSocket documentation:
+
+- [Architecture and migration guide](docs/API_REFRESH_WEBSOCKETS.md)
+- [Passenger frontend integration](docs/PASSENGER_API_REFRESH_WEBSOCKET.md)
+- [Driver frontend integration](docs/DRIVER_API_REFRESH_WEBSOCKET.md)

@@ -3,8 +3,11 @@ from __future__ import annotations
 import asyncio
 import unittest
 from datetime import timedelta
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
-from app.db.schema import UserRole
+from app.db.schema import ScheduledTripStatus, UserRole
+from app.realtime.events import _departure_allowed
 from app.realtime.hub import APIRefreshHub, utcnow
 
 
@@ -90,6 +93,22 @@ class APIRefreshHubTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(callback_ran.wait(), timeout=1)
         self.assertTrue(callback_ran.is_set())
+
+    async def test_departure_policy_blocks_allowed_event(self) -> None:
+        db = AsyncMock()
+        trip = SimpleNamespace(status=ScheduledTripStatus.IN_PROGRESS)
+        route_stop = SimpleNamespace(deboarding_allowed=False)
+        event = SimpleNamespace(arrival_time=utcnow(), departure_time=None)
+
+        allowed = await _departure_allowed(
+            db,
+            trip=trip,
+            route_stop=route_stop,
+            event=event,
+        )
+
+        self.assertFalse(allowed)
+        db.execute.assert_not_awaited()
 
 
 if __name__ == "__main__":
