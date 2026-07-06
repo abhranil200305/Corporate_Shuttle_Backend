@@ -668,15 +668,6 @@ async def stop_action(
             raise HTTPException(400, "Invalid booking: stop not part of route")
 
     # =========================================================
-    # BOARDING / DEBOARDING RULES
-    # =========================================================
-    if mode == "arrive" and not route_stop.boarding_allowed:
-        raise HTTPException(400, "Boarding not allowed at this stop")
-
-    if mode == "depart" and not route_stop.deboarding_allowed:
-        raise HTTPException(400, "Deboarding not allowed at this stop")
-
-    # =========================================================
     # BLOCK ARRIVE IF PREVIOUS STOP NOT DEPARTED
     # =========================================================
     previous_route_stop = None
@@ -777,6 +768,30 @@ async def stop_action(
     stop_event_name = (
         "trip.stop_arrived" if mode == "arrive" else "trip.stop_departed"
     )
+    stop_event_data = {
+        "route_id": trip.route_id,
+        "stop_id": stop_id,
+        "sequence_no": current_sequence,
+        "mode": mode,
+    }
+
+    # Arrival and its resulting departure eligibility are operational state,
+    # so publish them immediately after the arrival commit. Passenger
+    # notification work below must not delay or suppress the driver's action.
+    if mode == "arrive":
+        await publish_trip_event(
+            refresh_hub,
+            session,
+            event=stop_event_name,
+            trip_id=trip.id,
+            data=stop_event_data,
+        )
+        await publish_departure_allowed_if_eligible(
+            refresh_hub,
+            session,
+            trip_id=trip.id,
+            stop_id=stop_id,
+        )
 
     # -------------------------------
     # Notifications
@@ -842,27 +857,14 @@ async def stop_action(
 
     await session.commit()
 
-    await publish_trip_event(
-        refresh_hub,
-        session,
-        event=stop_event_name,
-        trip_id=trip.id,
-        data={
-            "route_id": trip.route_id,
-            "stop_id": stop_id,
-            "sequence_no": current_sequence,
-            "mode": mode,
-        },
-    )
-
-    if mode == "arrive":
-        await publish_departure_allowed_if_eligible(
+    if mode == "depart":
+        await publish_trip_event(
             refresh_hub,
             session,
+            event=stop_event_name,
             trip_id=trip.id,
-            stop_id=stop_id,
+            data=stop_event_data,
         )
-    else:
         await refresh_hub.cancel_scheduled(
             f"trip-depart-{trip.id}-{stop_id}"
         )

@@ -4,7 +4,7 @@ import asyncio
 import unittest
 from datetime import timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 from app.admin.endpoints.router import router as admin_router
 from app.db.schema import ScheduledTripStatus, UserRole
@@ -136,10 +136,60 @@ class APIRefreshHubTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(callback_ran.wait(), timeout=1)
         self.assertTrue(callback_ran.is_set())
 
-    async def test_departure_policy_blocks_allowed_event(self) -> None:
+    async def test_first_stop_is_immediately_departure_eligible(self) -> None:
         db = AsyncMock()
-        trip = SimpleNamespace(status=ScheduledTripStatus.IN_PROGRESS)
-        route_stop = SimpleNamespace(deboarding_allowed=False)
+        pending_result = MagicMock()
+        pending_result.scalars.return_value.all.return_value = []
+        db.execute.return_value = pending_result
+
+        trip = SimpleNamespace(
+            id="trip-1",
+            status=ScheduledTripStatus.IN_PROGRESS,
+        )
+        route_stop = SimpleNamespace(
+            sequence_no=1,
+            stop_id="stop-1",
+            assume_time_diff_minutes=0,
+            boarding_allowed=True,
+            deboarding_allowed=False,
+        )
+        event = SimpleNamespace(arrival_time=utcnow(), departure_time=None)
+
+        allowed = await _departure_allowed(
+            db,
+            trip=trip,
+            route_stop=route_stop,
+            event=event,
+        )
+
+        self.assertTrue(allowed)
+        db.execute.assert_awaited_once()
+
+    async def test_later_stop_still_respects_assumed_travel_time(self) -> None:
+        db = AsyncMock()
+        previous_stop_result = MagicMock()
+        previous_stop_result.scalar_one_or_none.return_value = SimpleNamespace(
+            stop_id="previous-stop"
+        )
+        previous_event_result = MagicMock()
+        previous_event_result.scalar_one_or_none.return_value = SimpleNamespace(
+            departure_time=utcnow()
+        )
+        db.execute.side_effect = [
+            previous_stop_result,
+            previous_event_result,
+        ]
+
+        trip = SimpleNamespace(
+            id="trip-1",
+            route_id="route-1",
+            status=ScheduledTripStatus.IN_PROGRESS,
+        )
+        route_stop = SimpleNamespace(
+            sequence_no=2,
+            stop_id="stop-2",
+            assume_time_diff_minutes=5,
+        )
         event = SimpleNamespace(arrival_time=utcnow(), departure_time=None)
 
         allowed = await _departure_allowed(
@@ -150,7 +200,7 @@ class APIRefreshHubTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertFalse(allowed)
-        db.execute.assert_not_awaited()
+        self.assertEqual(db.execute.await_count, 2)
 
 
 class AdminRefreshMiddlewareMappingTests(unittest.TestCase):

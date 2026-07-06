@@ -319,12 +319,18 @@ Emitted only when persisted state satisfies all of these conditions:
 1. Trip is `in_progress`.
 2. Driver has successfully recorded arrival at the stop.
 3. Departure has not already been recorded.
-4. The route stop permits deboarding/departure under the current route policy.
-5. For non-first stops, the previous stop has a departure time.
-6. The route stop's `assume_time_diff_minutes` has elapsed since the previous
+4. For non-first stops, the previous stop has a departure time.
+5. The route stop's `assume_time_diff_minutes` has elapsed since the previous
    stop's departure.
-7. No normally booked `TripBooking` passenger who is currently `boarded` and
+6. No normally booked `TripBooking` passenger who is currently `boarded` and
    due to drop at this stop remains without a DROP scan.
+
+Passenger `boarding_allowed` and `deboarding_allowed` route flags do not gate
+driver arrival/departure lifecycle actions. At the first stop there is no
+previous-stop time gate, so a committed arrival emits `trip.stop_arrived` and
+can immediately emit `trip.departure_allowed`, including at a boarding-only
+first stop. These arrival events are published before passenger notification
+processing.
 
 The check runs after arrival, when the travel-time timer expires, after a
 normal QR/OTP drop scan, during startup schedule restoration, and on driver

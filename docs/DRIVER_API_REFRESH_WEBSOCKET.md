@@ -380,7 +380,9 @@ driver_lng=<current longitude>
 ```
 
 The API verifies trip ownership/in-progress state, route membership, stop GPS
-radius, stop boarding policy, event state, and previous-stop departure.
+radius, event state, and previous-stop departure. Passenger
+`boarding_allowed`/`deboarding_allowed` flags do not gate the driver's stop
+lifecycle actions.
 
 After success, `trip.stop_arrived` is emitted first. Departure eligibility is
 then evaluated.
@@ -392,12 +394,17 @@ then evaluated.
 1. Trip is in progress.
 2. Arrival exists at this stop.
 3. Departure does not exist.
-4. The route stop allows deboarding/departure under its route policy.
-5. For non-first stops, previous stop departure exists.
-6. `assume_time_diff_minutes` for this stop has elapsed since previous
+4. For non-first stops, previous stop departure exists.
+5. `assume_time_diff_minutes` for this stop has elapsed since previous
    departure.
-7. Every normally booked passenger who is `boarded` and due to drop here has a
+6. Every normally booked passenger who is `boarded` and due to drop here has a
    DROP scan.
+
+For the first route stop (`sequence_no == 1`), there is no previous-stop time
+gate. Once arrival commits, `trip.stop_arrived` is emitted and, if no passenger
+drop is pending there, `trip.departure_allowed` follows immediately. This also
+applies to a normal boarding-only first stop where `deboarding_allowed=false`.
+Both events are published before passenger notification processing.
 
 The check runs:
 
