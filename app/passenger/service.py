@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import Numeric, and_, cast, func, or_, select
+from sqlalchemy import Numeric, and_, cast, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -65,6 +65,15 @@ from app.db.schema import (
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
+from app.passenger.booking_conflicts import (
+    DEFAULT_TRANSFER_BUFFER_MINUTES,
+    build_guest_traveller_identity,
+    build_profile_traveller_identity,
+    build_self_traveller_identity,
+    journey_windows_conflict,
+    normalize_phone_for_identity,
+    route_segments_overlap,
+)
 from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
@@ -1868,6 +1877,196 @@ class PassengerService:
                 return trip.planned_start_at + timedelta(minutes=cumulative_minutes)
 
         return trip.planned_start_at
+
+    async def _lock_traveller_identity_keys(
+        self,
+        traveller_identity_keys: list[str],
+    ) -> None:
+        """Serialize conflict checks for each physical traveller on PostgreSQL."""
+        bind = self.db.get_bind()
+        if bind.dialect.name != "postgresql":
+            return
+
+        for identity_key in sorted(set(traveller_identity_keys)):
+            await self.db.execute(
+                text(
+                    "SELECT pg_advisory_xact_lock("
+                    "hashtextextended(:identity_key, 0)"
+                    ")"
+                ),
+                {"identity_key": identity_key},
+            )
+
+    async def _list_active_bookings_for_traveller_identities(
+        self,
+        *,
+        traveller_identity_keys: list[str],
+    ) -> list[TripBooking]:
+        if not traveller_identity_keys:
+            return []
+
+        now = utcnow()
+        active_booking_filter = or_(
+            TripBooking.booking_status.in_(
+                (BookingStatus.BOOKED, BookingStatus.BOARDED)
+            ),
+            and_(
+                TripBooking.booking_status == BookingStatus.PENDING_PAYMENT,
+                or_(
+                    TripBooking.payment_hold_expires_at.is_(None),
+                    TripBooking.payment_hold_expires_at > now,
+                ),
+            ),
+        )
+
+        stmt = (
+            select(TripBooking)
+            .where(
+                TripBooking.traveller_identity_key.in_(
+                    set(traveller_identity_keys)
+                ),
+                active_booking_filter,
+            )
+            .with_for_update()
+            .options(
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+            )
+        )
+        result = await self.db.execute(stmt)
+        return list(result.scalars().unique().all())
+
+    async def _ensure_traveller_bookings_do_not_conflict(
+        self,
+        *,
+        trip: ScheduledTrip,
+        pickup_stop_id: str,
+        dropoff_stop_id: str,
+        pickup_sequence_no: int,
+        dropoff_sequence_no: int,
+        traveller_requests: list[tuple[str, int]],
+    ) -> None:
+        """Reject overlapping route legs or journey windows per traveller."""
+        seats_by_identity: dict[str, list[int]] = {}
+        for identity_key, seat_number in traveller_requests:
+            seats_by_identity.setdefault(identity_key, []).append(seat_number)
+
+        duplicate_seat_groups = [
+            sorted(seat_numbers)
+            for seat_numbers in seats_by_identity.values()
+            if len(seat_numbers) > 1
+        ]
+        if duplicate_seat_groups:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "duplicate_traveller_in_booking_session",
+                    "message": "The same traveller cannot occupy multiple seats in one booking session.",
+                    "seat_number_groups": duplicate_seat_groups,
+                },
+            )
+
+        identity_keys = list(seats_by_identity)
+        await self._lock_traveller_identity_keys(identity_keys)
+        active_bookings = await self._list_active_bookings_for_traveller_identities(
+            traveller_identity_keys=identity_keys
+        )
+
+        bookings_by_identity: dict[str, list[TripBooking]] = {}
+        for booking in active_bookings:
+            bookings_by_identity.setdefault(
+                booking.traveller_identity_key, []
+            ).append(booking)
+
+        requested_start: datetime | None = None
+        requested_end: datetime | None = None
+        now = utcnow()
+
+        for identity_key, seat_number in traveller_requests:
+            for booking in bookings_by_identity.get(identity_key, []):
+                if booking.scheduled_trip_id == trip.id:
+                    if not route_segments_overlap(
+                        existing_pickup_sequence_no=(
+                            booking.pickup_sequence_no_snapshot
+                        ),
+                        existing_dropoff_sequence_no=(
+                            booking.dropoff_sequence_no_snapshot
+                        ),
+                        requested_pickup_sequence_no=pickup_sequence_no,
+                        requested_dropoff_sequence_no=dropoff_sequence_no,
+                    ):
+                        continue
+
+                    conflict_type = "overlapping_route_segment"
+                else:
+                    if requested_start is None or requested_end is None:
+                        requested_start = self._get_route_stop_planned_time(
+                            trip=trip,
+                            target_sequence_no=pickup_sequence_no,
+                        )
+                        requested_end = self._get_route_stop_planned_time(
+                            trip=trip,
+                            target_sequence_no=dropoff_sequence_no,
+                        )
+
+                    existing_trip = booking.scheduled_trip
+                    existing_start = self._get_route_stop_planned_time(
+                        trip=existing_trip,
+                        target_sequence_no=(
+                            booking.pickup_sequence_no_snapshot
+                        ),
+                    )
+                    existing_end = self._get_route_stop_planned_time(
+                        trip=existing_trip,
+                        target_sequence_no=(
+                            booking.dropoff_sequence_no_snapshot
+                        ),
+                    )
+                    if (
+                        booking.booking_status == BookingStatus.BOARDED
+                        and existing_end < now
+                    ):
+                        existing_end = now
+
+                    if not journey_windows_conflict(
+                        existing_start=existing_start,
+                        existing_end=existing_end,
+                        existing_pickup_stop_id=booking.pickup_stop_id,
+                        existing_dropoff_stop_id=booking.dropoff_stop_id,
+                        requested_start=requested_start,
+                        requested_end=requested_end,
+                        requested_pickup_stop_id=pickup_stop_id,
+                        requested_dropoff_stop_id=dropoff_stop_id,
+                    ):
+                        continue
+
+                    windows_overlap = (
+                        existing_start < requested_end
+                        and existing_end > requested_start
+                    )
+                    conflict_type = (
+                        "overlapping_trip_window"
+                        if windows_overlap
+                        else "insufficient_transfer_time"
+                    )
+
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "traveller_booking_conflict",
+                        "message": "This traveller already has an active booking that conflicts with the requested journey.",
+                        "seat_number": seat_number,
+                        "conflicting_booking_id": booking.id,
+                        "conflicting_scheduled_trip_id": (
+                            booking.scheduled_trip_id
+                        ),
+                        "conflict_type": conflict_type,
+                        "transfer_buffer_minutes": (
+                            DEFAULT_TRANSFER_BUFFER_MINUTES
+                        ),
+                    },
+                )
 
     def _get_current_progress_stop(
         self,
@@ -5081,6 +5280,52 @@ class PassengerService:
                     "seat_number": seat_number,
                 },
             )
+
+    async def _ensure_guest_does_not_match_saved_traveller(
+        self,
+        *,
+        owner_user_id: str,
+        phone: str,
+        seat_number: int,
+    ) -> None:
+        try:
+            normalized_guest_phone = normalize_phone_for_identity(phone)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_traveller_phone",
+                    "message": "Traveller phone must contain at least one digit.",
+                    "seat_number": seat_number,
+                },
+            ) from exc
+
+        stmt = select(PassengerTravellerProfile).where(
+            PassengerTravellerProfile.owner_user_id == owner_user_id,
+        )
+        result = await self.db.execute(stmt)
+
+        for profile in result.scalars().all():
+            try:
+                normalized_profile_phone = normalize_phone_for_identity(
+                    profile.phone
+                )
+            except ValueError:
+                continue
+
+            if normalized_profile_phone != normalized_guest_phone:
+                continue
+
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "guest_matches_saved_traveller",
+                    "message": "This phone belongs to a saved traveller. Use or reactivate that traveller profile instead of entering guest details.",
+                    "seat_number": seat_number,
+                    "traveller_profile_id": profile.id,
+                    "traveller_profile_is_active": profile.is_active,
+                },
+            )
     
     async def _resolve_booking_session_traveller_snapshot(
         self,
@@ -5115,6 +5360,11 @@ class PassengerService:
 
             return {
                 "traveller_profile_id": profile.id,
+                "traveller_identity_key": (
+                    build_self_traveller_identity(owner_user.id)
+                    if profile.is_self
+                    else build_profile_traveller_identity(profile.id)
+                ),
                 "traveller_name_snapshot": profile.full_name,
                 "traveller_phone_snapshot": profile.phone,
                 "traveller_email_snapshot": None
@@ -5129,9 +5379,18 @@ class PassengerService:
                 traveller_email=guest_traveller.email,
                 seat_number=seat_number,
             )
+            await self._ensure_guest_does_not_match_saved_traveller(
+                owner_user_id=owner_user.id,
+                phone=guest_traveller.phone,
+                seat_number=seat_number,
+            )
 
             return {
                 "traveller_profile_id": None,
+                "traveller_identity_key": build_guest_traveller_identity(
+                    owner_user.id,
+                    guest_traveller.phone,
+                ),
                 "traveller_name_snapshot": guest_traveller.full_name,
                 "traveller_phone_snapshot": guest_traveller.phone,
                 "traveller_email_snapshot": guest_traveller.email,
@@ -5140,6 +5399,9 @@ class PassengerService:
 
         return {
             "traveller_profile_id": None,
+            "traveller_identity_key": build_self_traveller_identity(
+                owner_user.id
+            ),
             "traveller_name_snapshot": owner_profile.full_name,
             "traveller_phone_snapshot": None,
             "traveller_email_snapshot": None,
@@ -5361,6 +5623,25 @@ class PassengerService:
                 )
             )
 
+        await self._ensure_traveller_bookings_do_not_conflict(
+            trip=trip,
+            pickup_stop_id=payload.pickup_stop_id,
+            dropoff_stop_id=payload.dropoff_stop_id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+            traveller_requests=[
+                (
+                    str(
+                        traveller_snapshots[seat.seat_number][
+                            "traveller_identity_key"
+                        ]
+                    ),
+                    seat.seat_number,
+                )
+                for seat in payload.seats
+            ],
+        )
+
         try:
             booking_session = BookingSession(
                 owner_user_id=current_user.id,
@@ -5385,6 +5666,9 @@ class PassengerService:
                     passenger_user_id=current_user.id,
                     booked_by_user_id=current_user.id,
                     traveller_profile_id=snapshot["traveller_profile_id"],
+                    traveller_identity_key=snapshot[
+                        "traveller_identity_key"
+                    ],
                     traveller_name_snapshot=snapshot["traveller_name_snapshot"],
                     traveller_phone_snapshot=snapshot["traveller_phone_snapshot"],
                     traveller_email_snapshot=snapshot["traveller_email_snapshot"],
@@ -6189,11 +6473,15 @@ class PassengerService:
             dropoff_stop_id=payload.dropoff_stop_id,
         )
 
+        self_identity_key = build_self_traveller_identity(current_user.id)
+        await self._lock_traveller_identity_keys([self_identity_key])
+
         existing_stmt = (
             select(TripBooking)
             .where(
-                TripBooking.passenger_user_id == current_user.id,
+                TripBooking.traveller_identity_key == self_identity_key,
                 TripBooking.scheduled_trip_id == trip.id,
+                TripBooking.booking_session_id.is_(None),
                 TripBooking.booking_status.in_(
                     (
                         BookingStatus.PENDING_PAYMENT,
@@ -6206,23 +6494,18 @@ class PassengerService:
             .with_for_update()
         )
         existing_result = await self.db.execute(existing_stmt)
-        existing_booking = existing_result.scalar_one_or_none()
+        existing_bookings = list(existing_result.scalars().unique().all())
+        existing_booking = next(
+            (
+                booking
+                for booking in existing_bookings
+                if booking.pickup_stop_id == payload.pickup_stop_id
+                and booking.dropoff_stop_id == payload.dropoff_stop_id
+            ),
+            None,
+        )
 
         if existing_booking is not None:
-            same_segment = (
-                existing_booking.pickup_stop_id == payload.pickup_stop_id
-                and existing_booking.dropoff_stop_id == payload.dropoff_stop_id
-            )
-
-            if not same_segment:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "duplicate_booking",
-                        "message": "Passenger already has a booking for this scheduled trip.",
-                    },
-                )
-
             if existing_booking.seat_number != payload.seat_number:
                 raise HTTPException(
                     status_code=409,
@@ -6368,6 +6651,15 @@ class PassengerService:
                 ),
             )
 
+        await self._ensure_traveller_bookings_do_not_conflict(
+            trip=trip,
+            pickup_stop_id=payload.pickup_stop_id,
+            dropoff_stop_id=payload.dropoff_stop_id,
+            pickup_sequence_no=pickup_route_stop.sequence_no,
+            dropoff_sequence_no=dropoff_route_stop.sequence_no,
+            traveller_requests=[(self_identity_key, payload.seat_number)],
+        )
+
         overlapping_active_booking_count = await self._count_overlapping_active_trip_bookings(
             scheduled_trip_id=trip.id,
             pickup_sequence_no=pickup_route_stop.sequence_no,
@@ -6406,6 +6698,10 @@ class PassengerService:
         try:
             booking = TripBooking(
                 passenger_user_id=current_user.id,
+                booked_by_user_id=current_user.id,
+                traveller_identity_key=self_identity_key,
+                traveller_name_snapshot=profile.full_name,
+                traveller_relationship_label_snapshot="Self",
                 otp=self._generate_booking_otp(),
                 scheduled_trip_id=trip.id,
                 route_id=trip.route_id,
@@ -6450,8 +6746,9 @@ class PassengerService:
             existing_stmt = (
                 select(TripBooking)
                 .where(
-                    TripBooking.passenger_user_id == current_user.id,
+                    TripBooking.traveller_identity_key == self_identity_key,
                     TripBooking.scheduled_trip_id == trip.id,
+                    TripBooking.booking_session_id.is_(None),
                     TripBooking.booking_status.in_(
                         (
                             BookingStatus.PENDING_PAYMENT,
@@ -6463,7 +6760,16 @@ class PassengerService:
                 .options(selectinload(TripBooking.payments))
             )
             existing_result = await self.db.execute(existing_stmt)
-            existing_booking = existing_result.scalar_one_or_none()
+            existing_bookings = list(existing_result.scalars().unique().all())
+            existing_booking = next(
+                (
+                    booking
+                    for booking in existing_bookings
+                    if booking.pickup_stop_id == payload.pickup_stop_id
+                    and booking.dropoff_stop_id == payload.dropoff_stop_id
+                ),
+                None,
+            )
 
             if (
                 existing_booking is not None

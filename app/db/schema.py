@@ -2917,6 +2917,7 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         ForeignKey("passenger_traveller_profiles.id", ondelete="SET NULL"),
         nullable=True,
     )
+    traveller_identity_key: Mapped[str] = mapped_column(String(255), nullable=False)
     traveller_name_snapshot: Mapped[str | None] = mapped_column(String(120), nullable=True)
     traveller_phone_snapshot: Mapped[str | None] = mapped_column(String(20), nullable=True)
     traveller_email_snapshot: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -3153,6 +3154,15 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         Index("ix_trip_bookings_booking_session", "booking_session_id"),
         Index("ix_trip_bookings_booked_by_user", "booked_by_user_id"),
         Index("ix_trip_bookings_traveller_profile", "traveller_profile_id"),
+        Index(
+            "ix_trip_bookings_traveller_identity_status",
+            "traveller_identity_key",
+            "booking_status",
+        ),
+        CheckConstraint(
+            "traveller_identity_key <> ''",
+            name="ck_trip_bookings_traveller_identity_nonempty",
+        ),
     )
 
 
