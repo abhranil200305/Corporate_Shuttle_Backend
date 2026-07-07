@@ -1,3 +1,4 @@
+#app/driver/scan_events/booking_credential_scan.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -233,18 +234,54 @@ async def resolve_otp_bookings_for_update(
 async def _validate_board_scan(
     db: AsyncSession,
     *,
+    trip_id: str,
     bookings: list[TripBooking],
     lat: float,
     lng: float,
 ) -> tuple[Stop, float]:
     pickup_stop_ids = {booking.pickup_stop_id for booking in bookings}
+
     if len(pickup_stop_ids) != 1:
-        raise HTTPException(409, "Credential spans multiple pickup stops")
+        raise HTTPException(
+            status_code=409,
+            detail="Credential spans multiple pickup stops",
+        )
 
     stop = await db.get(Stop, next(iter(pickup_stop_ids)))
-    if not stop:
-        raise HTTPException(404, "Pickup stop not found")
 
+    if not stop:
+        raise HTTPException(
+            status_code=404,
+            detail="Pickup stop not found",
+        )
+
+    # -------------------------------------------------------
+    # Driver must ARRIVE at this stop before boarding
+    # -------------------------------------------------------
+    trip_event_result = await db.execute(
+        select(TripEvent).where(
+            TripEvent.scheduled_trip_id == trip_id,
+            TripEvent.stop_id == stop.id,
+        )
+    )
+
+    trip_event = trip_event_result.scalar_one_or_none()
+
+    if trip_event is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Driver has not arrived at this stop yet.",
+        )
+
+    if trip_event.arrival_time is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Driver must arrive at this stop before boarding passengers.",
+        )
+
+    # -------------------------------------------------------
+    # Validate driver's current location
+    # -------------------------------------------------------
     distance = haversine(
         lat,
         lng,
@@ -253,7 +290,10 @@ async def _validate_board_scan(
     )
 
     if distance > (stop.radius_meters or 0):
-        raise HTTPException(400, "Not within pickup stop radius")
+        raise HTTPException(
+            status_code=400,
+            detail="Not within pickup stop radius",
+        )
 
     return stop, distance
 
@@ -353,6 +393,7 @@ async def _build_scan_plan(
         for booking in bookings
         if booking.booking_status == BookingStatus.BOOKED
     ]
+
     boarded = [
         booking
         for booking in bookings
@@ -360,20 +401,24 @@ async def _build_scan_plan(
     ]
 
     board_error: HTTPException | None = None
+
     if booked:
         try:
             stop, distance = await _validate_board_scan(
                 db,
+                trip_id=trip_id,      # <-- Added
                 bookings=booked,
                 lat=lat,
                 lng=lng,
             )
+
             return (
                 ScanType.BOARD,
                 _sort_bookings_for_scan(booked),
                 stop,
                 distance,
             )
+
         except HTTPException as exc:
             board_error = exc
 
@@ -386,12 +431,14 @@ async def _build_scan_plan(
                 lat=lat,
                 lng=lng,
             )
+
             return (
                 ScanType.DROP,
                 _sort_bookings_for_scan(boarded),
                 stop,
                 distance,
             )
+
         except HTTPException:
             if not board_error:
                 raise
