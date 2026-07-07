@@ -23,30 +23,10 @@ from app.db.schema import (
     BookingPayment,
     BookingPaymentStatus,
     BookingRating,
-    BookingSeatRefundRequest,
-    BookingSeatRefundRequestStatus,
-    BookingSession,
-    BookingSessionPayment,
-    BookingSessionStatus,
     BookingStatus,
     PassengerProfile,
     PassengerTravellerProfile,
     PlatformSettings,
-    RFIDCard,
-    RFIDCardAccount,
-    RFIDCardAssignment,
-    RFIDCardAuthorizationStatus,
-    RFIDCardInventoryStatus,
-    RFIDFundingLot,
-    RFIDFundingLotSourceType,
-    RFIDFundingLotStatus,
-    RFIDLedgerEntry,
-    RFIDLedgerEntryType,
-    RFIDRecharge,
-    RFIDRechargeSourceType,
-    RFIDRechargeStatus,
-    RFIDRideStatus,
-    RFIDTripRide,
     Route,
     RouteFare,
     RouteStop,
@@ -54,13 +34,34 @@ from app.db.schema import (
     ScheduledTripStatus,
     Stop,
     SupportTicket,
-    TravellerContactNotification,
-    TravellerContactNotificationStatus,
     TripBooking,
     TripEvent,
     User,
     UserRole,
+    RFIDCard,
+    RFIDCardAccount,
+    RFIDCardAssignment,
+    RFIDLedgerEntry,
+    RFIDRecharge,
+    RFIDTripRide,
+    RFIDFundingLot,
+    RFIDFundingLotSourceType,
+    RFIDFundingLotStatus,
+    RFIDLedgerEntryType,
+    RFIDRechargeSourceType,
+    RFIDRechargeStatus,
     new_id,
+    RFIDCardAuthorizationStatus,
+    RFIDCardInventoryStatus,
+    RFIDRideStatus,
+    BookingSession,
+    BookingSessionPayment,
+    BookingSessionStatus,
+    PassengerTravellerProfile,
+    TravellerContactNotification,
+    TravellerContactNotificationStatus,
+    BookingSeatRefundRequest,
+    BookingSeatRefundRequestStatus,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -76,15 +77,15 @@ from app.passenger.booking_conflicts import (
 from app.passenger.schemas import (
     CreateBookingRatingRequest,
     CreateBookingRequest,
-    CreateBookingSessionRequest,
     FarePreviewRequest,
     LegAvailableSeatsRequest,
     PassengerProfileUpsertRequest,
-    PassengerRFIDRechargeCreateOrderRequest,
-    PassengerRFIDRechargeVerifyPaymentRequest,
     PassengerTravellerProfileCreateRequest,
     PassengerTravellerProfileUpdateRequest,
     VerifyBookingPaymentRequest,
+    PassengerRFIDRechargeCreateOrderRequest,
+    PassengerRFIDRechargeVerifyPaymentRequest,
+    CreateBookingSessionRequest,
     VerifyBookingSessionPaymentRequest,
 )
 
@@ -243,83 +244,6 @@ class PassengerService:
         upper_bound = 10 ** length
         return f"{secrets.randbelow(upper_bound):0{length}d}"
 
-    async def _lock_trip_credential_namespace(self, scheduled_trip_id: str) -> None:
-        """Serialize OTP generation for a trip on PostgreSQL."""
-        bind = self.db.get_bind()
-        if bind.dialect.name != "postgresql":
-            return
-
-        await self.db.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:lock_key, 0))"),
-            {"lock_key": f"trip-booking-credential:{scheduled_trip_id}"},
-        )
-
-    async def _trip_otp_exists_for_active_booking(
-        self,
-        *,
-        scheduled_trip_id: str,
-        otp: str,
-    ) -> bool:
-        session_stmt = (
-            select(BookingSession.id)
-            .where(
-                BookingSession.scheduled_trip_id == scheduled_trip_id,
-                BookingSession.otp == otp,
-                BookingSession.status.in_(
-                    (
-                        BookingSessionStatus.PENDING_PAYMENT,
-                        BookingSessionStatus.CONFIRMED,
-                    )
-                ),
-            )
-            .limit(1)
-        )
-        session_result = await self.db.execute(session_stmt)
-        if session_result.scalar_one_or_none() is not None:
-            return True
-
-        booking_stmt = (
-            select(TripBooking.id)
-            .where(
-                TripBooking.scheduled_trip_id == scheduled_trip_id,
-                TripBooking.otp == otp,
-                TripBooking.booking_status.in_(
-                    (
-                        BookingStatus.PENDING_PAYMENT,
-                        BookingStatus.BOOKED,
-                        BookingStatus.BOARDED,
-                    )
-                ),
-            )
-            .limit(1)
-        )
-        booking_result = await self.db.execute(booking_stmt)
-        return booking_result.scalar_one_or_none() is not None
-
-    async def _generate_unique_trip_booking_otp(
-        self,
-        *,
-        scheduled_trip_id: str,
-        length: int = 6,
-    ) -> str:
-        await self._lock_trip_credential_namespace(scheduled_trip_id)
-
-        for _ in range(30):
-            otp = self._generate_booking_otp(length)
-            if not await self._trip_otp_exists_for_active_booking(
-                scheduled_trip_id=scheduled_trip_id,
-                otp=otp,
-            ):
-                return otp
-
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": "booking_otp_generation_failed",
-                "message": "Could not allocate a unique booking OTP for this trip.",
-            },
-        )
-
     @staticmethod
     def _should_expose_booking_otp(booking: TripBooking) -> bool:
         return booking.booking_status not in (
@@ -332,23 +256,6 @@ class PassengerService:
         if not self._should_expose_booking_otp(booking):
             return None
         return booking.otp
-
-    @staticmethod
-    def _should_expose_booking_session_otp(
-        booking_session: BookingSession,
-    ) -> bool:
-        return booking_session.status in (
-            BookingSessionStatus.PENDING_PAYMENT,
-            BookingSessionStatus.CONFIRMED,
-        )
-
-    def _serialize_booking_session_otp(
-        self,
-        booking_session: BookingSession,
-    ) -> str | None:
-        if not self._should_expose_booking_session_otp(booking_session):
-            return None
-        return booking_session.otp
 
     @classmethod
     def _get_payment_hold_expires_at(cls) -> datetime:
@@ -1014,7 +921,6 @@ class PassengerService:
              .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scan_events),
@@ -1038,61 +944,6 @@ class PassengerService:
             )
         return booking
 
-    @staticmethod
-    def _current_trip_sql_filter(now: datetime):
-        terminal_statuses = (
-            ScheduledTripStatus.CANCELLED,
-            ScheduledTripStatus.COMPLETED,
-            ScheduledTripStatus.PREMATURE_END,
-        )
-        live_statuses = (
-            ScheduledTripStatus.IN_PROGRESS,
-            ScheduledTripStatus.PREMATURED_END_REQUEST,
-        )
-
-        return and_(
-            ScheduledTrip.planned_start_at <= now,
-            ScheduledTrip.status.notin_(terminal_statuses),
-            or_(
-                ScheduledTrip.planned_end_at >= now,
-                ScheduledTrip.status.in_(live_statuses),
-                and_(
-                    ScheduledTrip.actual_start_at.isnot(None),
-                    ScheduledTrip.actual_end_at.is_(None),
-                ),
-            ),
-        )
-
-    @staticmethod
-    def _is_current_trip_for_passenger(
-        trip: ScheduledTrip,
-        now: datetime,
-    ) -> bool:
-        terminal_statuses = (
-            ScheduledTripStatus.CANCELLED,
-            ScheduledTripStatus.COMPLETED,
-            ScheduledTripStatus.PREMATURE_END,
-        )
-        live_statuses = (
-            ScheduledTripStatus.IN_PROGRESS,
-            ScheduledTripStatus.PREMATURED_END_REQUEST,
-        )
-
-        if trip.status in terminal_statuses:
-            return False
-
-        if trip.planned_start_at > now:
-            return False
-
-        return (
-            trip.planned_end_at >= now
-            or trip.status in live_statuses
-            or (
-                trip.actual_start_at is not None
-                and trip.actual_end_at is None
-            )
-        )
-
     async def _list_booking_session_current_trip_bookings(
         self,
         *,
@@ -1113,12 +964,12 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                self._current_trip_sql_filter(now),
+                ScheduledTrip.planned_start_at <= now,
+                ScheduledTrip.planned_end_at >= now,
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scan_events),
@@ -1434,29 +1285,6 @@ class PassengerService:
             "is_active": stop.is_active,
         }
 
-    def _serialize_optional_stop_brief(
-        self,
-        stop: Stop | None,
-    ) -> dict[str, Any] | None:
-        if stop is None:
-            return None
-        return self._serialize_stop_brief(stop)
-
-    @staticmethod
-    def _get_actual_drop_stop_id(booking: TripBooking) -> str | None:
-        if booking.completed_near_stop_id:
-            return booking.completed_near_stop_id
-
-        for event in booking.scan_events:
-            if (
-                event.scan_type.value == "drop"
-                and event.within_radius
-                and event.matched_stop_id
-            ):
-                return event.matched_stop_id
-
-        return None
-
     def _serialize_route(self, route: Route) -> dict[str, Any]:
         return {
             "id": route.id,
@@ -1559,11 +1387,6 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
-            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
-            "actual_drop_stop": self._serialize_optional_stop_brief(
-                booking.completed_near_stop
-            ),
-            "actual_dropped_at": booking.completed_at,
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
             "rating": self._serialize_rating(booking.rating),
@@ -1723,11 +1546,6 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
-            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
-            "actual_drop_stop": self._serialize_optional_stop_brief(
-                booking.completed_near_stop
-            ),
-            "actual_dropped_at": booking.completed_at,
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
             "rating": self._serialize_rating(booking.rating),
             "created_at": booking.created_at,
@@ -1846,7 +1664,6 @@ class PassengerService:
             "dropoff_sequence_no_snapshot": booking_session.dropoff_sequence_no_snapshot,
             "status": booking_session.status,
             "total_fare_amount": booking_session.total_fare_amount,
-            "otp": self._serialize_booking_session_otp(booking_session),
             "payment_hold_expires_at": booking_session.payment_hold_expires_at,
             "confirmed_at": booking_session.confirmed_at,
             "cancelled_at": booking_session.cancelled_at,
@@ -2032,11 +1849,6 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
-            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
-            "actual_drop_stop": self._serialize_optional_stop_brief(
-                booking.completed_near_stop
-            ),
-            "actual_dropped_at": booking.completed_at,
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
@@ -2369,21 +2181,6 @@ class PassengerService:
             for item in sorted_route_stops
             if booking.pickup_sequence_no_snapshot <= item.sequence_no <= booking.dropoff_sequence_no_snapshot
         ]
-        route_stop_by_stop_id = {
-            route_stop.stop_id: route_stop
-            for route_stop in segment_route_stops
-        }
-        actual_drop_stop_id = self._get_actual_drop_stop_id(booking)
-        actual_drop_route_stop = (
-            route_stop_by_stop_id.get(actual_drop_stop_id)
-            if actual_drop_stop_id
-            else None
-        )
-        actual_drop_sequence_no = (
-            actual_drop_route_stop.sequence_no
-            if actual_drop_route_stop is not None
-            else None
-        )
 
         boarding_scan_completed = any(
             event.scan_type.value == "board" and event.within_radius
@@ -2421,31 +2218,13 @@ class PassengerService:
             if route_stop.sequence_no == booking.pickup_sequence_no_snapshot and boarding_scan_completed:
                 stop_status = "boarded_here"
 
-            is_actual_drop_stop = (
-                drop_scan_completed
-                and actual_drop_stop_id is not None
-                and route_stop.stop_id == actual_drop_stop_id
-            )
-            should_mark_booked_drop = (
-                drop_scan_completed
-                and actual_drop_stop_id is None
-                and route_stop.sequence_no == booking.dropoff_sequence_no_snapshot
-            )
-
-            if is_actual_drop_stop or should_mark_booked_drop:
+            if route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
                 stop_status = "dropped_here"
 
             if booking.scheduled_trip.status == ScheduledTripStatus.COMPLETED:
-                completed_drop_sequence_no = (
-                    actual_drop_sequence_no
-                    or booking.dropoff_sequence_no_snapshot
-                )
-                if route_stop.sequence_no < completed_drop_sequence_no:
+                if route_stop.sequence_no < booking.dropoff_sequence_no_snapshot:
                     stop_status = "passed"
-                elif (
-                    route_stop.sequence_no == completed_drop_sequence_no
-                    and drop_scan_completed
-                ):
+                elif route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
                     stop_status = "dropped_here"
 
             items.append(
@@ -2455,7 +2234,6 @@ class PassengerService:
                     "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
                     "is_pickup_stop": route_stop.sequence_no == booking.pickup_sequence_no_snapshot,
                     "is_dropoff_stop": route_stop.sequence_no == booking.dropoff_sequence_no_snapshot,
-                    "is_actual_drop_stop": is_actual_drop_stop,
                     "stop_status": stop_status,
                     "planned_time_at_stop": planned_time,
                     "estimated_time_at_stop": estimated_time,
@@ -2528,11 +2306,6 @@ class PassengerService:
             "trip_completed": trip_completed,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
-            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
-            "actual_drop_stop": self._serialize_optional_stop_brief(
-                booking.completed_near_stop
-            ),
-            "actual_dropped_at": booking.completed_at,
             "trip_from_stop": trip_from_stop,
             "trip_to_stop": trip_to_stop,
             "current_progress_stop": self._get_current_progress_stop(trip),
@@ -2832,6 +2605,10 @@ class PassengerService:
         event_type: str,
     ) -> None:
         for booking in bookings:
+            traveller_name = (
+                booking.traveller_name_snapshot
+                or "Passenger"
+            )
 
             if event_type == "traveller_seat_confirmed":
                 title = "Shuttle seat confirmed"
@@ -3128,7 +2905,7 @@ class PassengerService:
     def _build_rfid_razorpay_auth_header(cls) -> str:
         key_id, key_secret = cls._get_rfid_razorpay_credentials()
         token = base64.b64encode(
-            f"{key_id}:{key_secret}".encode()
+            f"{key_id}:{key_secret}".encode("utf-8")
         ).decode("ascii")
         return f"Basic {token}"
 
@@ -3235,7 +3012,7 @@ class PassengerService:
     ) -> None:
         _key_id, key_secret = cls._get_rfid_razorpay_credentials()
 
-        message = f"{razorpay_order_id}|{razorpay_payment_id}".encode()
+        message = f"{razorpay_order_id}|{razorpay_payment_id}".encode("utf-8")
         expected_signature = hmac.new(
             key_secret.encode("utf-8"),
             message,
@@ -5832,9 +5609,6 @@ class PassengerService:
         )
 
         payment_hold_expires_at = self._get_payment_hold_expires_at()
-        session_otp = await self._generate_unique_trip_booking_otp(
-            scheduled_trip_id=trip.id
-        )
 
         traveller_snapshots: dict[int, dict[str, str | None]] = {}
 
@@ -5879,7 +5653,6 @@ class PassengerService:
                 dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                 status=BookingSessionStatus.PENDING_PAYMENT,
                 total_fare_amount=total_fare_amount,
-                otp=session_otp,
                 payment_hold_expires_at=payment_hold_expires_at,
             )
             self.db.add(booking_session)
@@ -5902,7 +5675,7 @@ class PassengerService:
                     traveller_relationship_label_snapshot=snapshot[
                         "traveller_relationship_label_snapshot"
                     ],
-                    otp=session_otp,
+                    otp=self._generate_booking_otp(),
                     scheduled_trip_id=trip.id,
                     route_id=trip.route_id,
                     pickup_stop_id=payload.pickup_stop_id,
@@ -6921,9 +6694,6 @@ class PassengerService:
             fare_amount=normalized_fare_amount,
             commission_percent=current_commission_percent,
         )
-        booking_otp = await self._generate_unique_trip_booking_otp(
-            scheduled_trip_id=trip.id
-        )
 
         try:
             booking = TripBooking(
@@ -6932,7 +6702,7 @@ class PassengerService:
                 traveller_identity_key=self_identity_key,
                 traveller_name_snapshot=profile.full_name,
                 traveller_relationship_label_snapshot="Self",
-                otp=booking_otp,
+                otp=self._generate_booking_otp(),
                 scheduled_trip_id=trip.id,
                 route_id=trip.route_id,
                 pickup_stop_id=payload.pickup_stop_id,
@@ -7260,7 +7030,6 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7455,7 +7224,6 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7496,7 +7264,6 @@ class PassengerService:
             "dropoff_stop_id": booking_session.dropoff_stop_id,
             "status": booking_session.status,
             "total_fare_amount": booking_session.total_fare_amount,
-            "otp": self._serialize_booking_session_otp(booking_session),
             "payment_hold_expires_at": booking_session.payment_hold_expires_at,
             "confirmed_at": booking_session.confirmed_at,
             "cancelled_at": booking_session.cancelled_at,
@@ -7532,7 +7299,8 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                self._current_trip_sql_filter(now),
+                ScheduledTrip.planned_start_at <= now,
+                ScheduledTrip.planned_end_at >= now,
             )
             .options(
                 selectinload(BookingSession.bookings).selectinload(
@@ -7540,9 +7308,6 @@ class PassengerService:
                 ),
                 selectinload(BookingSession.bookings).selectinload(
                     TripBooking.dropoff_stop
-                ),
-                selectinload(BookingSession.bookings).selectinload(
-                    TripBooking.completed_near_stop
                 ),
                 selectinload(BookingSession.bookings).selectinload(
                     TripBooking.payments
@@ -7586,10 +7351,8 @@ class PassengerService:
                     BookingStatus.BOOKED,
                     BookingStatus.BOARDED,
                 )
-                and self._is_current_trip_for_passenger(
-                    booking.scheduled_trip,
-                    now,
-                )
+                and booking.scheduled_trip.planned_start_at <= now
+                and booking.scheduled_trip.planned_end_at >= now
             ]
 
             current_bookings.sort(
@@ -7666,12 +7429,12 @@ class PassengerService:
             .where(
                 TripBooking.passenger_user_id == current_user.id,
                 TripBooking.booking_status.in_((BookingStatus.BOOKED, BookingStatus.BOARDED)),
-                self._current_trip_sql_filter(now),
+                ScheduledTrip.planned_start_at <= now,
+                ScheduledTrip.planned_end_at >= now,
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7716,7 +7479,6 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
-                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7936,23 +7698,11 @@ class PassengerService:
         return value
 
     def _build_qr_token(self, booking: TripBooking) -> tuple[str, dict[str, Any]]:
-        now = utcnow()
         payload = {
-            "credential_scope": (
-                "booking_session"
-                if booking.booking_session_id
-                else "booking"
-            ),
-            "scheduled_trip_id": booking.scheduled_trip_id,
-            "issued_at": int(now.timestamp()),
-            "expires_at": int((now + timedelta(hours=12)).timestamp()),
+            "booking_id": booking.id,
+            "issued_at": int(utcnow().timestamp()),
+            "expires_at": int((utcnow() + timedelta(hours=12)).timestamp()),
         }
-        if booking.booking_session_id:
-            payload["booking_session_id"] = booking.booking_session_id
-            payload["booking_id"] = booking.id
-        else:
-            payload["booking_id"] = booking.id
-
         payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         payload_bytes = payload_json.encode("utf-8")
 
@@ -7985,8 +7735,6 @@ class PassengerService:
         token, payload = self._build_qr_token(booking)
         return {
             "booking_id": booking.id,
-            "booking_session_id": booking.booking_session_id,
-            "credential_scope": payload["credential_scope"],
             "qr_token": token,
             "payload": payload,
         }
@@ -8054,11 +7802,6 @@ class PassengerService:
             "last_lng": trip.last_lng if tracking_active else None,
             "planned_start_at": trip.planned_start_at,
             "completed_at": booking.completed_at,
-            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
-            "actual_drop_stop": self._serialize_optional_stop_brief(
-                booking.completed_near_stop
-            ),
-            "actual_dropped_at": booking.completed_at,
             "actual_end_at": trip.actual_end_at,
             "updated_at": trip.updated_at,
         }

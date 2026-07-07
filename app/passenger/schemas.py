@@ -286,11 +286,7 @@ class BookingSessionGuestTravellerRequest(BaseModel):
 
 class CreateBookingSessionSeatRequest(BaseModel):
     seat_number: int = Field(..., ge=1)
-    traveller_profile_id: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=36,
-    )
+    traveller_profile_id: str | None = Field(default=None, min_length=1, max_length=36)
     traveller: BookingSessionGuestTravellerRequest | None = None
 
     @model_validator(mode="after")
@@ -310,19 +306,13 @@ class CreateBookingSessionRequest(BaseModel):
     scheduled_trip_id: str = Field(..., min_length=1, max_length=36)
     pickup_stop_id: str = Field(..., min_length=1, max_length=36)
     dropoff_stop_id: str = Field(..., min_length=1, max_length=36)
-    seats: list[CreateBookingSessionSeatRequest] = Field(
-        ...,
-        min_length=1,
-        max_length=10,
-    )
+    seats: list[CreateBookingSessionSeatRequest] = Field(..., min_length=1, max_length=10)
 
     @model_validator(mode="after")
     def seat_numbers_must_be_unique(self):
         seat_numbers = [seat.seat_number for seat in self.seats]
         if len(seat_numbers) != len(set(seat_numbers)):
-            raise ValueError(
-                "Seat numbers must be unique within one booking session."
-            )
+            raise ValueError("Seat numbers must be unique within one booking session.")
         return self
 
 class BookingSessionSeatRefundResponse(BaseModel):
@@ -397,7 +387,6 @@ class BookingSessionResponse(BaseModel):
     dropoff_sequence_no_snapshot: int
     status: str
     total_fare_amount: Decimal
-    otp: str | None
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -482,9 +471,6 @@ class TripBookingResponse(BaseModel):
     cancelled_at: datetime | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
-    actual_drop_stop_id: str | None = None
-    actual_drop_stop: StopBriefResponse | None = None
-    actual_dropped_at: datetime | None = None
     payment_hold_expires_at: datetime | None
     payments: list[BookingPaymentResponse]
     rating: BookingRatingResponse | None
@@ -521,9 +507,6 @@ class BookingDetailResponse(BaseModel):
     cancelled_at: datetime | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
-    actual_drop_stop_id: str | None = None
-    actual_drop_stop: StopBriefResponse | None = None
-    actual_dropped_at: datetime | None = None
     scheduled_trip: ScheduledTripResponse
     payments: list[BookingPaymentResponse]
     rating: BookingRatingResponse | None
@@ -593,9 +576,6 @@ class CurrentTripBookingResponse(BaseModel):
     cancelled_at: datetime | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
-    actual_drop_stop_id: str | None = None
-    actual_drop_stop: StopBriefResponse | None = None
-    actual_dropped_at: datetime | None = None
     scheduled_trip: ScheduledTripResponse
     created_at: datetime
     updated_at: datetime
@@ -617,7 +597,6 @@ class CurrentTripSegmentStopResponse(BaseModel):
     assume_time_diff_minutes: int | None
     is_pickup_stop: bool
     is_dropoff_stop: bool
-    is_actual_drop_stop: bool = False
     stop_status: str
     planned_time_at_stop: datetime
     estimated_time_at_stop: datetime | None
@@ -649,9 +628,6 @@ class CurrentTripStatusResponse(BaseModel):
 
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
-    actual_drop_stop_id: str | None = None
-    actual_drop_stop: StopBriefResponse | None = None
-    actual_dropped_at: datetime | None = None
     trip_from_stop: StopBriefResponse | None
     trip_to_stop: StopBriefResponse | None
 
@@ -679,9 +655,6 @@ class CurrentTripLiveLocationResponse(BaseModel):
     last_lng: Decimal | None
     planned_start_at: datetime
     completed_at: datetime | None
-    actual_drop_stop_id: str | None = None
-    actual_drop_stop: StopBriefResponse | None = None
-    actual_dropped_at: datetime | None = None
     actual_end_at: datetime | None
     updated_at: datetime
 
@@ -696,7 +669,6 @@ class CurrentTripBookingSessionResponse(BaseModel):
     dropoff_stop_id: str
     status: str
     total_fare_amount: Decimal
-    otp: str | None
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -764,8 +736,6 @@ class BookingCreateResponse(BaseModel):
 
 class BookingQRResponse(BaseModel):
     booking_id: str
-    booking_session_id: str | None = None
-    credential_scope: str | None = None
     qr_token: str
     payload: dict[str, Any]
 
