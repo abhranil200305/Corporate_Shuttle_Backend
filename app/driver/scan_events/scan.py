@@ -27,6 +27,8 @@ class ScanRequest(BaseModel):
     qr_token: str
     lat: float
     lng: float
+    booking_id: str | None = None
+    seat_number: int | None = None
 
 
 QR_SECRET = os.getenv("PASSENGER_QR_SECRET")
@@ -91,6 +93,8 @@ async def scan_passenger(
         db,
         trip_id=trip_id,
         payload=payload,
+        target_booking_id=data.booking_id,
+        target_seat_number=data.seat_number,
     )
 
     return await execute_credential_scan(

@@ -11,8 +11,9 @@ For bookings created under a `booking_session_id`:
 - Every child `trip_bookings.otp` mirrors the same value for old FE/admin code.
 - A QR generated from any child booking is scoped to the booking session, not the
   individual seat.
-- A driver scan of that QR/OTP processes all currently eligible active seats in
-  that booking session for that trip.
+- A driver scan of that QR/OTP processes exactly one active seat. If the
+  credential identifies a multi-seat session without a target seat, the backend
+  asks the driver client to send `booking_id` or `seat_number`.
 
 Legacy single-seat bookings with `booking_session_id = null` continue to behave
 as booking-level credentials.
@@ -70,6 +71,7 @@ For a session booking, the response is:
     "credential_scope": "booking_session",
     "scheduled_trip_id": "trip-id",
     "booking_session_id": "session-id",
+    "booking_id": "child-booking-id-that-was-requested",
     "issued_at": 1783410000,
     "expires_at": 1783453200
   }
@@ -108,17 +110,17 @@ POST /driver/otp/{trip_id}/verify
 A successful scan still returns legacy keys like `booking_id`, `seat_number`,
 `scan_type`, `booking_status`, and `matched_stop_id`.
 
-It now also returns group-aware fields:
+It now also returns target-aware fields:
 
 ```json
 {
   "message": "Scan successful",
-  "booking_id": "first-processed-booking-id",
-  "booking_ids": ["booking-1", "booking-2"],
+  "booking_id": "processed-booking-id",
+  "booking_ids": ["processed-booking-id"],
   "booking_session_id": "session-id",
   "seat_number": 4,
-  "seat_numbers": [4, 5],
-  "processed_count": 2,
+  "seat_numbers": [4],
+  "processed_count": 1,
   "scan_type": "board",
   "distance_meters": 7.21,
   "booking_status": "boarded",
@@ -131,7 +133,20 @@ It now also returns group-aware fields:
 ```
 
 Driver FE can show a simple success message using `processed_count` and
-`seat_numbers`. No FE-side grouping logic is required.
+`seat_numbers`.
+
+Manual OTP scans for a multi-seat session should send one target:
+
+```json
+{
+  "otp_code": "123456",
+  "seat_number": 4,
+  "lat": 22.57,
+  "lng": 88.36
+}
+```
+
+`booking_id` can be sent instead of `seat_number`.
 
 ## Scan behavior
 
@@ -139,20 +154,46 @@ For a session credential:
 
 1. The driver must own the trip.
 2. The credential must belong to the same `trip_id`.
-3. The backend expands the credential to active session bookings only:
+3. The backend considers active session bookings only:
    - `booked`
    - `boarded`
-4. At pickup radius, the scan boards every `booked` seat in the session.
-5. At an active drop stop, the scan drops every `boarded` seat in the session.
-6. Cancelled/completed/missed seats are ignored by the group scan.
+4. If a concrete target is present, only that target booking is mutated.
+5. If multiple active seats exist and no target is present, the backend returns
+   `session_credential_requires_seat_selection`.
+6. At pickup radius, the target `booked` seat is boarded.
+7. At an active drop stop, the target `boarded` seat is dropped. This preserves
+   the existing early-drop behavior: the active stop may be before the booked
+   drop stop as long as it is after pickup and not after the booked drop stop.
+8. Cancelled/completed/missed seats are ignored and cannot be selected.
 
-Mixed state is handled backend-side:
+Mixed state is handled safely:
 
-- If some seats are `booked` and some are already `boarded`, scanning at pickup
-  boards the remaining `booked` seats.
-- If some seats are `booked` and some are `boarded`, scanning at a valid active
-  drop stop drops the `boarded` seats.
+- If some seats are `booked` and some are already `boarded`, the selected seat's
+  own status decides whether the scan is a board or drop.
 - A seat that was never boarded is not silently completed.
+- Individual seat cancellation is safe because cancelled seats are not active
+  scan candidates.
+- `dropoff_stop` remains the booked/planned drop stop.
+- `actual_drop_stop` is the scanned stop where the passenger actually got off.
+  For an early drop, these two fields are intentionally different.
+
+Ambiguous multi-seat OTP response:
+
+```json
+{
+  "error": "session_credential_requires_seat_selection",
+  "message": "This shared session credential has multiple active seats. Pass booking_id or seat_number to scan exactly one seat.",
+  "booking_session_id": "session-id",
+  "eligible_bookings": [
+    {
+      "booking_id": "booking-1",
+      "seat_number": 4,
+      "booking_status": "booked",
+      "traveller_name": "Passenger"
+    }
+  ]
+}
+```
 
 ## OTP collision handling
 

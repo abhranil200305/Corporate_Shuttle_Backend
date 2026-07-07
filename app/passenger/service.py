@@ -1014,6 +1014,7 @@ class PassengerService:
              .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scan_events),
@@ -1037,6 +1038,61 @@ class PassengerService:
             )
         return booking
 
+    @staticmethod
+    def _current_trip_sql_filter(now: datetime):
+        terminal_statuses = (
+            ScheduledTripStatus.CANCELLED,
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.PREMATURE_END,
+        )
+        live_statuses = (
+            ScheduledTripStatus.IN_PROGRESS,
+            ScheduledTripStatus.PREMATURED_END_REQUEST,
+        )
+
+        return and_(
+            ScheduledTrip.planned_start_at <= now,
+            ScheduledTrip.status.notin_(terminal_statuses),
+            or_(
+                ScheduledTrip.planned_end_at >= now,
+                ScheduledTrip.status.in_(live_statuses),
+                and_(
+                    ScheduledTrip.actual_start_at.isnot(None),
+                    ScheduledTrip.actual_end_at.is_(None),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _is_current_trip_for_passenger(
+        trip: ScheduledTrip,
+        now: datetime,
+    ) -> bool:
+        terminal_statuses = (
+            ScheduledTripStatus.CANCELLED,
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.PREMATURE_END,
+        )
+        live_statuses = (
+            ScheduledTripStatus.IN_PROGRESS,
+            ScheduledTripStatus.PREMATURED_END_REQUEST,
+        )
+
+        if trip.status in terminal_statuses:
+            return False
+
+        if trip.planned_start_at > now:
+            return False
+
+        return (
+            trip.planned_end_at >= now
+            or trip.status in live_statuses
+            or (
+                trip.actual_start_at is not None
+                and trip.actual_end_at is None
+            )
+        )
+
     async def _list_booking_session_current_trip_bookings(
         self,
         *,
@@ -1057,12 +1113,12 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scan_events),
@@ -1378,6 +1434,29 @@ class PassengerService:
             "is_active": stop.is_active,
         }
 
+    def _serialize_optional_stop_brief(
+        self,
+        stop: Stop | None,
+    ) -> dict[str, Any] | None:
+        if stop is None:
+            return None
+        return self._serialize_stop_brief(stop)
+
+    @staticmethod
+    def _get_actual_drop_stop_id(booking: TripBooking) -> str | None:
+        if booking.completed_near_stop_id:
+            return booking.completed_near_stop_id
+
+        for event in booking.scan_events:
+            if (
+                event.scan_type.value == "drop"
+                and event.within_radius
+                and event.matched_stop_id
+            ):
+                return event.matched_stop_id
+
+        return None
+
     def _serialize_route(self, route: Route) -> dict[str, Any]:
         return {
             "id": route.id,
@@ -1480,6 +1559,11 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
+            "actual_drop_stop": self._serialize_optional_stop_brief(
+                booking.completed_near_stop
+            ),
+            "actual_dropped_at": booking.completed_at,
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
             "rating": self._serialize_rating(booking.rating),
@@ -1639,6 +1723,11 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
+            "actual_drop_stop": self._serialize_optional_stop_brief(
+                booking.completed_near_stop
+            ),
+            "actual_dropped_at": booking.completed_at,
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
             "rating": self._serialize_rating(booking.rating),
             "created_at": booking.created_at,
@@ -1943,6 +2032,11 @@ class PassengerService:
             "cancelled_at": booking.cancelled_at,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
+            "actual_drop_stop": self._serialize_optional_stop_brief(
+                booking.completed_near_stop
+            ),
+            "actual_dropped_at": booking.completed_at,
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
             "created_at": booking.created_at,
             "updated_at": booking.updated_at,
@@ -2275,6 +2369,21 @@ class PassengerService:
             for item in sorted_route_stops
             if booking.pickup_sequence_no_snapshot <= item.sequence_no <= booking.dropoff_sequence_no_snapshot
         ]
+        route_stop_by_stop_id = {
+            route_stop.stop_id: route_stop
+            for route_stop in segment_route_stops
+        }
+        actual_drop_stop_id = self._get_actual_drop_stop_id(booking)
+        actual_drop_route_stop = (
+            route_stop_by_stop_id.get(actual_drop_stop_id)
+            if actual_drop_stop_id
+            else None
+        )
+        actual_drop_sequence_no = (
+            actual_drop_route_stop.sequence_no
+            if actual_drop_route_stop is not None
+            else None
+        )
 
         boarding_scan_completed = any(
             event.scan_type.value == "board" and event.within_radius
@@ -2312,13 +2421,31 @@ class PassengerService:
             if route_stop.sequence_no == booking.pickup_sequence_no_snapshot and boarding_scan_completed:
                 stop_status = "boarded_here"
 
-            if route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+            is_actual_drop_stop = (
+                drop_scan_completed
+                and actual_drop_stop_id is not None
+                and route_stop.stop_id == actual_drop_stop_id
+            )
+            should_mark_booked_drop = (
+                drop_scan_completed
+                and actual_drop_stop_id is None
+                and route_stop.sequence_no == booking.dropoff_sequence_no_snapshot
+            )
+
+            if is_actual_drop_stop or should_mark_booked_drop:
                 stop_status = "dropped_here"
 
             if booking.scheduled_trip.status == ScheduledTripStatus.COMPLETED:
-                if route_stop.sequence_no < booking.dropoff_sequence_no_snapshot:
+                completed_drop_sequence_no = (
+                    actual_drop_sequence_no
+                    or booking.dropoff_sequence_no_snapshot
+                )
+                if route_stop.sequence_no < completed_drop_sequence_no:
                     stop_status = "passed"
-                elif route_stop.sequence_no == booking.dropoff_sequence_no_snapshot and drop_scan_completed:
+                elif (
+                    route_stop.sequence_no == completed_drop_sequence_no
+                    and drop_scan_completed
+                ):
                     stop_status = "dropped_here"
 
             items.append(
@@ -2328,6 +2455,7 @@ class PassengerService:
                     "assume_time_diff_minutes": route_stop.assume_time_diff_minutes,
                     "is_pickup_stop": route_stop.sequence_no == booking.pickup_sequence_no_snapshot,
                     "is_dropoff_stop": route_stop.sequence_no == booking.dropoff_sequence_no_snapshot,
+                    "is_actual_drop_stop": is_actual_drop_stop,
                     "stop_status": stop_status,
                     "planned_time_at_stop": planned_time,
                     "estimated_time_at_stop": estimated_time,
@@ -2400,6 +2528,11 @@ class PassengerService:
             "trip_completed": trip_completed,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
+            "actual_drop_stop": self._serialize_optional_stop_brief(
+                booking.completed_near_stop
+            ),
+            "actual_dropped_at": booking.completed_at,
             "trip_from_stop": trip_from_stop,
             "trip_to_stop": trip_to_stop,
             "current_progress_stop": self._get_current_progress_stop(trip),
@@ -7127,6 +7260,7 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7321,6 +7455,7 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7397,8 +7532,7 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(BookingSession.bookings).selectinload(
@@ -7406,6 +7540,9 @@ class PassengerService:
                 ),
                 selectinload(BookingSession.bookings).selectinload(
                     TripBooking.dropoff_stop
+                ),
+                selectinload(BookingSession.bookings).selectinload(
+                    TripBooking.completed_near_stop
                 ),
                 selectinload(BookingSession.bookings).selectinload(
                     TripBooking.payments
@@ -7449,8 +7586,10 @@ class PassengerService:
                     BookingStatus.BOOKED,
                     BookingStatus.BOARDED,
                 )
-                and booking.scheduled_trip.planned_start_at <= now
-                and booking.scheduled_trip.planned_end_at >= now
+                and self._is_current_trip_for_passenger(
+                    booking.scheduled_trip,
+                    now,
+                )
             ]
 
             current_bookings.sort(
@@ -7527,12 +7666,12 @@ class PassengerService:
             .where(
                 TripBooking.passenger_user_id == current_user.id,
                 TripBooking.booking_status.in_((BookingStatus.BOOKED, BookingStatus.BOARDED)),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7577,6 +7716,7 @@ class PassengerService:
             .options(
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.completed_near_stop),
                 selectinload(TripBooking.payments),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scheduled_trip)
@@ -7809,6 +7949,7 @@ class PassengerService:
         }
         if booking.booking_session_id:
             payload["booking_session_id"] = booking.booking_session_id
+            payload["booking_id"] = booking.id
         else:
             payload["booking_id"] = booking.id
 
@@ -7913,6 +8054,11 @@ class PassengerService:
             "last_lng": trip.last_lng if tracking_active else None,
             "planned_start_at": trip.planned_start_at,
             "completed_at": booking.completed_at,
+            "actual_drop_stop_id": self._get_actual_drop_stop_id(booking),
+            "actual_drop_stop": self._serialize_optional_stop_brief(
+                booking.completed_near_stop
+            ),
+            "actual_dropped_at": booking.completed_at,
             "actual_end_at": trip.actual_end_at,
             "updated_at": trip.updated_at,
         }

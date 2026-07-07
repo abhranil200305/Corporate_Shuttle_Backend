@@ -20,6 +20,8 @@ class OTPVerifyRequest(BaseModel):
     otp_code: str
     lat: float
     lng: float
+    booking_id: str | None = None
+    seat_number: int | None = None
 
 
 # =========================================================
@@ -43,6 +45,8 @@ async def verify_otp_scan(
         db,
         trip_id=trip_id,
         otp_code=data.otp_code,
+        target_booking_id=data.booking_id,
+        target_seat_number=data.seat_number,
     )
 
     return await execute_credential_scan(

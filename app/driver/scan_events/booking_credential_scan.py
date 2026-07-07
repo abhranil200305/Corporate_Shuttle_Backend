@@ -57,6 +57,89 @@ def _sort_bookings_for_scan(bookings: list[TripBooking]) -> list[TripBooking]:
     )
 
 
+def _serialize_scan_candidate(booking: TripBooking) -> dict[str, Any]:
+    return {
+        "booking_id": booking.id,
+        "booking_session_id": booking.booking_session_id,
+        "seat_number": booking.seat_number,
+        "booking_status": (
+            booking.booking_status.value
+            if hasattr(booking.booking_status, "value")
+            else str(booking.booking_status)
+        ),
+        "traveller_profile_id": booking.traveller_profile_id,
+        "traveller_name": booking.traveller_name_snapshot,
+        "traveller_phone": booking.traveller_phone_snapshot,
+        "traveller_relationship_label": (
+            booking.traveller_relationship_label_snapshot
+        ),
+    }
+
+
+def _select_target_bookings_or_raise(
+    bookings: list[TripBooking],
+    *,
+    target_booking_id: str | None = None,
+    target_seat_number: int | None = None,
+) -> list[TripBooking]:
+    bookings = _sort_bookings_for_scan(bookings)
+
+    if target_booking_id:
+        for booking in bookings:
+            if booking.id == target_booking_id:
+                return [booking]
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "scan_target_booking_not_found",
+                "message": (
+                    "Selected booking is not active for this credential."
+                ),
+                "target_booking_id": target_booking_id,
+            },
+        )
+
+    if target_seat_number is not None:
+        for booking in bookings:
+            if booking.seat_number == target_seat_number:
+                return [booking]
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "scan_target_seat_not_found",
+                "message": "Selected seat is not active for this credential.",
+                "target_seat_number": target_seat_number,
+            },
+        )
+
+    if len(bookings) == 1:
+        return bookings
+
+    booking_session_id = next(
+        (
+            booking.booking_session_id
+            for booking in bookings
+            if booking.booking_session_id
+        ),
+        None,
+    )
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "error": "session_credential_requires_seat_selection",
+            "message": (
+                "This shared session credential has multiple active seats. "
+                "Pass booking_id or seat_number to scan exactly one seat."
+            ),
+            "booking_session_id": booking_session_id,
+            "eligible_bookings": [
+                _serialize_scan_candidate(booking)
+                for booking in bookings
+            ],
+        },
+    )
+
+
 async def ensure_driver_owns_trip(
     db: AsyncSession,
     *,
@@ -102,27 +185,41 @@ async def resolve_qr_payload_bookings_for_update(
     *,
     trip_id: str,
     payload: dict[str, Any],
+    target_booking_id: str | None = None,
+    target_seat_number: int | None = None,
 ) -> list[TripBooking]:
     payload_trip_id = payload.get("scheduled_trip_id")
     if payload_trip_id and str(payload_trip_id) != trip_id:
         raise HTTPException(400, "QR does not belong to this trip")
 
     booking_session_id = payload.get("booking_session_id")
+    payload_booking_id = payload.get("booking_id")
+
+    target_booking_id = target_booking_id or (
+        str(payload_booking_id)
+        if payload_booking_id
+        else None
+    )
+
     if booking_session_id:
-        return await _list_active_session_bookings_for_update(
+        bookings = await _list_active_session_bookings_for_update(
             db,
             trip_id=trip_id,
             booking_session_id=str(booking_session_id),
         )
+        return _select_target_bookings_or_raise(
+            bookings,
+            target_booking_id=target_booking_id,
+            target_seat_number=target_seat_number,
+        )
 
-    booking_id = payload.get("booking_id")
-    if not booking_id:
+    if not target_booking_id:
         raise HTTPException(400, "Invalid QR")
 
     result = await db.execute(
         select(TripBooking)
         .where(
-            TripBooking.id == str(booking_id),
+            TripBooking.id == target_booking_id,
             TripBooking.scheduled_trip_id == trip_id,
         )
         .with_for_update()
@@ -131,16 +228,6 @@ async def resolve_qr_payload_bookings_for_update(
 
     if not booking:
         raise HTTPException(404, "Booking not found")
-
-    # Backward compatibility: old QR tokens only carried a child booking_id.
-    # If that booking belongs to a session, scanning the old token should now
-    # still process the whole active booking session.
-    if booking.booking_session_id:
-        return await _list_active_session_bookings_for_update(
-            db,
-            trip_id=trip_id,
-            booking_session_id=booking.booking_session_id,
-        )
 
     if booking.booking_status not in SCAN_ACTIVE_BOOKING_STATUSES:
         raise HTTPException(400, "Invalid booking state")
@@ -153,6 +240,8 @@ async def resolve_otp_bookings_for_update(
     *,
     trip_id: str,
     otp_code: str,
+    target_booking_id: str | None = None,
+    target_seat_number: int | None = None,
 ) -> list[TripBooking]:
     otp_code = otp_code.strip()
     if not otp_code:
@@ -215,10 +304,15 @@ async def resolve_otp_bookings_for_update(
 
     scope, identifier = next(iter(candidate_keys))
     if scope == "session":
-        return await _list_active_session_bookings_for_update(
+        bookings = await _list_active_session_bookings_for_update(
             db,
             trip_id=trip_id,
             booking_session_id=identifier,
+        )
+        return _select_target_bookings_or_raise(
+            bookings,
+            target_booking_id=target_booking_id,
+            target_seat_number=target_seat_number,
         )
 
     booking = next(
@@ -228,7 +322,11 @@ async def resolve_otp_bookings_for_update(
     if booking is None:
         raise HTTPException(400, "Invalid OTP")
 
-    return [booking]
+    return _select_target_bookings_or_raise(
+        [booking],
+        target_booking_id=target_booking_id,
+        target_seat_number=target_seat_number,
+    )
 
 
 async def _validate_board_scan(
@@ -276,7 +374,9 @@ async def _validate_board_scan(
     if trip_event.arrival_time is None:
         raise HTTPException(
             status_code=400,
-            detail="Driver must arrive at this stop before boarding passengers.",
+            detail=(
+                "Driver must arrive at this stop before boarding passengers."
+            ),
         )
 
     # -------------------------------------------------------
