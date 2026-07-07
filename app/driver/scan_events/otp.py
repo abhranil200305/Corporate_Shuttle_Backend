@@ -118,9 +118,7 @@ async def verify_otp_scan(
     # 5. BOARD LOGIC
     # =====================================================
     # =====================================================
-    # 5. BOARD LOGIC
-    # Driver must ARRIVE at the passenger pickup stop first
-    # =====================================================
+
     if scan_type == ScanType.BOARD:
 
         # ------------------------------------------
