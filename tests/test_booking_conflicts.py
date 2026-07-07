@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from fastapi import HTTPException
 
-from app.db.schema import BookingStatus
+from app.db.schema import BookingStatus, ScheduledTripStatus
 from app.passenger.booking_conflicts import (
     build_guest_traveller_identity,
     build_profile_traveller_identity,
@@ -164,6 +164,41 @@ class JourneyWindowConflictTests(unittest.TestCase):
                 requested_pickup_stop_id="stop-a",
                 requested_dropoff_stop_id="stop-b",
             )
+        )
+
+
+class PassengerCurrentTripTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.service = PassengerService(MagicMock())
+        self.now = datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)
+
+    def _trip(self, status: ScheduledTripStatus):
+        return SimpleNamespace(
+            status=status,
+            planned_start_at=self.now - timedelta(hours=2),
+            planned_end_at=self.now - timedelta(minutes=10),
+            actual_start_at=self.now - timedelta(hours=2),
+            actual_end_at=None,
+        )
+
+    def test_live_trip_remains_current_after_planned_end(self) -> None:
+        trip = self._trip(ScheduledTripStatus.IN_PROGRESS)
+
+        self.assertTrue(
+            self.service._is_current_trip_for_passenger(trip, self.now)
+        )
+
+    def test_completed_passenger_booking_is_not_current_on_live_trip(
+        self,
+    ) -> None:
+        booking = SimpleNamespace(
+            booking_status=BookingStatus.COMPLETED,
+            completed_at=self.now - timedelta(minutes=5),
+            scheduled_trip=self._trip(ScheduledTripStatus.IN_PROGRESS),
+        )
+
+        self.assertFalse(
+            self.service._is_current_booking_for_passenger(booking, self.now)
         )
 
 

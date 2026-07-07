@@ -944,6 +944,80 @@ class PassengerService:
             )
         return booking
 
+    @staticmethod
+    def _current_trip_sql_filter(now: datetime):
+        terminal_statuses = (
+            ScheduledTripStatus.CANCELLED,
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.PREMATURE_END,
+        )
+        live_statuses = (
+            ScheduledTripStatus.IN_PROGRESS,
+            ScheduledTripStatus.PREMATURED_END_REQUEST,
+        )
+
+        return and_(
+            ScheduledTrip.planned_start_at <= now,
+            ScheduledTrip.status.notin_(terminal_statuses),
+            or_(
+                ScheduledTrip.planned_end_at >= now,
+                ScheduledTrip.status.in_(live_statuses),
+                and_(
+                    ScheduledTrip.actual_start_at.isnot(None),
+                    ScheduledTrip.actual_end_at.is_(None),
+                ),
+            ),
+        )
+
+    @staticmethod
+    def _is_current_trip_for_passenger(
+        trip: ScheduledTrip,
+        now: datetime,
+    ) -> bool:
+        terminal_statuses = (
+            ScheduledTripStatus.CANCELLED,
+            ScheduledTripStatus.COMPLETED,
+            ScheduledTripStatus.PREMATURE_END,
+        )
+        live_statuses = (
+            ScheduledTripStatus.IN_PROGRESS,
+            ScheduledTripStatus.PREMATURED_END_REQUEST,
+        )
+
+        if trip.status in terminal_statuses:
+            return False
+
+        if trip.planned_start_at > now:
+            return False
+
+        return (
+            trip.planned_end_at >= now
+            or trip.status in live_statuses
+            or (
+                trip.actual_start_at is not None
+                and trip.actual_end_at is None
+            )
+        )
+
+    def _is_current_booking_for_passenger(
+        self,
+        booking: TripBooking,
+        now: datetime,
+    ) -> bool:
+        if booking.booking_status not in (
+            BookingStatus.BOOKED,
+            BookingStatus.BOARDED,
+        ):
+            return False
+
+        if booking.completed_at is not None:
+            return False
+
+        return self._is_current_trip_for_passenger(
+            booking.scheduled_trip,
+            now,
+        )
+
     async def _list_booking_session_current_trip_bookings(
         self,
         *,
@@ -964,8 +1038,8 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                TripBooking.completed_at.is_(None),
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
@@ -7299,8 +7373,8 @@ class PassengerService:
                         BookingStatus.BOARDED,
                     )
                 ),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                TripBooking.completed_at.is_(None),
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(BookingSession.bookings).selectinload(
@@ -7351,8 +7425,10 @@ class PassengerService:
                     BookingStatus.BOOKED,
                     BookingStatus.BOARDED,
                 )
-                and booking.scheduled_trip.planned_start_at <= now
-                and booking.scheduled_trip.planned_end_at >= now
+                and self._is_current_booking_for_passenger(
+                    booking,
+                    now,
+                )
             ]
 
             current_bookings.sort(
@@ -7429,8 +7505,8 @@ class PassengerService:
             .where(
                 TripBooking.passenger_user_id == current_user.id,
                 TripBooking.booking_status.in_((BookingStatus.BOOKED, BookingStatus.BOARDED)),
-                ScheduledTrip.planned_start_at <= now,
-                ScheduledTrip.planned_end_at >= now,
+                TripBooking.completed_at.is_(None),
+                self._current_trip_sql_filter(now),
             )
             .options(
                 selectinload(TripBooking.pickup_stop),
