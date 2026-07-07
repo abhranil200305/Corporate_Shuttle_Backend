@@ -172,19 +172,45 @@ class PassengerCurrentTripTests(unittest.TestCase):
         self.service = PassengerService(MagicMock())
         self.now = datetime(2026, 7, 7, 10, 0, tzinfo=timezone.utc)
 
-    def _trip(self, status: ScheduledTripStatus):
+    def _trip(
+        self,
+        status: ScheduledTripStatus,
+        *,
+        actual_end_at=None,
+    ):
         return SimpleNamespace(
             status=status,
             planned_start_at=self.now - timedelta(hours=2),
             planned_end_at=self.now - timedelta(minutes=10),
             actual_start_at=self.now - timedelta(hours=2),
-            actual_end_at=None,
+            actual_end_at=actual_end_at,
         )
 
     def test_live_trip_remains_current_after_planned_end(self) -> None:
         trip = self._trip(ScheduledTripStatus.IN_PROGRESS)
 
         self.assertTrue(
+            self.service._is_current_trip_for_passenger(trip, self.now)
+        )
+
+    def test_scheduled_trip_remains_current_after_planned_end_until_terminal(
+        self,
+    ) -> None:
+        trip = self._trip(ScheduledTripStatus.SCHEDULED)
+
+        self.assertTrue(
+            self.service._is_current_trip_for_passenger(trip, self.now)
+        )
+
+    def test_actual_ended_trip_is_not_current_even_if_status_lags(
+        self,
+    ) -> None:
+        trip = self._trip(
+            ScheduledTripStatus.IN_PROGRESS,
+            actual_end_at=self.now - timedelta(minutes=1),
+        )
+
+        self.assertFalse(
             self.service._is_current_trip_for_passenger(trip, self.now)
         )
 
