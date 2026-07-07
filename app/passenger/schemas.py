@@ -387,6 +387,7 @@ class BookingSessionResponse(BaseModel):
     dropoff_sequence_no_snapshot: int
     status: str
     total_fare_amount: Decimal
+    otp: str | None
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -669,6 +670,7 @@ class CurrentTripBookingSessionResponse(BaseModel):
     dropoff_stop_id: str
     status: str
     total_fare_amount: Decimal
+    otp: str | None
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -736,6 +738,8 @@ class BookingCreateResponse(BaseModel):
 
 class BookingQRResponse(BaseModel):
     booking_id: str
+    booking_session_id: str | None = None
+    credential_scope: str | None = None
     qr_token: str
     payload: dict[str, Any]
 

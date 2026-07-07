@@ -4615,6 +4615,7 @@ async def get_booking_session_details(
 		else None,
 
 		"status": session.status,
+		"otp": session.otp,
 
 		"trip": {
 			"scheduled_trip_id": session.scheduled_trip_id,
@@ -4676,6 +4677,9 @@ async def get_booking_session_details(
 				"seat_number":
 					booking.seat_number,
 
+				"otp":
+					booking.otp,
+
 				"status":
 					booking.booking_status,
 
@@ -4713,6 +4717,7 @@ async def get_booking_sessions(
 			"scheduled_trip_id": session.scheduled_trip_id,
 			"route_id": session.route_id,
 			"status": session.status,
+			"otp": session.otp,
 			"booking_count": len(session.bookings),
 			"payment_count": len(session.payments),
 			"total_fare_amount": float(

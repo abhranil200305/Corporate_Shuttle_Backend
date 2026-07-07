@@ -23,7 +23,6 @@ class Base(DeclarativeBase):
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
-    UniqueConstraint,
     DateTime,
     Enum,
     ForeignKey,
@@ -325,13 +324,13 @@ class User(UUIDPKMixin, TimestampMixin, Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    sessions: Mapped[list["UserSession"]] = relationship(
+    sessions: Mapped[list[UserSession]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
-    passenger_profile: Mapped["PassengerProfile | None"] = relationship(
+    passenger_profile: Mapped[PassengerProfile | None] = relationship(
         back_populates="user",
         foreign_keys="PassengerProfile.user_id",
         cascade="all, delete-orphan",
@@ -339,14 +338,14 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         uselist=False,
     )
 
-    traveller_profiles: Mapped[list["PassengerTravellerProfile"]] = relationship(
+    traveller_profiles: Mapped[list[PassengerTravellerProfile]] = relationship(
         back_populates="owner",
         foreign_keys="PassengerTravellerProfile.owner_user_id",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
 
-    driver_profile: Mapped["DriverProfile | None"] = relationship(
+    driver_profile: Mapped[DriverProfile | None] = relationship(
         back_populates="user",
         foreign_keys="DriverProfile.user_id",
         cascade="all, delete-orphan",
@@ -354,7 +353,7 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         uselist=False,
     )
 
-    payout_details: Mapped["DriverPayoutDetails | None"] = relationship(
+    payout_details: Mapped[DriverPayoutDetails | None] = relationship(
         back_populates="driver",
         foreign_keys="DriverPayoutDetails.driver_user_id",
         cascade="all, delete-orphan",
@@ -362,7 +361,7 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         uselist=False,
     )
 
-    vehicle: Mapped["Vehicle | None"] = relationship(
+    vehicle: Mapped[Vehicle | None] = relationship(
         back_populates="driver",
         foreign_keys="Vehicle.driver_user_id",
         cascade="all, delete-orphan",
@@ -370,79 +369,79 @@ class User(UUIDPKMixin, TimestampMixin, Base):
         uselist=False,
     )
 
-    reviewed_driver_profiles: Mapped[list["DriverProfile"]] = relationship(
+    reviewed_driver_profiles: Mapped[list[DriverProfile]] = relationship(
         back_populates="reviewed_by_admin",
         foreign_keys="DriverProfile.reviewed_by_admin_id",
         passive_deletes=True,
     )
 
-    reviewed_vehicles: Mapped[list["Vehicle"]] = relationship(
+    reviewed_vehicles: Mapped[list[Vehicle]] = relationship(
         back_populates="reviewed_by_admin",
         foreign_keys="Vehicle.reviewed_by_admin_id",
         passive_deletes=True,
     )
 
-    driven_trips: Mapped[list["ScheduledTrip"]] = relationship(
+    driven_trips: Mapped[list[ScheduledTrip]] = relationship(
         back_populates="driver",
         foreign_keys="ScheduledTrip.driver_user_id",
         passive_deletes=True,
     )
 
-    passenger_bookings: Mapped[list["TripBooking"]] = relationship(
+    passenger_bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="passenger",
         foreign_keys="TripBooking.passenger_user_id",
         passive_deletes=True,
     )
 
-    owned_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+    owned_booking_sessions: Mapped[list[BookingSession]] = relationship(
         back_populates="owner",
         foreign_keys="BookingSession.owner_user_id",
         passive_deletes=True,
     )
 
-    created_transfers_for_driver: Mapped[list["BookingTransfer"]] = relationship(
+    created_transfers_for_driver: Mapped[list[BookingTransfer]] = relationship(
         back_populates="driver",
         foreign_keys="BookingTransfer.driver_user_id",
         passive_deletes=True,
     )
 
-    created_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+    created_payout_adjustments: Mapped[list[PayoutAdjustment]] = relationship(
         back_populates="created_by_admin",
         foreign_keys="PayoutAdjustment.created_by_admin_id",
         passive_deletes=True,
     )
 
-    decided_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+    decided_payout_adjustments: Mapped[list[PayoutAdjustment]] = relationship(
         back_populates="decided_by_admin",
         foreign_keys="PayoutAdjustment.decided_by_admin_id",
         passive_deletes=True,
     )
 
-    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+    applied_payout_adjustment_applications: Mapped[list[PayoutAdjustmentApplication]] = relationship(
         back_populates="applied_by_admin",
         foreign_keys="PayoutAdjustmentApplication.applied_by_admin_id",
         passive_deletes=True,
     )
 
-    scan_events_as_driver: Mapped[list["TripScanEvent"]] = relationship(
+    scan_events_as_driver: Mapped[list[TripScanEvent]] = relationship(
         back_populates="driver",
         foreign_keys="TripScanEvent.driver_user_id",
         passive_deletes=True,
     )
 
-    ratings_given: Mapped[list["BookingRating"]] = relationship(
+    ratings_given: Mapped[list[BookingRating]] = relationship(
         back_populates="passenger",
         foreign_keys="BookingRating.passenger_user_id",
         passive_deletes=True,
     )
 
-    ratings_received_as_driver: Mapped[list["BookingRating"]] = relationship(
+    ratings_received_as_driver: Mapped[list[BookingRating]] = relationship(
         back_populates="driver",
         foreign_keys="BookingRating.driver_user_id",
         passive_deletes=True,
     )
 
-    notifications: Mapped[list["UserNotification"]] = relationship(
+    notifications: Mapped[list[UserNotification]] = relationship(
         back_populates="user",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -501,7 +500,7 @@ class UserSession(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    user: Mapped["User"] = relationship(
+    user: Mapped[User] = relationship(
         back_populates="sessions",
         foreign_keys=[user_id],
     )
@@ -542,7 +541,7 @@ class UserNotification(UUIDPKMixin, Base):
         default=utcnow,
     )
 
-    user: Mapped["User"] = relationship(
+    user: Mapped[User] = relationship(
         back_populates="notifications",
         foreign_keys=[user_id],
     )
@@ -570,7 +569,7 @@ class PassengerProfile(UUIDPKMixin, TimestampMixin, Base):
     full_name: Mapped[str] = mapped_column(String(120), nullable=False)
     profile_picture_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    user: Mapped["User"] = relationship(
+    user: Mapped[User] = relationship(
         back_populates="passenger_profile",
         foreign_keys=[user_id],
     )
@@ -607,7 +606,7 @@ class PassengerTravellerProfile(UUIDPKMixin, TimestampMixin, Base):
         server_default=text("true"),
     )
 
-    owner: Mapped["User"] = relationship(
+    owner: Mapped[User] = relationship(
         back_populates="traveller_profiles",
         foreign_keys=[owner_user_id],
     )
@@ -706,11 +705,11 @@ class DriverProfile(UUIDPKMixin, TimestampMixin, Base):
     )
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    user: Mapped["User"] = relationship(
+    user: Mapped[User] = relationship(
         back_populates="driver_profile",
         foreign_keys=[user_id],
     )
-    reviewed_by_admin: Mapped["User | None"] = relationship(
+    reviewed_by_admin: Mapped[User | None] = relationship(
         back_populates="reviewed_driver_profiles",
         foreign_keys=[reviewed_by_admin_id],
     )
@@ -775,7 +774,7 @@ class DriverPayoutDetails(UUIDPKMixin, TimestampMixin, Base):
         Boolean, nullable=False, default=False
     )
 
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="payout_details",
         foreign_keys=[driver_user_id],
     )
@@ -917,15 +916,15 @@ class Vehicle(UUIDPKMixin, TimestampMixin, Base):
 
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="vehicle",
         foreign_keys=[driver_user_id],
     )
-    reviewed_by_admin: Mapped["User | None"] = relationship(
+    reviewed_by_admin: Mapped[User | None] = relationship(
         back_populates="reviewed_vehicles",
         foreign_keys=[reviewed_by_admin_id],
     )
-    scheduled_trips: Mapped[list["ScheduledTrip"]] = relationship(
+    scheduled_trips: Mapped[list[ScheduledTrip]] = relationship(
         back_populates="vehicle",
         foreign_keys="ScheduledTrip.vehicle_id",
         passive_deletes=True,
@@ -967,67 +966,67 @@ class Stop(UUIDPKMixin, TimestampMixin, Base):
     radius_meters: Mapped[int] = mapped_column(Integer, nullable=False, default=250)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    route_stops: Mapped[list["RouteStop"]] = relationship(
+    route_stops: Mapped[list[RouteStop]] = relationship(
         back_populates="stop",
         passive_deletes=True,
     )
 
-    pickup_fares: Mapped[list["RouteFare"]] = relationship(
+    pickup_fares: Mapped[list[RouteFare]] = relationship(
         back_populates="pickup_stop",
         foreign_keys="RouteFare.pickup_stop_id",
         passive_deletes=True,
     )
-    dropoff_fares: Mapped[list["RouteFare"]] = relationship(
+    dropoff_fares: Mapped[list[RouteFare]] = relationship(
         back_populates="dropoff_stop",
         foreign_keys="RouteFare.dropoff_stop_id",
         passive_deletes=True,
     )
 
-    started_trips_here: Mapped[list["ScheduledTrip"]] = relationship(
+    started_trips_here: Mapped[list[ScheduledTrip]] = relationship(
         back_populates="started_near_stop",
         foreign_keys="ScheduledTrip.started_near_stop_id",
         passive_deletes=True,
     )
-    ended_trips_here: Mapped[list["ScheduledTrip"]] = relationship(
+    ended_trips_here: Mapped[list[ScheduledTrip]] = relationship(
         back_populates="ended_near_stop",
         foreign_keys="ScheduledTrip.ended_near_stop_id",
         passive_deletes=True,
     )
 
-    pickup_bookings: Mapped[list["TripBooking"]] = relationship(
+    pickup_bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="pickup_stop",
         foreign_keys="TripBooking.pickup_stop_id",
         passive_deletes=True,
     )
-    dropoff_bookings: Mapped[list["TripBooking"]] = relationship(
+    dropoff_bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="dropoff_stop",
         foreign_keys="TripBooking.dropoff_stop_id",
         passive_deletes=True,
     )
-    boarded_bookings_here: Mapped[list["TripBooking"]] = relationship(
+    boarded_bookings_here: Mapped[list[TripBooking]] = relationship(
         back_populates="boarded_near_stop",
         foreign_keys="TripBooking.boarded_near_stop_id",
         passive_deletes=True,
     )
-    completed_bookings_here: Mapped[list["TripBooking"]] = relationship(
+    completed_bookings_here: Mapped[list[TripBooking]] = relationship(
         back_populates="completed_near_stop",
         foreign_keys="TripBooking.completed_near_stop_id",
         passive_deletes=True,
     )
 
-    pickup_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+    pickup_booking_sessions: Mapped[list[BookingSession]] = relationship(
         back_populates="pickup_stop",
         foreign_keys="BookingSession.pickup_stop_id",
         passive_deletes=True,
     )
 
-    dropoff_booking_sessions: Mapped[list["BookingSession"]] = relationship(
+    dropoff_booking_sessions: Mapped[list[BookingSession]] = relationship(
         back_populates="dropoff_stop",
         foreign_keys="BookingSession.dropoff_stop_id",
         passive_deletes=True,
     )
 
-    matched_scan_events: Mapped[list["TripScanEvent"]] = relationship(
+    matched_scan_events: Mapped[list[TripScanEvent]] = relationship(
         back_populates="matched_stop",
         foreign_keys="TripScanEvent.matched_stop_id",
         passive_deletes=True,
@@ -1052,27 +1051,27 @@ class Route(UUIDPKMixin, TimestampMixin, Base):
         nullable=True
     )
 
-    route_stops: Mapped[list["RouteStop"]] = relationship(
+    route_stops: Mapped[list[RouteStop]] = relationship(
         back_populates="route",
         cascade="all, delete-orphan",
         passive_deletes=True,
         order_by="RouteStop.sequence_no",
     )
-    fares: Mapped[list["RouteFare"]] = relationship(
+    fares: Mapped[list[RouteFare]] = relationship(
         back_populates="route",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    scheduled_trips: Mapped[list["ScheduledTrip"]] = relationship(
+    scheduled_trips: Mapped[list[ScheduledTrip]] = relationship(
         back_populates="route",
         passive_deletes=True,
     )
-    bookings: Mapped[list["TripBooking"]] = relationship(
+    bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="route",
         passive_deletes=True,
     )
     
-    booking_sessions: Mapped[list["BookingSession"]] = relationship(
+    booking_sessions: Mapped[list[BookingSession]] = relationship(
         back_populates="route",
         foreign_keys="BookingSession.route_id",
         passive_deletes=True,
@@ -1108,11 +1107,11 @@ class RouteStop(UUIDPKMixin, TimestampMixin, Base):
         Boolean, nullable=False, default=True
     )
 
-    route: Mapped["Route"] = relationship(
+    route: Mapped[Route] = relationship(
         back_populates="route_stops",
         foreign_keys=[route_id],
     )
-    stop: Mapped["Stop"] = relationship(
+    stop: Mapped[Stop] = relationship(
         back_populates="route_stops",
         foreign_keys=[stop_id],
     )
@@ -1147,15 +1146,15 @@ class RouteFare(UUIDPKMixin, TimestampMixin, Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
-    route: Mapped["Route"] = relationship(
+    route: Mapped[Route] = relationship(
         back_populates="fares",
         foreign_keys=[route_id],
     )
-    pickup_stop: Mapped["Stop"] = relationship(
+    pickup_stop: Mapped[Stop] = relationship(
         back_populates="pickup_fares",
         foreign_keys=[pickup_stop_id],
     )
-    dropoff_stop: Mapped["Stop"] = relationship(
+    dropoff_stop: Mapped[Stop] = relationship(
         back_populates="dropoff_fares",
         foreign_keys=[dropoff_stop_id],
     )
@@ -2664,50 +2663,50 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
 
     premature_end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    route: Mapped["Route"] = relationship(
+    route: Mapped[Route] = relationship(
         back_populates="scheduled_trips",
         foreign_keys=[route_id],
     )
-    trip_events: Mapped[list["TripEvent"]] = relationship(
+    trip_events: Mapped[list[TripEvent]] = relationship(
         back_populates="scheduled_trip",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="driven_trips",
         foreign_keys=[driver_user_id],
     )
-    vehicle: Mapped["Vehicle"] = relationship(
+    vehicle: Mapped[Vehicle] = relationship(
         back_populates="scheduled_trips",
         foreign_keys=[vehicle_id],
     )
 
-    started_near_stop: Mapped["Stop | None"] = relationship(
+    started_near_stop: Mapped[Stop | None] = relationship(
         back_populates="started_trips_here",
         foreign_keys=[started_near_stop_id],
     )
-    ended_near_stop: Mapped["Stop | None"] = relationship(
+    ended_near_stop: Mapped[Stop | None] = relationship(
         back_populates="ended_trips_here",
         foreign_keys=[ended_near_stop_id],
     )
 
-    bookings: Mapped[list["TripBooking"]] = relationship(
+    bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="scheduled_trip",
         passive_deletes=True,
     )
 
-    booking_sessions: Mapped[list["BookingSession"]] = relationship(
+    booking_sessions: Mapped[list[BookingSession]] = relationship(
         back_populates="scheduled_trip",
         foreign_keys="BookingSession.scheduled_trip_id",
         passive_deletes=True,
     )
 
-    scan_events: Mapped[list["TripScanEvent"]] = relationship(
+    scan_events: Mapped[list[TripScanEvent]] = relationship(
         back_populates="scheduled_trip",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    ratings: Mapped[list["BookingRating"]] = relationship(
+    ratings: Mapped[list[BookingRating]] = relationship(
         back_populates="scheduled_trip",
         passive_deletes=True,
     )
@@ -2769,6 +2768,10 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
         Numeric(10, 2),
         nullable=False,
     )
+    otp: Mapped[str | None] = mapped_column(
+        String(10),
+        nullable=True,
+    )
 
     payment_hold_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -2787,34 +2790,34 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
         nullable=True,
     )
 
-    owner: Mapped["User"] = relationship(
+    owner: Mapped[User] = relationship(
         back_populates="owned_booking_sessions",
         foreign_keys=[owner_user_id],
     )
-    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+    scheduled_trip: Mapped[ScheduledTrip] = relationship(
         back_populates="booking_sessions",
         foreign_keys=[scheduled_trip_id],
     )
-    route: Mapped["Route"] = relationship(
+    route: Mapped[Route] = relationship(
         back_populates="booking_sessions",
         foreign_keys=[route_id],
     )
-    pickup_stop: Mapped["Stop"] = relationship(
+    pickup_stop: Mapped[Stop] = relationship(
         back_populates="pickup_booking_sessions",
         foreign_keys=[pickup_stop_id],
     )
-    dropoff_stop: Mapped["Stop"] = relationship(
+    dropoff_stop: Mapped[Stop] = relationship(
         back_populates="dropoff_booking_sessions",
         foreign_keys=[dropoff_stop_id],
     )
 
-    bookings: Mapped[list["TripBooking"]] = relationship(
+    bookings: Mapped[list[TripBooking]] = relationship(
         back_populates="booking_session",
         foreign_keys="TripBooking.booking_session_id",
         passive_deletes=True,
     )
 
-    payments: Mapped[list["BookingSessionPayment"]] = relationship(
+    payments: Mapped[list[BookingSessionPayment]] = relationship(
         back_populates="booking_session",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -2839,6 +2842,15 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
         ),
         Index("ix_booking_sessions_owner_status", "owner_user_id", "status"),
         Index("ix_booking_sessions_trip_status", "scheduled_trip_id", "status"),
+        Index(
+            "ix_booking_sessions_trip_otp_active",
+            "scheduled_trip_id",
+            "otp",
+            unique=True,
+            postgresql_where=text(
+                "otp IS NOT NULL AND status IN ('pending_payment', 'confirmed')"
+            ),
+        ),
         Index("ix_booking_sessions_hold_expiry", "status", "payment_hold_expires_at"),
     )
 
@@ -2868,12 +2880,12 @@ class TripEvent(UUIDPKMixin, TimestampMixin, Base):
     )
 
     # 🔗 Relationships
-    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+    scheduled_trip: Mapped[ScheduledTrip] = relationship(
         back_populates="trip_events",
         foreign_keys=[scheduled_trip_id],
     )
 
-    stop: Mapped["Stop"] = relationship(
+    stop: Mapped[Stop] = relationship(
         foreign_keys=[stop_id],
     )
 
@@ -2950,14 +2962,14 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
 
     seat_number: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    booking_session: Mapped["BookingSession | None"] = relationship(
+    booking_session: Mapped[BookingSession | None] = relationship(
         back_populates="bookings",
         foreign_keys=[booking_session_id],
     )
-    booked_by_user: Mapped["User | None"] = relationship(
+    booked_by_user: Mapped[User | None] = relationship(
         foreign_keys=[booked_by_user_id],
     )
-    traveller_profile: Mapped["PassengerTravellerProfile | None"] = relationship(
+    traveller_profile: Mapped[PassengerTravellerProfile | None] = relationship(
         foreign_keys=[traveller_profile_id],
     )
 
@@ -3036,66 +3048,66 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         nullable=True,
     )
 
-    passenger: Mapped["User"] = relationship(
+    passenger: Mapped[User] = relationship(
         back_populates="passenger_bookings",
         foreign_keys=[passenger_user_id],
     )
-    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+    scheduled_trip: Mapped[ScheduledTrip] = relationship(
         back_populates="bookings",
         foreign_keys=[scheduled_trip_id],
     )
-    route: Mapped["Route"] = relationship(
+    route: Mapped[Route] = relationship(
         back_populates="bookings",
         foreign_keys=[route_id],
     )
-    pickup_stop: Mapped["Stop"] = relationship(
+    pickup_stop: Mapped[Stop] = relationship(
         back_populates="pickup_bookings",
         foreign_keys=[pickup_stop_id],
     )
-    dropoff_stop: Mapped["Stop"] = relationship(
+    dropoff_stop: Mapped[Stop] = relationship(
         back_populates="dropoff_bookings",
         foreign_keys=[dropoff_stop_id],
     )
-    boarded_near_stop: Mapped["Stop | None"] = relationship(
+    boarded_near_stop: Mapped[Stop | None] = relationship(
         back_populates="boarded_bookings_here",
         foreign_keys=[boarded_near_stop_id],
     )
-    completed_near_stop: Mapped["Stop | None"] = relationship(
+    completed_near_stop: Mapped[Stop | None] = relationship(
         back_populates="completed_bookings_here",
         foreign_keys=[completed_near_stop_id],
     )
 
-    payments: Mapped[list["BookingPayment"]] = relationship(
+    payments: Mapped[list[BookingPayment]] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    transfer: Mapped["BookingTransfer | None"] = relationship(
+    transfer: Mapped[BookingTransfer | None] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
         passive_deletes=True,
         uselist=False,
     )
 
-    originated_payout_adjustments: Mapped[list["PayoutAdjustment"]] = relationship(
+    originated_payout_adjustments: Mapped[list[PayoutAdjustment]] = relationship(
         back_populates="origin_booking",
         foreign_keys="PayoutAdjustment.origin_booking_id",
         passive_deletes=True,
     )
 
-    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+    applied_payout_adjustment_applications: Mapped[list[PayoutAdjustmentApplication]] = relationship(
         back_populates="applied_on_booking",
         foreign_keys="PayoutAdjustmentApplication.applied_on_booking_id",
         passive_deletes=True,
     )
 
-    rating: Mapped["BookingRating | None"] = relationship(
+    rating: Mapped[BookingRating | None] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
         passive_deletes=True,
         uselist=False,
     )
-    scan_events: Mapped[list["TripScanEvent"]] = relationship(
+    scan_events: Mapped[list[TripScanEvent]] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -3232,7 +3244,7 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
         server_default=text("'created'"),
     )
 
-    booking_session: Mapped["BookingSession"] = relationship(
+    booking_session: Mapped[BookingSession] = relationship(
         back_populates="payments",
         foreign_keys=[booking_session_id],
     )
@@ -3500,12 +3512,12 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
         default=BookingPaymentStatus.CREATED,
     )
 
-    booking: Mapped["TripBooking"] = relationship(
+    booking: Mapped[TripBooking] = relationship(
         back_populates="payments",
         foreign_keys=[booking_id],
     )
 
-    source_transfer: Mapped[list["BookingTransfer"]] = relationship(
+    source_transfer: Mapped[list[BookingTransfer]] = relationship(
         back_populates="source_booking_payment",
         foreign_keys="BookingTransfer.source_booking_payment_id",
         passive_deletes=True,
@@ -3537,7 +3549,7 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
     )
 
-    applied_payout_adjustment_applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+    applied_payout_adjustment_applications: Mapped[list[PayoutAdjustmentApplication]] = relationship(
         back_populates="booking_transfer",
         foreign_keys="PayoutAdjustmentApplication.booking_transfer_id",
         passive_deletes=True,
@@ -3563,15 +3575,15 @@ class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
 
-    booking: Mapped["TripBooking"] = relationship(
+    booking: Mapped[TripBooking] = relationship(
         back_populates="transfer",
         foreign_keys=[booking_id],
     )
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="created_transfers_for_driver",
         foreign_keys=[driver_user_id],
     )
-    source_booking_payment: Mapped["BookingPayment"] = relationship(
+    source_booking_payment: Mapped[BookingPayment] = relationship(
         back_populates="source_transfer",
         foreign_keys=[source_booking_payment_id],
     )
@@ -3637,22 +3649,22 @@ class PayoutAdjustment(UUIDPKMixin, TimestampMixin, Base):
         nullable=True,
     )
 
-    origin_booking: Mapped["TripBooking"] = relationship(
+    origin_booking: Mapped[TripBooking] = relationship(
         back_populates="originated_payout_adjustments",
         foreign_keys=[origin_booking_id],
     )
 
-    created_by_admin: Mapped["User"] = relationship(
+    created_by_admin: Mapped[User] = relationship(
         back_populates="created_payout_adjustments",
         foreign_keys=[created_by_admin_id],
     )
 
-    decided_by_admin: Mapped["User | None"] = relationship(
+    decided_by_admin: Mapped[User | None] = relationship(
         back_populates="decided_payout_adjustments",
         foreign_keys=[decided_by_admin_id],
     )
 
-    applications: Mapped[list["PayoutAdjustmentApplication"]] = relationship(
+    applications: Mapped[list[PayoutAdjustmentApplication]] = relationship(
         back_populates="adjustment",
         foreign_keys="PayoutAdjustmentApplication.payout_adjustment_id",
         passive_deletes=True,
@@ -3728,22 +3740,22 @@ class PayoutAdjustmentApplication(UUIDPKMixin, TimestampMixin, Base):
         default=utcnow,
     )
 
-    adjustment: Mapped["PayoutAdjustment"] = relationship(
+    adjustment: Mapped[PayoutAdjustment] = relationship(
         back_populates="applications",
         foreign_keys=[payout_adjustment_id],
     )
 
-    applied_on_booking: Mapped["TripBooking"] = relationship(
+    applied_on_booking: Mapped[TripBooking] = relationship(
         back_populates="applied_payout_adjustment_applications",
         foreign_keys=[applied_on_booking_id],
     )
 
-    booking_transfer: Mapped["BookingTransfer | None"] = relationship(
+    booking_transfer: Mapped[BookingTransfer | None] = relationship(
         back_populates="applied_payout_adjustment_applications",
         foreign_keys=[booking_transfer_id],
     )
 
-    applied_by_admin: Mapped["User"] = relationship(
+    applied_by_admin: Mapped[User] = relationship(
         back_populates="applied_payout_adjustment_applications",
         foreign_keys=[applied_by_admin_id],
     )
@@ -3817,19 +3829,19 @@ class TripScanEvent(UUIDPKMixin, TimestampMixin, Base):
     within_radius: Mapped[bool] = mapped_column(Boolean, nullable=False)
     qr_payload_user_id: Mapped[str] = mapped_column(String(36), nullable=False)
 
-    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+    scheduled_trip: Mapped[ScheduledTrip] = relationship(
         back_populates="scan_events",
         foreign_keys=[scheduled_trip_id],
     )
-    booking: Mapped["TripBooking"] = relationship(
+    booking: Mapped[TripBooking] = relationship(
         back_populates="scan_events",
         foreign_keys=[booking_id],
     )
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="scan_events_as_driver",
         foreign_keys=[driver_user_id],
     )
-    matched_stop: Mapped["Stop | None"] = relationship(
+    matched_stop: Mapped[Stop | None] = relationship(
         back_populates="matched_scan_events",
         foreign_keys=[matched_stop_id],
     )
@@ -3874,19 +3886,19 @@ class BookingRating(UUIDPKMixin, TimestampMixin, Base):
     driver_rating: Mapped[int] = mapped_column(Integer, nullable=False)
     review_text: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    booking: Mapped["TripBooking"] = relationship(
+    booking: Mapped[TripBooking] = relationship(
         back_populates="rating",
         foreign_keys=[booking_id],
     )
-    passenger: Mapped["User"] = relationship(
+    passenger: Mapped[User] = relationship(
         back_populates="ratings_given",
         foreign_keys=[passenger_user_id],
     )
-    driver: Mapped["User"] = relationship(
+    driver: Mapped[User] = relationship(
         back_populates="ratings_received_as_driver",
         foreign_keys=[driver_user_id],
     )
-    scheduled_trip: Mapped["ScheduledTrip"] = relationship(
+    scheduled_trip: Mapped[ScheduledTrip] = relationship(
         back_populates="ratings",
         foreign_keys=[scheduled_trip_id],
     )
@@ -3941,11 +3953,11 @@ class SupportTicket(UUIDPKMixin, TimestampMixin, Base):
     )
 
     # 🔗 Relationships
-    user: Mapped["User"] = relationship(
+    user: Mapped[User] = relationship(
         foreign_keys=[user_id],
     )
 
-    resolved_by_admin: Mapped["User | None"] = relationship(
+    resolved_by_admin: Mapped[User | None] = relationship(
         foreign_keys=[resolved_by_admin_id],
     )
 
