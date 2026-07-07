@@ -162,12 +162,50 @@ async def scan_passenger(
     # =====================================================
     # 6. BOARD LOGIC
     # =====================================================
+    # =====================================================
     if scan_type == ScanType.BOARD:
+
+        # ------------------------------------------
+        # Get passenger pickup stop
+        # ------------------------------------------
         stop = await db.get(Stop, booking.pickup_stop_id)
 
         if not stop:
             raise HTTPException(404, "Pickup stop not found")
 
+        # ------------------------------------------
+        # Get current ACTIVE stop
+        # active stop = ARRIVED but NOT DEPARTED
+        # ------------------------------------------
+        result = await db.execute(
+            select(TripEvent).where(
+                TripEvent.scheduled_trip_id == trip_id,
+                TripEvent.arrival_time.isnot(None),
+                TripEvent.departure_time.is_(None),
+            )
+        )
+
+        current_event = result.scalar_one_or_none()
+
+        if not current_event:
+            raise HTTPException(
+                400,
+                "Driver must ARRIVE at the pickup stop before boarding passengers"
+            )
+
+        # ------------------------------------------
+        # Driver must currently be at this passenger's
+        # pickup stop
+        # ------------------------------------------
+        if str(current_event.stop_id) != str(booking.pickup_stop_id):
+            raise HTTPException(
+                400,
+                "Passenger can only board at their pickup stop after the driver has arrived"
+            )
+
+        # ------------------------------------------
+        # GPS validation
+        # ------------------------------------------
         distance = haversine(
             data.lat,
             data.lng,
@@ -176,8 +214,10 @@ async def scan_passenger(
         )
 
         if distance > (stop.radius_meters or 0):
-            raise HTTPException(400, "Not within pickup stop radius")
-
+            raise HTTPException(
+                400,
+                "Not within pickup stop radius"
+            )
     # =====================================================
     # 7. DROP LOGIC (ACTIVE TRIP EVENT = ONLY SOURCE OF TRUTH)
     # =====================================================
