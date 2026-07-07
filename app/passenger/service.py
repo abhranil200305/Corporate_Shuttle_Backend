@@ -951,22 +951,11 @@ class PassengerService:
             ScheduledTripStatus.COMPLETED,
             ScheduledTripStatus.PREMATURE_END,
         )
-        live_statuses = (
-            ScheduledTripStatus.IN_PROGRESS,
-            ScheduledTripStatus.PREMATURED_END_REQUEST,
-        )
 
         return and_(
             ScheduledTrip.planned_start_at <= now,
             ScheduledTrip.status.notin_(terminal_statuses),
-            or_(
-                ScheduledTrip.planned_end_at >= now,
-                ScheduledTrip.status.in_(live_statuses),
-                and_(
-                    ScheduledTrip.actual_start_at.isnot(None),
-                    ScheduledTrip.actual_end_at.is_(None),
-                ),
-            ),
+            ScheduledTrip.actual_end_at.is_(None),
         )
 
     @staticmethod
@@ -979,10 +968,6 @@ class PassengerService:
             ScheduledTripStatus.COMPLETED,
             ScheduledTripStatus.PREMATURE_END,
         )
-        live_statuses = (
-            ScheduledTripStatus.IN_PROGRESS,
-            ScheduledTripStatus.PREMATURED_END_REQUEST,
-        )
 
         if trip.status in terminal_statuses:
             return False
@@ -990,14 +975,10 @@ class PassengerService:
         if trip.planned_start_at > now:
             return False
 
-        return (
-            trip.planned_end_at >= now
-            or trip.status in live_statuses
-            or (
-                trip.actual_start_at is not None
-                and trip.actual_end_at is None
-            )
-        )
+        if trip.actual_end_at is not None:
+            return False
+
+        return True
 
     def _is_current_booking_for_passenger(
         self,
