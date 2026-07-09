@@ -2534,12 +2534,34 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default="default",
     )
+
+    # Platform Commission (%)
     commission_percent: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=Decimal("0.00"),
     )
-    commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # CGST (%)
+    cgst_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    # SGST (%)
+    sgst_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+
+    commercial_policy_json: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
 
     allow_driver_rfid_seat_reservation: Mapped[bool] = mapped_column(
         Boolean,
@@ -2561,11 +2583,18 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
             name="ck_platform_settings_commission_percent_range",
         ),
         CheckConstraint(
+            "cgst_percent >= 0 AND cgst_percent <= 100",
+            name="ck_platform_settings_cgst_percent_range",
+        ),
+        CheckConstraint(
+            "sgst_percent >= 0 AND sgst_percent <= 100",
+            name="ck_platform_settings_sgst_percent_range",
+        ),
+        CheckConstraint(
             "driver_max_active_sessions >= 1",
             name="ck_platform_settings_driver_max_active_sessions_positive",
         ),
     )
-
 
 # ============================================================
 # trips / bookings

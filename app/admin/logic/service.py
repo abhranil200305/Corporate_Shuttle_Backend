@@ -13,7 +13,14 @@ from app.db import schema
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService, utcnow
 from app.payments.service import RoutePayoutService
+from decimal import Decimal
 
+from fastapi import HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from decimal import Decimal
+from fastapi import HTTPException, status
+from app.db.schema import PlatformSettings
 
 class AdminService:
 	def __init__(self, db, ws_hub: WSHub | None = None):
@@ -4760,37 +4767,128 @@ class AdminService:
 
 
 	async def get_booking_session_by_id(
+			self,
+			booking_session_id: str,
+		):
+			stmt = (
+				select(schema.BookingSession)
+				.options(
+					joinedload(schema.BookingSession.owner),
+
+					joinedload(
+						schema.BookingSession.scheduled_trip
+					)
+					.joinedload(schema.ScheduledTrip.driver)
+					.joinedload(schema.User.driver_profile),
+
+					joinedload(
+						schema.BookingSession.scheduled_trip
+					)
+					.joinedload(schema.ScheduledTrip.vehicle),
+
+					joinedload(schema.BookingSession.route),
+					joinedload(schema.BookingSession.pickup_stop),
+					joinedload(schema.BookingSession.dropoff_stop),
+
+					selectinload(schema.BookingSession.bookings),
+
+					selectinload(schema.BookingSession.payments),
+				)
+				.where(
+					schema.BookingSession.id == booking_session_id
+				)
+			)
+
+			result = await self.db.execute(stmt)
+			return result.unique().scalar_one_or_none()
+		# ==========================================================
+		# GST SETTINGS
+		# ==========================================================
+
+	async def create_gst_settings(
 		self,
-		booking_session_id: str,
-	):
-		stmt = (
-			select(schema.BookingSession)
-			.options(
-				joinedload(schema.BookingSession.owner),
+		*,
+		cgst_percent: Decimal,
+		sgst_percent: Decimal,
+	) -> dict:
+		"""
+		Creates or initializes GST settings.
+		If the default PlatformSettings row already exists,
+		only the GST values are initialized.
+		"""
 
-				joinedload(
-					schema.BookingSession.scheduled_trip
-				)
-				.joinedload(schema.ScheduledTrip.driver)
-				.joinedload(schema.User.driver_profile),
-
-				joinedload(
-					schema.BookingSession.scheduled_trip
-				)
-				.joinedload(schema.ScheduledTrip.vehicle),
-
-				joinedload(schema.BookingSession.route),
-				joinedload(schema.BookingSession.pickup_stop),
-				joinedload(schema.BookingSession.dropoff_stop),
-
-				selectinload(schema.BookingSession.bookings),
-
-				selectinload(schema.BookingSession.payments),
+		if cgst_percent < Decimal("0") or cgst_percent > Decimal("100"):
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="CGST percentage must be between 0 and 100.",
 			)
-			.where(
-				schema.BookingSession.id == booking_session_id
-			)
-		)
 
-		result = await self.db.execute(stmt)
-		return result.unique().scalar_one_or_none()
+		if sgst_percent < Decimal("0") or sgst_percent > Decimal("100"):
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="SGST percentage must be between 0 and 100.",
+			)
+
+		settings = await self._get_or_create_default_platform_settings()
+
+		settings.cgst_percent = cgst_percent
+		settings.sgst_percent = sgst_percent
+
+		self.db.add(settings)
+		await self.db.commit()
+		await self.db.refresh(settings)
+
+		return {
+			"message": "GST settings created successfully.",
+			"cgst_percent": settings.cgst_percent,
+			"sgst_percent": settings.sgst_percent,
+		}
+
+	async def get_gst_settings(self) -> dict:
+		"""
+		Returns the configured GST percentages.
+		"""
+
+		settings = await self._get_or_create_default_platform_settings()
+
+		return {
+			"cgst_percent": settings.cgst_percent,
+			"sgst_percent": settings.sgst_percent,
+		}
+
+	async def update_gst_settings(
+		self,
+		*,
+		cgst_percent: Decimal,
+		sgst_percent: Decimal,
+	) -> dict:
+		"""
+		Updates only the GST percentages.
+		"""
+
+		if cgst_percent < Decimal("0") or cgst_percent > Decimal("100"):
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="CGST percentage must be between 0 and 100.",
+			)
+
+		if sgst_percent < Decimal("0") or sgst_percent > Decimal("100"):
+			raise HTTPException(
+				status_code=status.HTTP_400_BAD_REQUEST,
+				detail="SGST percentage must be between 0 and 100.",
+			)
+
+		settings = await self._get_or_create_default_platform_settings()
+
+		settings.cgst_percent = cgst_percent
+		settings.sgst_percent = sgst_percent
+
+		self.db.add(settings)
+		await self.db.commit()
+		await self.db.refresh(settings)
+
+		return {
+			"message": "GST settings updated successfully.",
+			"cgst_percent": settings.cgst_percent,
+			"sgst_percent": settings.sgst_percent,
+		}

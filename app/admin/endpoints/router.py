@@ -13,7 +13,7 @@ from sqlalchemy import func, not_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, joinedload
-
+from app.db.schema import User
 from app.admin.logic.service import AdminService
 from app.admin.rfid_schemas import (
 	AdminRFIDSeatPolicyResponse,
@@ -107,6 +107,15 @@ from app.realtime.events import (
 	publish_route_event,
 	publish_trip_event,
 )
+from decimal import Decimal
+
+from fastapi import Depends
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.admin.logic.service import AdminService
+from app.auth.dependencies import get_current_admin
+from app.db.database import get_async_session
 
 # Create ONE router for all admin tasks
 router = APIRouter(
@@ -115,8 +124,20 @@ router = APIRouter(
 	dependencies=[Depends(get_current_admin)],  # Protects all routes
 )
 
-###----Notifications --------
 
+class CreateGSTSettingsRequest(BaseModel):
+	cgst_percent: Decimal = Field(..., ge=0, le=100)
+	sgst_percent: Decimal = Field(..., ge=0, le=100)
+
+
+class UpdateGSTSettingsRequest(BaseModel):
+	cgst_percent: Decimal = Field(..., ge=0, le=100)
+	sgst_percent: Decimal = Field(..., ge=0, le=100)
+
+
+class GSTSettingsResponse(BaseModel):
+	cgst_percent: Decimal
+	sgst_percent: Decimal
 
 def get_ws_hub(request: Request) -> WSHub:
 	return request.app.state.ws_hub
@@ -4725,3 +4746,42 @@ async def get_booking_sessions(
 		}
 		for session in sessions
 	]
+@router.post("/create/platform-settings/gst")
+async def create_gst_settings(
+    payload: CreateGSTSettingsRequest,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    return await service.create_gst_settings(
+        cgst_percent=payload.cgst_percent,
+        sgst_percent=payload.sgst_percent,
+    )
+
+
+@router.patch("/update/platform-settings/gst")
+async def update_gst_settings(
+    payload: UpdateGSTSettingsRequest,
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    return await service.update_gst_settings(
+        cgst_percent=payload.cgst_percent,
+        sgst_percent=payload.sgst_percent,
+    )
+
+
+@router.get(
+    "/get/platform-settings/gst",
+    summary="Get GST Settings",
+)
+async def get_gst_settings(
+    current_admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_async_session),
+):
+    service = AdminService(db)
+
+    return await service.get_gst_settings()
