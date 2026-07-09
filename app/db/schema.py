@@ -3515,14 +3515,68 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     )
 
     razorpay_order_id: Mapped[str] = mapped_column(
-        String(64), unique=True, nullable=False
+        String(64),
+        unique=True,
+        nullable=False,
     )
-    razorpay_payment_id: Mapped[str | None] = mapped_column(
-        String(64), unique=True, nullable=True
-    )
-    razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    razorpay_payment_id: Mapped[str | None] = mapped_column(
+        String(64),
+        unique=True,
+        nullable=True,
+    )
+
+    razorpay_signature: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # ===========================
+    # Fare & GST Details
+    # ===========================
+
+    base_fare_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0"),
+    )
+
+    cgst_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0"),
+    )
+
+    sgst_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0"),
+    )
+
+    cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0"),
+    )
+
+    sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0"),
+    )
+
+    # Final amount paid by customer
+    # (Base Fare + CGST + SGST)
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+    )
+
     status: Mapped[BookingPaymentStatus] = mapped_column(
         enum_type(BookingPaymentStatus, "booking_payment_status"),
         nullable=False,
@@ -3541,10 +3595,36 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint("amount > 0", name="ck_booking_payments_amount_positive"),
-        Index("ix_booking_payments_booking_status", "booking_id", "status"),
+        CheckConstraint(
+            "base_fare_amount >= 0",
+            name="ck_booking_payments_base_fare_non_negative",
+        ),
+        CheckConstraint(
+            "cgst_percent >= 0 AND cgst_percent <= 100",
+            name="ck_booking_payments_cgst_percent_range",
+        ),
+        CheckConstraint(
+            "sgst_percent >= 0 AND sgst_percent <= 100",
+            name="ck_booking_payments_sgst_percent_range",
+        ),
+        CheckConstraint(
+            "cgst_amount >= 0",
+            name="ck_booking_payments_cgst_amount_non_negative",
+        ),
+        CheckConstraint(
+            "sgst_amount >= 0",
+            name="ck_booking_payments_sgst_amount_non_negative",
+        ),
+        CheckConstraint(
+            "amount > 0",
+            name="ck_booking_payments_amount_positive",
+        ),
+        Index(
+            "ix_booking_payments_booking_status",
+            "booking_id",
+            "status",
+        ),
     )
-
 
 class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "booking_transfers"
