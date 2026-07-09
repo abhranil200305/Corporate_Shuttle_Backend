@@ -63,6 +63,7 @@ from app.admin.structs.dto import (
 	DriverLinkedAccountUpdate,
 	DriverPayoutDetailsUpsert,
 	DriverPayoutEligibilityUpdate,
+	GSTSettingsUpdate,
 	PayoutAdjustmentCreateRequest,
 	PayoutAdjustmentDecisionRequest,
 	PayoutDashboardResponse,
@@ -4279,6 +4280,21 @@ async def patch_payout_settings(
 ):
 	service = AdminService(db)
 	return await service.update_payout_settings(payload.commission_percent)
+
+
+@router.get("/gst/settings")
+async def get_gst_settings(db: AsyncSession = Depends(get_async_session)):
+	service = AdminService(db)
+	return await service.get_gst_settings()
+
+
+@router.patch("/gst/settings")
+async def patch_gst_settings(
+	payload: GSTSettingsUpdate,
+	db: AsyncSession = Depends(get_async_session),
+):
+	service = AdminService(db)
+	return await service.update_gst_settings(payload)
 
 
 @router.get("/payouts/drivers")

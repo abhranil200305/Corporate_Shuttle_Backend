@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, ROUND_HALF_UP
 from math import asin, cos, radians, sin, sqrt
 from typing import Any
@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import schema
 from app.rfid.scan_schemas import RFIDScanRequest
+from app.tax import GSTBreakdown, build_gst_breakdown, gst_config_from_settings
 
 
 @dataclass(frozen=True)
@@ -184,6 +185,51 @@ class RFIDScanService:
 
         return self._money(settings.commission_percent)
 
+    async def _build_gst_breakdown(
+        self,
+        amount: Decimal,
+        *,
+        is_ac: bool | None,
+    ) -> GSTBreakdown:
+        settings = await self._get_platform_settings_obj()
+        return build_gst_breakdown(
+            amount,
+            is_ac=is_ac,
+            config=gst_config_from_settings(settings),
+        )
+
+    async def _build_gst_breakdown_from_gross(
+        self,
+        amount: Decimal,
+        *,
+        is_ac: bool | None,
+    ) -> GSTBreakdown:
+        settings = await self._get_platform_settings_obj()
+        config = replace(gst_config_from_settings(settings), inclusive_pricing=True)
+        return build_gst_breakdown(amount, is_ac=is_ac, config=config)
+
+    @staticmethod
+    def _apply_gst_breakdown_to_ride(
+        ride: schema.RFIDTripRide,
+        breakdown: GSTBreakdown,
+    ) -> None:
+        ride.fare_amount = breakdown.gross_amount
+        ride.taxable_amount = breakdown.taxable_amount
+        ride.cgst_rate_percent_snapshot = breakdown.cgst_rate_percent
+        ride.cgst_amount = breakdown.cgst_amount
+        ride.sgst_rate_percent_snapshot = breakdown.sgst_rate_percent
+        ride.sgst_amount = breakdown.sgst_amount
+        ride.igst_rate_percent_snapshot = breakdown.igst_rate_percent
+        ride.igst_amount = breakdown.igst_amount
+        ride.total_tax_amount = breakdown.total_tax_amount
+        ride.gst_enabled_snapshot = breakdown.gst_enabled and breakdown.gst_applicable
+        ride.gst_inclusive_snapshot = breakdown.gst_inclusive
+
+    async def _get_route_has_ac(self, route_id: str) -> bool | None:
+        stmt = select(schema.Route.has_ac).where(schema.Route.id == route_id).limit(1)
+        result = await self.db.execute(stmt)
+        return result.scalar_one_or_none()
+
     def _build_rfid_commission_snapshot(
         self,
         *,
@@ -305,7 +351,11 @@ class RFIDScanService:
         if amount is None:
             return None
 
-        return self._money(amount)
+        breakdown = await self._build_gst_breakdown(
+            self._money(amount),
+            is_ac=await self._get_route_has_ac(route_id),
+        )
+        return breakdown.gross_amount
     
     async def _get_fare_for_stop_pair(
         self,
@@ -571,6 +621,7 @@ class RFIDScanService:
             }
 
         now = schema.utcnow()
+        route_has_ac = await self._get_route_has_ac(scheduled_trip.route_id)
         settled_count = 0
         settled_amount = Decimal("0.00")
         settled_ride_ids: list[str] = []
@@ -603,6 +654,11 @@ class RFIDScanService:
                 raise ValueError("rfid_settlement_hold_amount_invalid")
 
             fare_amount = hold_amount
+            gst_breakdown = await self._build_gst_breakdown_from_gross(
+                fare_amount,
+                is_ac=route_has_ac,
+            )
+            fare_amount = gst_breakdown.gross_amount
             current_balance_before = self._money(card_account.current_balance)
             held_balance_before = self._money(card_account.held_balance)
 
@@ -696,11 +752,11 @@ class RFIDScanService:
                 driver_payout_amount,
                 platform_amount,
             ) = self._build_rfid_commission_snapshot(
-                fare_amount=fare_amount,
+                fare_amount=gst_breakdown.taxable_amount,
                 commission_percent=commission_percent,
             )
 
-            ride.fare_amount = fare_amount
+            self._apply_gst_breakdown_to_ride(ride, gst_breakdown)
             ride.commission_percent_snapshot = commission_percent_snapshot
             ride.commission_amount = commission_amount
             ride.driver_payout_amount = driver_payout_amount
@@ -1234,6 +1290,16 @@ class RFIDScanService:
                 status=schema.RFIDRideStatus.BOARDED,
                 hold_amount=max_downstream_fare,
                 fare_amount=Decimal("0.00"),
+                taxable_amount=Decimal("0.00"),
+                cgst_rate_percent_snapshot=Decimal("0.00"),
+                cgst_amount=Decimal("0.00"),
+                sgst_rate_percent_snapshot=Decimal("0.00"),
+                sgst_amount=Decimal("0.00"),
+                igst_rate_percent_snapshot=Decimal("0.00"),
+                igst_amount=Decimal("0.00"),
+                total_tax_amount=Decimal("0.00"),
+                gst_enabled_snapshot=False,
+                gst_inclusive_snapshot=True,
                 fare_reversed_amount=Decimal("0.00"),
                 commission_percent_snapshot=Decimal("0.00"),
                 commission_amount=Decimal("0.00"),
@@ -1284,7 +1350,13 @@ class RFIDScanService:
             current_balance_before = self._money(card_account.current_balance)
             held_balance_before = self._money(card_account.held_balance)
             hold_amount = self._money(open_ride.hold_amount)
-            fare_amount = self._money(actual_drop_fare)
+            gst_breakdown = await self._build_gst_breakdown(
+                self._money(actual_drop_fare),
+                is_ac=await self._get_route_has_ac(
+                    active_context.scheduled_trip.route_id
+                ),
+            )
+            fare_amount = gst_breakdown.gross_amount
 
             if fare_amount > hold_amount:
                 scan_event.accepted = False
@@ -1384,11 +1456,11 @@ class RFIDScanService:
                             driver_payout_amount,
                             platform_amount,
                         ) = self._build_rfid_commission_snapshot(
-                            fare_amount=fare_amount,
+                            fare_amount=gst_breakdown.taxable_amount,
                             commission_percent=commission_percent,
                         )
 
-                        open_ride.fare_amount = fare_amount
+                        self._apply_gst_breakdown_to_ride(open_ride, gst_breakdown)
                         open_ride.commission_percent_snapshot = (
                             commission_percent_snapshot
                         )

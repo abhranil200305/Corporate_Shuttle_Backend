@@ -1444,6 +1444,55 @@ class AdminRFIDService:
             "created_at": event.created_at,
         }
 
+    @staticmethod
+    def _serialize_ride_tax_fields(ride: schema.RFIDTripRide) -> dict[str, Any]:
+        fare_amount = AdminRFIDService._normalize_money(Decimal(ride.fare_amount or 0))
+        taxable_amount = AdminRFIDService._normalize_money(
+            Decimal(getattr(ride, "taxable_amount", 0) or 0)
+        )
+        if taxable_amount <= Decimal("0.00") and fare_amount > Decimal("0.00"):
+            taxable_amount = fare_amount
+
+        cgst_amount = AdminRFIDService._normalize_money(
+            Decimal(getattr(ride, "cgst_amount", 0) or 0)
+        )
+        sgst_amount = AdminRFIDService._normalize_money(
+            Decimal(getattr(ride, "sgst_amount", 0) or 0)
+        )
+        igst_amount = AdminRFIDService._normalize_money(
+            Decimal(getattr(ride, "igst_amount", 0) or 0)
+        )
+        total_tax_amount = AdminRFIDService._normalize_money(
+            Decimal(getattr(ride, "total_tax_amount", 0) or 0)
+        )
+        if total_tax_amount <= Decimal("0.00"):
+            total_tax_amount = AdminRFIDService._normalize_money(
+                cgst_amount + sgst_amount + igst_amount
+            )
+
+        return {
+            "taxable_amount": taxable_amount,
+            "cgst_rate_percent_snapshot": Decimal(
+                getattr(ride, "cgst_rate_percent_snapshot", 0) or 0
+            ),
+            "cgst_amount": cgst_amount,
+            "sgst_rate_percent_snapshot": Decimal(
+                getattr(ride, "sgst_rate_percent_snapshot", 0) or 0
+            ),
+            "sgst_amount": sgst_amount,
+            "igst_rate_percent_snapshot": Decimal(
+                getattr(ride, "igst_rate_percent_snapshot", 0) or 0
+            ),
+            "igst_amount": igst_amount,
+            "total_tax_amount": total_tax_amount,
+            "gst_enabled_snapshot": bool(
+                getattr(ride, "gst_enabled_snapshot", False)
+            ),
+            "gst_inclusive_snapshot": bool(
+                getattr(ride, "gst_inclusive_snapshot", True)
+            ),
+        }
+
     def serialize_ride(self, ride: schema.RFIDTripRide) -> dict[str, Any]:
         return {
             "id": ride.id,
@@ -1469,6 +1518,7 @@ class AdminRFIDService:
             "status": ride.status,
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
+            **self._serialize_ride_tax_fields(ride),
             "fare_reversed_amount": ride.fare_reversed_amount,
             "fare_net_amount": self._normalize_money(
                 Decimal(ride.fare_amount or 0)
@@ -1571,6 +1621,7 @@ class AdminRFIDService:
             "status": ride.status,
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
+            **AdminRFIDService._serialize_ride_tax_fields(ride),
             "fare_reversed_amount": ride.fare_reversed_amount,
             "fare_net_amount": AdminRFIDService._normalize_money(
                 Decimal(ride.fare_amount or 0)
@@ -1949,32 +2000,6 @@ class AdminRFIDService:
                     "already_reversed_amount": str(already_reversed_amount),
                     "remaining_reversible_fare": str(remaining_reversible_fare),
                     "requested_reversal_amount": str(reversal_amount),
-                },
-            )
-
-        remaining_driver_payout_amount = self._normalize_money(
-            Decimal(ride.driver_payout_amount or 0)
-            - Decimal(ride.driver_payout_reversed_amount or 0)
-        )
-        remaining_platform_amount = self._normalize_money(
-            Decimal(ride.platform_amount or 0)
-            - Decimal(ride.platform_amount_reversed or 0)
-        )
-        remaining_snapshot_amount = self._normalize_money(
-            max(remaining_driver_payout_amount, Decimal("0.00"))
-            + max(remaining_platform_amount, Decimal("0.00"))
-        )
-
-        if reversal_amount > remaining_snapshot_amount:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "rfid_reversal_exceeds_remaining_snapshot_amount",
-                    "message": "Cannot reverse more than the remaining unreversed driver/platform snapshot amount.",
-                    "requested_reversal_amount": str(reversal_amount),
-                    "remaining_snapshot_amount": str(remaining_snapshot_amount),
-                    "remaining_driver_payout_amount": str(remaining_driver_payout_amount),
-                    "remaining_platform_amount": str(remaining_platform_amount),
                 },
             )
 
@@ -2416,6 +2441,39 @@ class AdminRFIDService:
         return driver_component
 
     @staticmethod
+    def _rfid_platform_component_for_fare_amount(
+        *,
+        ride: schema.RFIDTripRide,
+        fare_amount: Decimal,
+    ) -> Decimal:
+        normalized_fare_amount = AdminRFIDService._normalize_money(fare_amount)
+        ride_fare_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.fare_amount or 0)
+        )
+        ride_platform_amount = AdminRFIDService._normalize_money(
+            Decimal(ride.platform_amount or 0)
+        )
+
+        if normalized_fare_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if ride_fare_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        if ride_platform_amount <= Decimal("0.00"):
+            return Decimal("0.00")
+
+        platform_component = AdminRFIDService._normalize_money(
+            (normalized_fare_amount * ride_platform_amount)
+            / ride_fare_amount
+        )
+
+        if platform_component > ride_platform_amount:
+            return ride_platform_amount
+
+        return platform_component
+
+    @staticmethod
     def _split_rfid_fare_reversal_by_snapshot(
         *,
         ride: schema.RFIDTripRide,
@@ -2443,12 +2501,6 @@ class AdminRFIDService:
         if normalized_reversal_amount <= Decimal("0.00"):
             return Decimal("0.00"), Decimal("0.00")
 
-        if remaining_driver_payout_amount <= Decimal("0.00"):
-            return Decimal("0.00"), normalized_reversal_amount
-
-        if remaining_platform_amount <= Decimal("0.00"):
-            return normalized_reversal_amount, Decimal("0.00")
-
         driver_reversal_amount = (
             AdminRFIDService._rfid_driver_payout_component_for_fare_amount(
                 ride=ride,
@@ -2459,15 +2511,15 @@ class AdminRFIDService:
         if driver_reversal_amount > remaining_driver_payout_amount:
             driver_reversal_amount = remaining_driver_payout_amount
 
-        platform_reversal_amount = AdminRFIDService._normalize_money(
-            normalized_reversal_amount - driver_reversal_amount
+        platform_reversal_amount = (
+            AdminRFIDService._rfid_platform_component_for_fare_amount(
+                ride=ride,
+                fare_amount=normalized_reversal_amount,
+            )
         )
 
         if platform_reversal_amount > remaining_platform_amount:
             platform_reversal_amount = remaining_platform_amount
-            driver_reversal_amount = AdminRFIDService._normalize_money(
-                normalized_reversal_amount - platform_reversal_amount
-            )
 
         return driver_reversal_amount, platform_reversal_amount
 
@@ -2675,6 +2727,12 @@ class AdminRFIDService:
         remaining_driver_to_reverse = self._normalize_money(
             expected_driver_reversal_amount
         )
+        remaining_platform_to_reverse = self._normalize_money(
+            Decimal(ride.platform_amount or 0)
+            - Decimal(ride.platform_amount_reversed or 0)
+        )
+        if remaining_platform_to_reverse < Decimal("0.00"):
+            remaining_platform_to_reverse = Decimal("0.00")
 
         transfers_by_allocation_id: dict[str, list[schema.RFIDPayoutTransfer]] = {}
 
@@ -2766,9 +2824,14 @@ class AdminRFIDService:
             if driver_reversal_amount > available_driver_amount:
                 driver_reversal_amount = available_driver_amount
 
-            platform_reversal_amount = self._normalize_money(
-                gross_reversal_amount - driver_reversal_amount
+            platform_reversal_amount = (
+                self._rfid_platform_component_for_fare_amount(
+                    ride=ride,
+                    fare_amount=gross_reversal_amount,
+                )
             )
+            if platform_reversal_amount > remaining_platform_to_reverse:
+                platform_reversal_amount = remaining_platform_to_reverse
 
             driver_sources: list[dict[str, Any]] = []
             remaining_driver_for_item = driver_reversal_amount
@@ -2834,6 +2897,9 @@ class AdminRFIDService:
             )
             remaining_driver_to_reverse = self._normalize_money(
                 remaining_driver_to_reverse - driver_reversal_amount
+            )
+            remaining_platform_to_reverse = self._normalize_money(
+                remaining_platform_to_reverse - platform_reversal_amount
             )
 
         if remaining_fare_to_reverse > Decimal("0.00"):

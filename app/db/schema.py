@@ -1461,6 +1461,66 @@ class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
         default=Decimal("0.00"),
         server_default=text("0.00"),
     )
+    taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    gst_enabled_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    gst_inclusive_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
 
     fare_reversed_amount: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
@@ -1560,6 +1620,24 @@ class RFIDTripRide(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "fare_amount >= 0",
             name="ck_rfid_trip_rides_fare_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "taxable_amount >= 0",
+            name="ck_rfid_trip_rides_taxable_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_amount >= 0 AND sgst_amount >= 0 AND igst_amount >= 0",
+            name="ck_rfid_trip_rides_tax_components_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tax_amount >= 0",
+            name="ck_rfid_trip_rides_total_tax_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_rate_percent_snapshot >= 0 AND cgst_rate_percent_snapshot <= 100 "
+            "AND sgst_rate_percent_snapshot >= 0 AND sgst_rate_percent_snapshot <= 100 "
+            "AND igst_rate_percent_snapshot >= 0 AND igst_rate_percent_snapshot <= 100",
+            name="ck_rfid_trip_rides_gst_rate_snapshot_range",
         ),
         CheckConstraint(
             "fare_reversed_amount >= 0 AND fare_reversed_amount <= fare_amount",
@@ -2541,6 +2619,43 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
     )
     commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    gst_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    gst_cgst_rate_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("2.50"),
+        server_default=text("2.50"),
+    )
+    gst_sgst_rate_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("2.50"),
+        server_default=text("2.50"),
+    )
+    gst_igst_rate_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    gst_apply_on_ac_routes_only: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    gst_inclusive_pricing: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+
     allow_driver_rfid_seat_reservation: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -2559,6 +2674,18 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "commission_percent >= 0 AND commission_percent <= 100",
             name="ck_platform_settings_commission_percent_range",
+        ),
+        CheckConstraint(
+            "gst_cgst_rate_percent >= 0 AND gst_cgst_rate_percent <= 100",
+            name="ck_platform_settings_gst_cgst_rate_range",
+        ),
+        CheckConstraint(
+            "gst_sgst_rate_percent >= 0 AND gst_sgst_rate_percent <= 100",
+            name="ck_platform_settings_gst_sgst_rate_range",
+        ),
+        CheckConstraint(
+            "gst_igst_rate_percent >= 0 AND gst_igst_rate_percent <= 100",
+            name="ck_platform_settings_gst_igst_rate_range",
         ),
         CheckConstraint(
             "driver_max_active_sessions >= 1",
@@ -2769,6 +2896,66 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
         Numeric(10, 2),
         nullable=False,
     )
+    total_taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_igst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    gst_enabled_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    gst_inclusive_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    cgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
 
     payment_hold_expires_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -2824,6 +3011,24 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "total_fare_amount >= 0",
             name="ck_booking_sessions_total_fare_nonnegative",
+        ),
+        CheckConstraint(
+            "total_taxable_amount >= 0",
+            name="ck_booking_sessions_total_taxable_nonnegative",
+        ),
+        CheckConstraint(
+            "total_cgst_amount >= 0 AND total_sgst_amount >= 0 AND total_igst_amount >= 0",
+            name="ck_booking_sessions_tax_components_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tax_amount >= 0",
+            name="ck_booking_sessions_total_tax_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_rate_percent_snapshot >= 0 AND cgst_rate_percent_snapshot <= 100 "
+            "AND sgst_rate_percent_snapshot >= 0 AND sgst_rate_percent_snapshot <= 100 "
+            "AND igst_rate_percent_snapshot >= 0 AND igst_rate_percent_snapshot <= 100",
+            name="ck_booking_sessions_gst_rate_snapshot_range",
         ),
         CheckConstraint(
             "pickup_stop_id <> dropoff_stop_id",
@@ -2968,6 +3173,66 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
     )
 
     fare_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_rate_percent_snapshot: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    gst_enabled_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
+    gst_inclusive_snapshot: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        default=True,
+        server_default=text("true"),
+    )
 
     pickup_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
     dropoff_sequence_no_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -3122,6 +3387,24 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         ),
         CheckConstraint("fare_amount >= 0", name="ck_trip_bookings_fare_nonnegative"),
         CheckConstraint(
+            "taxable_amount >= 0",
+            name="ck_trip_bookings_taxable_amount_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_amount >= 0 AND sgst_amount >= 0 AND igst_amount >= 0",
+            name="ck_trip_bookings_tax_components_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tax_amount >= 0",
+            name="ck_trip_bookings_total_tax_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_rate_percent_snapshot >= 0 AND cgst_rate_percent_snapshot <= 100 "
+            "AND sgst_rate_percent_snapshot >= 0 AND sgst_rate_percent_snapshot <= 100 "
+            "AND igst_rate_percent_snapshot >= 0 AND igst_rate_percent_snapshot <= 100",
+            name="ck_trip_bookings_gst_rate_snapshot_range",
+        ),
+        CheckConstraint(
             "commission_percent_snapshot >= 0 AND commission_percent_snapshot <= 100",
             name="ck_trip_bookings_commission_percent_range",
         ),
@@ -3217,6 +3500,36 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
     )
 
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
 
     refunded_amount: Mapped[Decimal] = mapped_column(
         Numeric(10, 2),
@@ -3241,6 +3554,18 @@ class BookingSessionPayment(UUIDPKMixin, TimestampMixin, Base):
         CheckConstraint(
             "amount > 0",
             name="ck_booking_session_payments_amount_positive",
+        ),
+        CheckConstraint(
+            "taxable_amount >= 0",
+            name="ck_booking_session_payments_taxable_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_amount >= 0 AND sgst_amount >= 0 AND igst_amount >= 0",
+            name="ck_booking_session_payments_tax_components_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tax_amount >= 0",
+            name="ck_booking_session_payments_total_tax_nonnegative",
         ),
         CheckConstraint(
             "refund_attempt_count IS NULL OR refund_attempt_count >= 0",
@@ -3494,6 +3819,36 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
     amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    taxable_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    cgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    sgst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    igst_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
+    total_tax_amount: Mapped[Decimal] = mapped_column(
+        Numeric(10, 2),
+        nullable=False,
+        default=Decimal("0.00"),
+        server_default=text("0.00"),
+    )
     status: Mapped[BookingPaymentStatus] = mapped_column(
         enum_type(BookingPaymentStatus, "booking_payment_status"),
         nullable=False,
@@ -3513,6 +3868,18 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="ck_booking_payments_amount_positive"),
+        CheckConstraint(
+            "taxable_amount >= 0",
+            name="ck_booking_payments_taxable_nonnegative",
+        ),
+        CheckConstraint(
+            "cgst_amount >= 0 AND sgst_amount >= 0 AND igst_amount >= 0",
+            name="ck_booking_payments_tax_components_nonnegative",
+        ),
+        CheckConstraint(
+            "total_tax_amount >= 0",
+            name="ck_booking_payments_total_tax_nonnegative",
+        ),
         Index("ix_booking_payments_booking_status", "booking_id", "status"),
     )
 

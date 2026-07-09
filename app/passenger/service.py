@@ -88,6 +88,7 @@ from app.passenger.schemas import (
     CreateBookingSessionRequest,
     VerifyBookingSessionPaymentRequest,
 )
+from app.tax import GSTBreakdown, build_gst_breakdown, gst_config_from_settings
 
 
 def utcnow() -> datetime:
@@ -284,6 +285,202 @@ class PassengerService:
         fallback_result = await self.db.execute(fallback_stmt)
         return fallback_result.scalar_one_or_none()
 
+    async def _build_gst_breakdown(
+        self,
+        amount: Decimal,
+        *,
+        is_ac: bool | None,
+    ) -> GSTBreakdown:
+        settings = await self._get_platform_settings_obj()
+        return build_gst_breakdown(
+            amount,
+            is_ac=is_ac,
+            config=gst_config_from_settings(settings),
+        )
+
+    @staticmethod
+    def _gst_breakdown_public_fields(
+        breakdown: GSTBreakdown,
+        *,
+        configured_fare_amount: Decimal,
+    ) -> dict[str, Any]:
+        return {
+            "fare_amount": breakdown.gross_amount,
+            "configured_fare_amount": configured_fare_amount,
+            "taxable_amount": breakdown.taxable_amount,
+            "cgst_rate_percent": breakdown.cgst_rate_percent,
+            "cgst_amount": breakdown.cgst_amount,
+            "sgst_rate_percent": breakdown.sgst_rate_percent,
+            "sgst_amount": breakdown.sgst_amount,
+            "igst_rate_percent": breakdown.igst_rate_percent,
+            "igst_amount": breakdown.igst_amount,
+            "total_tax_amount": breakdown.total_tax_amount,
+            "gst_enabled": breakdown.gst_enabled,
+            "gst_applicable": breakdown.gst_applicable,
+            "gst_inclusive": breakdown.gst_inclusive,
+        }
+
+    @staticmethod
+    def _booking_taxable_basis(booking: TripBooking) -> Decimal:
+        taxable_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "taxable_amount", Decimal("0.00")) or 0)
+        )
+        if taxable_amount > Decimal("0.00"):
+            return taxable_amount
+        return PassengerService._quantize_money(Decimal(booking.fare_amount or 0))
+
+    @staticmethod
+    def _apply_gst_breakdown_to_booking(
+        booking: TripBooking,
+        breakdown: GSTBreakdown,
+    ) -> None:
+        booking.fare_amount = breakdown.gross_amount
+        booking.taxable_amount = breakdown.taxable_amount
+        booking.cgst_rate_percent_snapshot = breakdown.cgst_rate_percent
+        booking.cgst_amount = breakdown.cgst_amount
+        booking.sgst_rate_percent_snapshot = breakdown.sgst_rate_percent
+        booking.sgst_amount = breakdown.sgst_amount
+        booking.igst_rate_percent_snapshot = breakdown.igst_rate_percent
+        booking.igst_amount = breakdown.igst_amount
+        booking.total_tax_amount = breakdown.total_tax_amount
+        booking.gst_enabled_snapshot = breakdown.gst_enabled and breakdown.gst_applicable
+        booking.gst_inclusive_snapshot = breakdown.gst_inclusive
+
+    @staticmethod
+    def _booking_tax_fields(booking: TripBooking) -> dict[str, Any]:
+        fare_amount = PassengerService._quantize_money(
+            Decimal(booking.fare_amount or 0)
+        )
+        taxable_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "taxable_amount", 0) or 0)
+        )
+        if taxable_amount <= Decimal("0.00") and fare_amount > Decimal("0.00"):
+            taxable_amount = fare_amount
+
+        cgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "cgst_amount", 0) or 0)
+        )
+        sgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "sgst_amount", 0) or 0)
+        )
+        igst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "igst_amount", 0) or 0)
+        )
+        total_tax_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking, "total_tax_amount", 0) or 0)
+        )
+        if total_tax_amount <= Decimal("0.00"):
+            total_tax_amount = PassengerService._quantize_money(
+                cgst_amount + sgst_amount + igst_amount
+            )
+
+        return {
+            "taxable_amount": taxable_amount,
+            "cgst_rate_percent_snapshot": Decimal(
+                getattr(booking, "cgst_rate_percent_snapshot", 0) or 0
+            ),
+            "cgst_amount": cgst_amount,
+            "sgst_rate_percent_snapshot": Decimal(
+                getattr(booking, "sgst_rate_percent_snapshot", 0) or 0
+            ),
+            "sgst_amount": sgst_amount,
+            "igst_rate_percent_snapshot": Decimal(
+                getattr(booking, "igst_rate_percent_snapshot", 0) or 0
+            ),
+            "igst_amount": igst_amount,
+            "total_tax_amount": total_tax_amount,
+            "gst_enabled_snapshot": bool(
+                getattr(booking, "gst_enabled_snapshot", False)
+            ),
+            "gst_inclusive_snapshot": bool(
+                getattr(booking, "gst_inclusive_snapshot", True)
+            ),
+        }
+
+    @staticmethod
+    def _rfid_ride_tax_fields(ride: RFIDTripRide) -> dict[str, Any]:
+        fare_amount = PassengerService._quantize_money(
+            Decimal(ride.fare_amount or 0)
+        )
+        taxable_amount = PassengerService._quantize_money(
+            Decimal(getattr(ride, "taxable_amount", 0) or 0)
+        )
+        if taxable_amount <= Decimal("0.00") and fare_amount > Decimal("0.00"):
+            taxable_amount = fare_amount
+
+        cgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(ride, "cgst_amount", 0) or 0)
+        )
+        sgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(ride, "sgst_amount", 0) or 0)
+        )
+        igst_amount = PassengerService._quantize_money(
+            Decimal(getattr(ride, "igst_amount", 0) or 0)
+        )
+        total_tax_amount = PassengerService._quantize_money(
+            Decimal(getattr(ride, "total_tax_amount", 0) or 0)
+        )
+        if total_tax_amount <= Decimal("0.00"):
+            total_tax_amount = PassengerService._quantize_money(
+                cgst_amount + sgst_amount + igst_amount
+            )
+
+        return {
+            "taxable_amount": taxable_amount,
+            "cgst_rate_percent_snapshot": Decimal(
+                getattr(ride, "cgst_rate_percent_snapshot", 0) or 0
+            ),
+            "cgst_amount": cgst_amount,
+            "sgst_rate_percent_snapshot": Decimal(
+                getattr(ride, "sgst_rate_percent_snapshot", 0) or 0
+            ),
+            "sgst_amount": sgst_amount,
+            "igst_rate_percent_snapshot": Decimal(
+                getattr(ride, "igst_rate_percent_snapshot", 0) or 0
+            ),
+            "igst_amount": igst_amount,
+            "total_tax_amount": total_tax_amount,
+            "gst_enabled_snapshot": bool(
+                getattr(ride, "gst_enabled_snapshot", False)
+            ),
+            "gst_inclusive_snapshot": bool(
+                getattr(ride, "gst_inclusive_snapshot", True)
+            ),
+        }
+
+    @staticmethod
+    def _apply_booking_tax_fields_to_payment(
+        payment: BookingPayment,
+        booking: TripBooking,
+    ) -> None:
+        tax_fields = PassengerService._booking_tax_fields(booking)
+        payment.taxable_amount = tax_fields["taxable_amount"]
+        payment.cgst_amount = tax_fields["cgst_amount"]
+        payment.sgst_amount = tax_fields["sgst_amount"]
+        payment.igst_amount = tax_fields["igst_amount"]
+        payment.total_tax_amount = tax_fields["total_tax_amount"]
+
+    @staticmethod
+    def _apply_session_tax_fields_to_payment(
+        payment: BookingSessionPayment,
+        booking_session: BookingSession,
+    ) -> None:
+        payment.taxable_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking_session, "total_taxable_amount", 0) or 0)
+        )
+        payment.cgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking_session, "total_cgst_amount", 0) or 0)
+        )
+        payment.sgst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking_session, "total_sgst_amount", 0) or 0)
+        )
+        payment.igst_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking_session, "total_igst_amount", 0) or 0)
+        )
+        payment.total_tax_amount = PassengerService._quantize_money(
+            Decimal(getattr(booking_session, "total_tax_amount", 0) or 0)
+        )
+
     async def _get_current_commission_percent(self) -> Decimal:
         settings = await self._get_platform_settings_obj()
         if settings is None or settings.commission_percent is None:
@@ -333,7 +530,7 @@ class PassengerService:
             commission_amount,
             driver_payout_amount,
         ) = self._build_booking_commission_snapshot(
-            fare_amount=booking.fare_amount,
+            fare_amount=self._booking_taxable_basis(booking),
             commission_percent=commission_percent,
         )
 
@@ -1412,6 +1609,7 @@ class PassengerService:
         }
     
     async def _serialize_booking_detail(self, booking: TripBooking) -> dict[str, Any]:
+        tax_fields = self._booking_tax_fields(booking)
         return {
             "id": booking.id,
             "passenger_user_id": booking.passenger_user_id,
@@ -1430,6 +1628,7 @@ class PassengerService:
             "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
+            **tax_fields,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
@@ -1471,14 +1670,39 @@ class PassengerService:
         *,
         total_booking_amount: Decimal,
         is_ac: bool,
+        booking: TripBooking | None = None,
     ) -> dict[str, Any]:
         total_booking_amount = self._quantize_money(Decimal(total_booking_amount))
 
-        cgst_rate_percent = Decimal("2.50") if is_ac else Decimal("0.00")
-        sgst_rate_percent = Decimal("2.50") if is_ac else Decimal("0.00")
-        divisor_used = Decimal("1.05") if is_ac else Decimal("1.00")
-
-        if is_ac:
+        if booking is not None:
+            tax_fields = self._booking_tax_fields(booking)
+            taxable_value = tax_fields["taxable_amount"]
+            cgst_rate_percent = tax_fields["cgst_rate_percent_snapshot"]
+            cgst_amount = tax_fields["cgst_amount"]
+            sgst_rate_percent = tax_fields["sgst_rate_percent_snapshot"]
+            sgst_amount = tax_fields["sgst_amount"]
+            igst_rate_percent = tax_fields["igst_rate_percent_snapshot"]
+            igst_amount = tax_fields["igst_amount"]
+            total_tax_amount = tax_fields["total_tax_amount"]
+            gst_inclusive = tax_fields["gst_inclusive_snapshot"]
+            divisor_used = (
+                Decimal("1.00")
+                + (
+                    cgst_rate_percent
+                    + sgst_rate_percent
+                    + igst_rate_percent
+                )
+                / Decimal("100")
+            )
+            divisor_used = divisor_used.quantize(
+                Decimal("0.0001"),
+                rounding=ROUND_HALF_UP,
+            )
+        elif is_ac:
+            cgst_rate_percent = Decimal("2.50")
+            sgst_rate_percent = Decimal("2.50")
+            igst_rate_percent = Decimal("0.00")
+            divisor_used = Decimal("1.0500")
             taxable_value = self._quantize_money(total_booking_amount / divisor_used)
             cgst_amount = self._quantize_money(
                 (taxable_value * cgst_rate_percent) / Decimal("100")
@@ -1486,12 +1710,23 @@ class PassengerService:
             sgst_amount = self._quantize_money(
                 (taxable_value * sgst_rate_percent) / Decimal("100")
             )
+            igst_amount = Decimal("0.00")
+            total_tax_amount = self._quantize_money(
+                cgst_amount + sgst_amount + igst_amount
+            )
+            gst_inclusive = True
         else:
+            cgst_rate_percent = Decimal("0.00")
+            sgst_rate_percent = Decimal("0.00")
+            igst_rate_percent = Decimal("0.00")
+            divisor_used = Decimal("1.0000")
             taxable_value = total_booking_amount
             cgst_amount = Decimal("0.00")
             sgst_amount = Decimal("0.00")
+            igst_amount = Decimal("0.00")
+            total_tax_amount = Decimal("0.00")
+            gst_inclusive = True
 
-        total_tax_amount = self._quantize_money(cgst_amount + sgst_amount)
         recomputed_total_amount = self._quantize_money(
             taxable_value + total_tax_amount
         )
@@ -1507,7 +1742,10 @@ class PassengerService:
             "cgst_amount": cgst_amount,
             "sgst_rate_percent": sgst_rate_percent,
             "sgst_amount": sgst_amount,
+            "igst_rate_percent": igst_rate_percent,
+            "igst_amount": igst_amount,
             "total_tax_amount": total_tax_amount,
+            "gst_inclusive": gst_inclusive,
             "recomputed_total_amount": recomputed_total_amount,
             "rounding_adjustment": rounding_adjustment,
         }
@@ -1553,6 +1791,21 @@ class PassengerService:
             "razorpay_payment_id": payment.razorpay_payment_id,
             "status": payment.status,
             "amount": payment.amount,
+            "taxable_amount": self._quantize_money(
+                Decimal(getattr(payment, "taxable_amount", 0) or 0)
+            ),
+            "cgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "cgst_amount", 0) or 0)
+            ),
+            "sgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "sgst_amount", 0) or 0)
+            ),
+            "igst_amount": self._quantize_money(
+                Decimal(getattr(payment, "igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(payment, "total_tax_amount", 0) or 0)
+            ),
             "created_at": payment.created_at,
             "updated_at": payment.updated_at,
         }
@@ -1571,6 +1824,7 @@ class PassengerService:
         }
 
     def _serialize_booking(self, booking: TripBooking) -> dict[str, Any]:
+        tax_fields = self._booking_tax_fields(booking)
         return {
             "id": booking.id,
             "passenger_user_id": booking.passenger_user_id,
@@ -1589,6 +1843,7 @@ class PassengerService:
             "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
+            **tax_fields,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
@@ -1647,6 +1902,21 @@ class PassengerService:
                 payment
             ),
             "amount": payment.amount,
+            "taxable_amount": self._quantize_money(
+                Decimal(getattr(payment, "taxable_amount", 0) or 0)
+            ),
+            "cgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "cgst_amount", 0) or 0)
+            ),
+            "sgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "sgst_amount", 0) or 0)
+            ),
+            "igst_amount": self._quantize_money(
+                Decimal(getattr(payment, "igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(payment, "total_tax_amount", 0) or 0)
+            ),
             "refunded_amount": payment.refunded_amount,
             "refund_requested_at": payment.refund_requested_at,
             "refund_processed_at": payment.refund_processed_at,
@@ -1666,6 +1936,7 @@ class PassengerService:
         refund_request = None
         if refund_requests_by_booking_id is not None:
             refund_request = refund_requests_by_booking_id.get(booking.id)
+        tax_fields = self._booking_tax_fields(booking)
         return {
             "id": booking.id,
             "booking_session_id": booking.booking_session_id,
@@ -1684,6 +1955,7 @@ class PassengerService:
             "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
+            **tax_fields,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
             "refund": self._serialize_booking_seat_refund_request(
                 refund_request
@@ -1719,6 +1991,36 @@ class PassengerService:
             "dropoff_sequence_no_snapshot": booking_session.dropoff_sequence_no_snapshot,
             "status": booking_session.status,
             "total_fare_amount": booking_session.total_fare_amount,
+            "total_taxable_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_taxable_amount", 0) or 0)
+            ),
+            "total_cgst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_cgst_amount", 0) or 0)
+            ),
+            "total_sgst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_sgst_amount", 0) or 0)
+            ),
+            "total_igst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_tax_amount", 0) or 0)
+            ),
+            "gst_enabled_snapshot": bool(
+                getattr(booking_session, "gst_enabled_snapshot", False)
+            ),
+            "gst_inclusive_snapshot": bool(
+                getattr(booking_session, "gst_inclusive_snapshot", True)
+            ),
+            "cgst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "cgst_rate_percent_snapshot", 0) or 0
+            ),
+            "sgst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "sgst_rate_percent_snapshot", 0) or 0
+            ),
+            "igst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "igst_rate_percent_snapshot", 0) or 0
+            ),
             "payment_hold_expires_at": booking_session.payment_hold_expires_at,
             "confirmed_at": booking_session.confirmed_at,
             "cancelled_at": booking_session.cancelled_at,
@@ -1880,6 +2182,7 @@ class PassengerService:
         await self.db.flush()
     
     async def _serialize_current_booking(self, booking: TripBooking) -> dict[str, Any]:
+        tax_fields = self._booking_tax_fields(booking)
         return {
             "id": booking.id,
             "passenger_user_id": booking.passenger_user_id,
@@ -1898,6 +2201,7 @@ class PassengerService:
             "otp": self._serialize_booking_otp(booking),
             "booking_status": booking.booking_status,
             "fare_amount": booking.fare_amount,
+            **tax_fields,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
             "boarded_at": booking.boarded_at,
             "completed_at": booking.completed_at,
@@ -2398,6 +2702,21 @@ class PassengerService:
             "payment_status": payment.status,
             "effective_status": self._get_transaction_effective_status(booking, payment),
             "amount": payment.amount,
+            "taxable_amount": self._quantize_money(
+                Decimal(getattr(payment, "taxable_amount", 0) or 0)
+            ),
+            "cgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "cgst_amount", 0) or 0)
+            ),
+            "sgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "sgst_amount", 0) or 0)
+            ),
+            "igst_amount": self._quantize_money(
+                Decimal(getattr(payment, "igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(payment, "total_tax_amount", 0) or 0)
+            ),
             "razorpay_order_id": payment.razorpay_order_id,
             "razorpay_payment_id": payment.razorpay_payment_id,
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
@@ -2831,6 +3150,7 @@ class PassengerService:
             if ride.dropoff_stop_id is None
             else stops_by_id.get(ride.dropoff_stop_id)
         )
+        tax_fields = self._rfid_ride_tax_fields(ride)
 
         return {
             "id": ride.id,
@@ -2854,6 +3174,7 @@ class PassengerService:
             "status": ride.status,
             "hold_amount": ride.hold_amount,
             "fare_amount": ride.fare_amount,
+            **tax_fields,
             "fare_reversed_amount": ride.fare_reversed_amount,
             "fare_net_amount": self._quantize_money(
                 Decimal(ride.fare_amount or 0)
@@ -3234,6 +3555,7 @@ class PassengerService:
         route_id: str,
         pickup_stop_id: str,
         pickup_sequence_no: int,
+        is_ac: bool | None,
     ) -> Decimal | None:
         stmt = (
             select(func.max(RouteFare.amount))
@@ -3256,7 +3578,11 @@ class PassengerService:
         if amount is None:
             return None
 
-        return self._quantize_money(Decimal(amount))
+        breakdown = await self._build_gst_breakdown(
+            self._quantize_money(Decimal(amount)),
+            is_ac=is_ac,
+        )
+        return breakdown.gross_amount
 
     async def _count_open_rfid_rides_overlapping_leg(
         self,
@@ -4340,6 +4666,12 @@ class PassengerService:
                     )
                 )
 
+            configured_fare_amount = self._quantize_money(segment_fare.amount)
+            gst_breakdown = await self._build_gst_breakdown(
+                configured_fare_amount,
+                is_ac=route.has_ac,
+            )
+
             items.append(
                 {
                     "route": self._serialize_route(route),
@@ -4347,7 +4679,10 @@ class PassengerService:
                     "dropoff_stop": self._serialize_stop_brief(dropoff_route_stop.stop),
                     "pickup_sequence_no": pickup_route_stop.sequence_no,
                     "dropoff_sequence_no": dropoff_route_stop.sequence_no,
-                    "fare_amount": self._quantize_money(segment_fare.amount),
+                    **self._gst_breakdown_public_fields(
+                        gst_breakdown,
+                        configured_fare_amount=configured_fare_amount,
+                    ),
                     "upcoming_scheduled_trips": upcoming_scheduled_trips,
                     "upcoming_scheduled_trip_count": len(upcoming_scheduled_trips),
                 }
@@ -4496,10 +4831,26 @@ class PassengerService:
                 route_id=trip.route_id,
                 pickup_stop_id=from_stop_id,
                 pickup_sequence_no=pickup_sequence_no,
+                is_ac=None if trip.route is None else trip.route.has_ac,
             )
 
             selected_fare_amount = self._quantize_money(
                 Decimal(option["fare_amount"] or 0)
+            )
+            selected_taxable_amount = self._quantize_money(
+                Decimal(option.get("taxable_amount") or selected_fare_amount)
+            )
+            selected_cgst_amount = self._quantize_money(
+                Decimal(option.get("cgst_amount") or 0)
+            )
+            selected_sgst_amount = self._quantize_money(
+                Decimal(option.get("sgst_amount") or 0)
+            )
+            selected_igst_amount = self._quantize_money(
+                Decimal(option.get("igst_amount") or 0)
+            )
+            selected_total_tax_amount = self._quantize_money(
+                Decimal(option.get("total_tax_amount") or 0)
             )
 
             if required_hold_amount is None:
@@ -4573,6 +4924,11 @@ class PassengerService:
                     "dropoff_sequence_no": dropoff_sequence_no,
                     "current_sequence_no": current_sequence_no,
                     "selected_fare_amount": selected_fare_amount,
+                    "selected_taxable_amount": selected_taxable_amount,
+                    "selected_cgst_amount": selected_cgst_amount,
+                    "selected_sgst_amount": selected_sgst_amount,
+                    "selected_igst_amount": selected_igst_amount,
+                    "selected_total_tax_amount": selected_total_tax_amount,
                     "required_hold_amount": required_hold_amount,
                     "available_balance": available_balance,
                     "balance_shortfall": balance_shortfall,
@@ -4761,6 +5117,10 @@ class PassengerService:
         dropoff_stop = next(
             rs.stop for rs in route.route_stops if rs.stop_id == payload.dropoff_stop_id
         )
+        gst_breakdown = await self._build_gst_breakdown(
+            self._quantize_money(fare.amount),
+            is_ac=route.has_ac,
+        )
 
         return {
             "route_id": route.id,
@@ -4771,7 +5131,19 @@ class PassengerService:
             "dropoff_stop": self._serialize_stop_brief(dropoff_stop),
             "pickup_sequence_no": pickup_route_stop.sequence_no,
             "dropoff_sequence_no": dropoff_route_stop.sequence_no,
-            "amount": fare.amount,
+            "amount": gst_breakdown.gross_amount,
+            "configured_fare_amount": self._quantize_money(fare.amount),
+            "taxable_amount": gst_breakdown.taxable_amount,
+            "cgst_rate_percent": gst_breakdown.cgst_rate_percent,
+            "cgst_amount": gst_breakdown.cgst_amount,
+            "sgst_rate_percent": gst_breakdown.sgst_rate_percent,
+            "sgst_amount": gst_breakdown.sgst_amount,
+            "igst_rate_percent": gst_breakdown.igst_rate_percent,
+            "igst_amount": gst_breakdown.igst_amount,
+            "total_tax_amount": gst_breakdown.total_tax_amount,
+            "gst_enabled": gst_breakdown.gst_enabled,
+            "gst_applicable": gst_breakdown.gst_applicable,
+            "gst_inclusive": gst_breakdown.gst_inclusive,
         }
     
     async def get_leg_available_seats(
@@ -5301,6 +5673,7 @@ class PassengerService:
             amount=booking.fare_amount,
             status=BookingPaymentStatus.CREATED,
         )
+        self._apply_booking_tax_fields_to_payment(payment, booking)
         self.db.add(payment)
         await self.db.flush()
 
@@ -5648,10 +6021,15 @@ class PassengerService:
                 },
             )
 
-        normalized_fare_amount = self._quantize_money(fare.amount)
-        total_fare_amount = self._quantize_money(
-            normalized_fare_amount * Decimal(len(requested_seat_numbers))
+        per_seat_gst_breakdown = await self._build_gst_breakdown(
+            self._quantize_money(fare.amount),
+            is_ac=None if trip.route is None else trip.route.has_ac,
         )
+        session_gst_breakdown = per_seat_gst_breakdown.multiplied(
+            len(requested_seat_numbers)
+        )
+        normalized_fare_amount = per_seat_gst_breakdown.gross_amount
+        total_fare_amount = session_gst_breakdown.gross_amount
 
         current_commission_percent = await self._get_current_commission_percent()
         (
@@ -5659,7 +6037,7 @@ class PassengerService:
             commission_amount,
             driver_payout_amount,
         ) = self._build_booking_commission_snapshot(
-            fare_amount=normalized_fare_amount,
+            fare_amount=per_seat_gst_breakdown.taxable_amount,
             commission_percent=current_commission_percent,
         )
 
@@ -5708,6 +6086,19 @@ class PassengerService:
                 dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                 status=BookingSessionStatus.PENDING_PAYMENT,
                 total_fare_amount=total_fare_amount,
+                total_taxable_amount=session_gst_breakdown.taxable_amount,
+                total_cgst_amount=session_gst_breakdown.cgst_amount,
+                total_sgst_amount=session_gst_breakdown.sgst_amount,
+                total_igst_amount=session_gst_breakdown.igst_amount,
+                total_tax_amount=session_gst_breakdown.total_tax_amount,
+                gst_enabled_snapshot=(
+                    session_gst_breakdown.gst_enabled
+                    and session_gst_breakdown.gst_applicable
+                ),
+                gst_inclusive_snapshot=session_gst_breakdown.gst_inclusive,
+                cgst_rate_percent_snapshot=session_gst_breakdown.cgst_rate_percent,
+                sgst_rate_percent_snapshot=session_gst_breakdown.sgst_rate_percent,
+                igst_rate_percent_snapshot=session_gst_breakdown.igst_rate_percent,
                 payment_hold_expires_at=payment_hold_expires_at,
             )
             self.db.add(booking_session)
@@ -5738,6 +6129,25 @@ class PassengerService:
                     seat_number=seat.seat_number,
                     booking_status=BookingStatus.PENDING_PAYMENT,
                     fare_amount=normalized_fare_amount,
+                    taxable_amount=per_seat_gst_breakdown.taxable_amount,
+                    cgst_rate_percent_snapshot=(
+                        per_seat_gst_breakdown.cgst_rate_percent
+                    ),
+                    cgst_amount=per_seat_gst_breakdown.cgst_amount,
+                    sgst_rate_percent_snapshot=(
+                        per_seat_gst_breakdown.sgst_rate_percent
+                    ),
+                    sgst_amount=per_seat_gst_breakdown.sgst_amount,
+                    igst_rate_percent_snapshot=(
+                        per_seat_gst_breakdown.igst_rate_percent
+                    ),
+                    igst_amount=per_seat_gst_breakdown.igst_amount,
+                    total_tax_amount=per_seat_gst_breakdown.total_tax_amount,
+                    gst_enabled_snapshot=(
+                        per_seat_gst_breakdown.gst_enabled
+                        and per_seat_gst_breakdown.gst_applicable
+                    ),
+                    gst_inclusive_snapshot=per_seat_gst_breakdown.gst_inclusive,
                     pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
                     dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                     payment_hold_expires_at=payment_hold_expires_at,
@@ -5758,6 +6168,11 @@ class PassengerService:
                 booking_session_id=booking_session.id,
                 razorpay_order_id=order_payload["id"],
                 amount=booking_session.total_fare_amount,
+                taxable_amount=booking_session.total_taxable_amount,
+                cgst_amount=booking_session.total_cgst_amount,
+                sgst_amount=booking_session.total_sgst_amount,
+                igst_amount=booking_session.total_igst_amount,
+                total_tax_amount=booking_session.total_tax_amount,
                 status=BookingPaymentStatus.CREATED,
             )
             self.db.add(payment)
@@ -6739,14 +7154,18 @@ class PassengerService:
             dropoff_sequence_no=dropoff_route_stop.sequence_no,
         )
 
-        normalized_fare_amount = self._quantize_money(fare.amount)
+        gst_breakdown = await self._build_gst_breakdown(
+            self._quantize_money(fare.amount),
+            is_ac=None if trip.route is None else trip.route.has_ac,
+        )
+        normalized_fare_amount = gst_breakdown.gross_amount
         current_commission_percent = await self._get_current_commission_percent()
         (
             commission_percent_snapshot,
             commission_amount,
             driver_payout_amount,
         ) = self._build_booking_commission_snapshot(
-            fare_amount=normalized_fare_amount,
+            fare_amount=gst_breakdown.taxable_amount,
             commission_percent=current_commission_percent,
         )
 
@@ -6765,6 +7184,18 @@ class PassengerService:
                 seat_number=payload.seat_number,
                 booking_status=BookingStatus.PENDING_PAYMENT,
                 fare_amount=normalized_fare_amount,
+                taxable_amount=gst_breakdown.taxable_amount,
+                cgst_rate_percent_snapshot=gst_breakdown.cgst_rate_percent,
+                cgst_amount=gst_breakdown.cgst_amount,
+                sgst_rate_percent_snapshot=gst_breakdown.sgst_rate_percent,
+                sgst_amount=gst_breakdown.sgst_amount,
+                igst_rate_percent_snapshot=gst_breakdown.igst_rate_percent,
+                igst_amount=gst_breakdown.igst_amount,
+                total_tax_amount=gst_breakdown.total_tax_amount,
+                gst_enabled_snapshot=(
+                    gst_breakdown.gst_enabled and gst_breakdown.gst_applicable
+                ),
+                gst_inclusive_snapshot=gst_breakdown.gst_inclusive,
                 pickup_sequence_no_snapshot=pickup_route_stop.sequence_no,
                 dropoff_sequence_no_snapshot=dropoff_route_stop.sequence_no,
                 payment_hold_expires_at=self._get_payment_hold_expires_at(),
@@ -6784,6 +7215,11 @@ class PassengerService:
                 booking_id=booking.id,
                 razorpay_order_id=order_payload["id"],
                 amount=booking.fare_amount,
+                taxable_amount=booking.taxable_amount,
+                cgst_amount=booking.cgst_amount,
+                sgst_amount=booking.sgst_amount,
+                igst_amount=booking.igst_amount,
+                total_tax_amount=booking.total_tax_amount,
                 status=BookingPaymentStatus.CREATED,
             )
             self.db.add(payment)
@@ -7187,6 +7623,7 @@ class PassengerService:
             "breakdown": self._build_invoice_breakdown(
                 total_booking_amount=booking.fare_amount,
                 is_ac=is_ac,
+                booking=booking,
             ),
             "payment": self._serialize_payment(latest_paid_payment),
         }
@@ -7319,6 +7756,36 @@ class PassengerService:
             "dropoff_stop_id": booking_session.dropoff_stop_id,
             "status": booking_session.status,
             "total_fare_amount": booking_session.total_fare_amount,
+            "total_taxable_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_taxable_amount", 0) or 0)
+            ),
+            "total_cgst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_cgst_amount", 0) or 0)
+            ),
+            "total_sgst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_sgst_amount", 0) or 0)
+            ),
+            "total_igst_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(booking_session, "total_tax_amount", 0) or 0)
+            ),
+            "gst_enabled_snapshot": bool(
+                getattr(booking_session, "gst_enabled_snapshot", False)
+            ),
+            "gst_inclusive_snapshot": bool(
+                getattr(booking_session, "gst_inclusive_snapshot", True)
+            ),
+            "cgst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "cgst_rate_percent_snapshot", 0) or 0
+            ),
+            "sgst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "sgst_rate_percent_snapshot", 0) or 0
+            ),
+            "igst_rate_percent_snapshot": Decimal(
+                getattr(booking_session, "igst_rate_percent_snapshot", 0) or 0
+            ),
             "payment_hold_expires_at": booking_session.payment_hold_expires_at,
             "confirmed_at": booking_session.confirmed_at,
             "cancelled_at": booking_session.cancelled_at,
