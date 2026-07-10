@@ -654,37 +654,69 @@ class PassengerService:
         await self.db.flush()
 
     async def _mark_booking_session_paid_and_confirmed(
-        self,
-        *,
-        booking_session: BookingSession,
-        payment: BookingSessionPayment,
-        bookings: list[TripBooking],
-        razorpay_payment_id: str | None,
-        razorpay_signature: str | None = None,
-    ) -> None:
-        now = utcnow()
+            self,
+            *,
+            booking_session: BookingSession,
+            payment: BookingSessionPayment,
+            bookings: list[TripBooking],
+            razorpay_payment_id: str | None,
+            razorpay_signature: str | None = None,
+        ) -> None:
+            now = utcnow()
+            if razorpay_payment_id:
+                payment.razorpay_payment_id = razorpay_payment_id
+            if razorpay_signature:
+                payment.razorpay_signature = razorpay_signature
+            payment.status = BookingPaymentStatus.PAID
+            booking_session.status = BookingSessionStatus.CONFIRMED
+            booking_session.confirmed_at = booking_session.confirmed_at or now
+            booking_session.payment_hold_expires_at = None
 
-        if razorpay_payment_id:
-            payment.razorpay_payment_id = razorpay_payment_id
+            # 1. Fetch the default platform tax percentages configured by Admin
+            stmt = select(PlatformSettings).where(PlatformSettings.settings_key == "default").limit(1)
+            settings_res = await self.db.execute(stmt)
+            settings = settings_res.scalar_one_or_none()
 
-        if razorpay_signature:
-            payment.razorpay_signature = razorpay_signature
+            cgst_percent = settings.cgst_percent if settings else Decimal("7.00")
+            sgst_percent = settings.sgst_percent if settings else Decimal("7.00")
+            total_gst_percent = cgst_percent + sgst_percent
 
-        payment.status = BookingPaymentStatus.PAID
-
-        booking_session.status = BookingSessionStatus.CONFIRMED
-        booking_session.confirmed_at = booking_session.confirmed_at or now
-        booking_session.payment_hold_expires_at = None
-
-        for booking in bookings:
-            if booking.booking_status == BookingStatus.PENDING_PAYMENT:
-                booking.booking_status = BookingStatus.BOOKED
-                booking.payment_hold_expires_at = None
+            # 2. Backward-engineer base fares & taxes for each ticket item in Flow 1
+            for booking in bookings:
+                if booking.booking_status == BookingStatus.PENDING_PAYMENT:
+                    booking.booking_status = BookingStatus.BOOKED
+                    booking.payment_hold_expires_at = None
                 self.db.add(booking)
 
-        self.db.add(payment)
-        self.db.add(booking_session)
-        await self.db.flush()
+                # Calculate individual ticketing accounting variables split
+                total_customer_paid = self._quantize_money(booking.fare_amount)
+                taxable_fraction = Decimal("1.00") + (total_gst_percent / Decimal("100"))
+                taxable_base_amount = self._quantize_money(total_customer_paid / taxable_fraction)
+
+                cgst_amount = self._quantize_money((taxable_base_amount * cgst_percent) / Decimal("100"))
+                sgst_amount = self._quantize_money((taxable_base_amount * sgst_percent) / Decimal("100"))
+
+                # Instantiate individual item records inside table `booking_payments`
+                payment_record = BookingPayment(
+                    booking_id=booking.id,
+                    razorpay_order_id=payment.razorpay_order_id,
+                    razorpay_payment_id=razorpay_payment_id,
+                    razorpay_signature=razorpay_signature,
+                    
+                    # Populating your new nullable columns seamlessly
+                    base_fare_amount=taxable_base_amount,
+                    cgst_percent=cgst_percent,
+                    sgst_percent=sgst_percent,
+                    cgst_amount=cgst_amount,
+                    sgst_amount=sgst_amount,
+                    amount=total_customer_paid,
+                    status=BookingPaymentStatus.PAID
+                )
+                self.db.add(payment_record)
+
+            self.db.add(payment)
+            self.db.add(booking_session)
+            await self.db.flush()
 
     @staticmethod
     def _get_booking_from_session_bookings_or_404(

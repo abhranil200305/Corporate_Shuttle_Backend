@@ -3099,6 +3099,32 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    # Add these fields to class TripBooking inside app/db/schema.py
+    taxable_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=None,
+    )
+    cgst_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        default=None,
+    )
+    sgst_percent: Mapped[Decimal | None] = mapped_column(
+        Numeric(5, 2),
+        nullable=True,
+        default=None,
+    )
+    cgst_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=None,
+    )
+    sgst_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 2),
+        nullable=True,
+        default=None,
+    )
     transfer: Mapped["BookingTransfer | None"] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
