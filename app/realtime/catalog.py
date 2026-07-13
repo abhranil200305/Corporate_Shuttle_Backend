@@ -343,9 +343,15 @@ ADMIN_PAYOUTS = RefreshInstruction(
 )
 
 ADMIN_SETTINGS = RefreshInstruction(
-    resources=("device_settings", "commercial_rules", "rfid_settings"),
+    resources=(
+        "device_settings",
+        "commercial_rules",
+        "gst_settings",
+        "rfid_settings",
+    ),
     endpoints=(
         "/admin/device-settings",
+        "/admin/gst/settings",
         "/admin/commercial-rules",
         "/admin/commercial-rules/{rule_id}",
         "/admin/rfid/seat-policy",

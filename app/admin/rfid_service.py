@@ -22,6 +22,7 @@ from app.admin.rfid_schemas import (
     RFIDRechargeCreateRequest,
 )
 from app.db import schema
+from app.tax import gst_settings_kwargs_from_env
 
 
 class AdminRFIDService:
@@ -3439,6 +3440,7 @@ class AdminRFIDService:
             id=schema.new_id(),
             settings_key="default",
             allow_driver_rfid_seat_reservation=True,
+            **gst_settings_kwargs_from_env(),
         )
 
         self.db.add(settings)

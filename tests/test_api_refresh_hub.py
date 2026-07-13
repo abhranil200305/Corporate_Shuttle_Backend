@@ -233,6 +233,7 @@ class AdminRefreshMiddlewareMappingTests(unittest.TestCase):
             ("POST", "/admin/resolve-trip/t-1", "admin.incidents_changed"),
             ("POST", "/admin/payouts/bulk-trigger", "admin.payouts_changed"),
             ("PATCH", "/admin/device-settings", "admin.settings_changed"),
+            ("PATCH", "/admin/gst/settings", "admin.settings_changed"),
             ("POST", "/admin/commercial-rules", "admin.settings_changed"),
         ]
 

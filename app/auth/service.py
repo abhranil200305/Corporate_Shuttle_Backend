@@ -76,6 +76,9 @@ from app.db.schema import (
     UserRole,
     UserSession,
 )
+from app.tax import gst_settings_kwargs_from_env
+
+
 EMAIL_REGEX = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
@@ -744,6 +747,7 @@ class AuthService:
             settings_key="default",
             commission_percent=0,
             driver_max_active_sessions=2,
+            **gst_settings_kwargs_from_env(),
         )
         self.db.add(settings)
         await self.db.flush()
