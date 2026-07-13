@@ -19,7 +19,7 @@ The commit adds centrally configured GST with these defaults:
 | SGST | `2.50%` |
 | IGST | `0.00%` |
 | Apply only to AC routes | `true` |
-| Fare is GST-inclusive | `true` |
+| Fare is GST-inclusive | `false` |
 
 When the database has no `platform_settings` row with `settings_key=default`,
 the backend reads those values from these environment variables:
