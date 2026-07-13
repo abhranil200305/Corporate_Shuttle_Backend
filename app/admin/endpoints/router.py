@@ -134,10 +134,9 @@ class UpdateGSTSettingsRequest(BaseModel):
 	cgst_percent: Decimal = Field(..., ge=0, le=100)
 	sgst_percent: Decimal = Field(..., ge=0, le=100)
 
-
 class GSTSettingsResponse(BaseModel):
-	cgst_percent: Decimal
-	sgst_percent: Decimal
+    cgst_percent: Decimal
+    sgst_percent: Decimal
 
 def get_ws_hub(request: Request) -> WSHub:
 	return request.app.state.ws_hub
@@ -4746,42 +4745,58 @@ async def get_booking_sessions(
 		}
 		for session in sessions
 	]
-@router.post("/create/platform-settings/gst")
-async def create_gst_settings(
-    payload: CreateGSTSettingsRequest,
-    current_admin: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_async_session),
-):
-    service = AdminService(db)
+# @router.post("/create/platform-settings/gst")
+# async def create_gst_settings(
+#     payload: CreateGSTSettingsRequest,
+#     current_admin: User = Depends(get_current_admin),
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     service = AdminService(db)
 
-    return await service.create_gst_settings(
-        cgst_percent=payload.cgst_percent,
-        sgst_percent=payload.sgst_percent,
-    )
+#     return await service.create_gst_settings(
+#         cgst_percent=payload.cgst_percent,
+#         sgst_percent=payload.sgst_percent,
+#     )
 
 
-@router.patch("/update/platform-settings/gst")
-async def update_gst_settings(
-    payload: UpdateGSTSettingsRequest,
-    current_admin: User = Depends(get_current_admin),
-    db: AsyncSession = Depends(get_async_session),
-):
-    service = AdminService(db)
+# @router.patch("/update/platform-settings/gst")
+# async def update_gst_settings(
+#     payload: UpdateGSTSettingsRequest,
+#     current_admin: User = Depends(get_current_admin),
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     service = AdminService(db)
 
-    return await service.update_gst_settings(
-        cgst_percent=payload.cgst_percent,
-        sgst_percent=payload.sgst_percent,
-    )
+#     return await service.update_gst_settings(
+#         cgst_percent=payload.cgst_percent,
+#         sgst_percent=payload.sgst_percent,
+#     )
 
+
+# @router.get(
+#     "/get/platform-settings/gst",
+#     summary="Get GST Settings",
+# )
+# async def get_gst_settings(
+#     current_admin: User = Depends(get_current_admin),
+#     db: AsyncSession = Depends(get_async_session),
+# ):
+#     service = AdminService(db)
+
+#     return await service.get_gst_settings()
 
 @router.get(
     "/get/platform-settings/gst",
     summary="Get GST Settings",
+    response_model=GSTSettingsResponse,
 )
 async def get_gst_settings(
-    current_admin: User = Depends(get_current_admin),
     db: AsyncSession = Depends(get_async_session),
+    _: User = Depends(get_current_admin), # Executes the admin check but avoids the unused variable warning
 ):
+    """
+    Exposes system-critical GST rates to validated administrators.
+    Values are structurally locked and referenced from runtime environment parameters.
+    """
     service = AdminService(db)
-
     return await service.get_gst_settings()

@@ -8,7 +8,7 @@ from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from typing import Any
-
+import os
 from app.db import schema
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService, utcnow
@@ -4801,94 +4801,24 @@ class AdminService:
 
 			result = await self.db.execute(stmt)
 			return result.unique().scalar_one_or_none()
-		# ==========================================================
-		# GST SETTINGS
-		# ==========================================================
 
-	async def create_gst_settings(
-		self,
-		*,
-		cgst_percent: Decimal,
-		sgst_percent: Decimal,
-	) -> dict:
-		"""
-		Creates or initializes GST settings.
-		If the default PlatformSettings row already exists,
-		only the GST values are initialized.
-		"""
-
-		if cgst_percent < Decimal("0") or cgst_percent > Decimal("100"):
-			raise HTTPException(
-				status_code=status.HTTP_400_BAD_REQUEST,
-				detail="CGST percentage must be between 0 and 100.",
-			)
-
-		if sgst_percent < Decimal("0") or sgst_percent > Decimal("100"):
-			raise HTTPException(
-				status_code=status.HTTP_400_BAD_REQUEST,
-				detail="SGST percentage must be between 0 and 100.",
-			)
-
-		settings = await self._get_or_create_default_platform_settings()
-
-		settings.cgst_percent = cgst_percent
-		settings.sgst_percent = sgst_percent
-
-		self.db.add(settings)
-		await self.db.commit()
-		await self.db.refresh(settings)
-
-		return {
-			"message": "GST settings created successfully.",
-			"cgst_percent": settings.cgst_percent,
-			"sgst_percent": settings.sgst_percent,
-		}
+	# ==========================================================
+	# GST SETTINGS (READ-ONLY FROM ENV)
+	# ==========================================================
 
 	async def get_gst_settings(self) -> dict:
 		"""
-		Returns the configured GST percentages.
+		Returns the configured GST percentages directly from environment variables.
+		Defaults to 2.5 if the environment variables are missing or empty.
 		"""
+		cgst_env = os.getenv("CGST_PCT")
+		sgst_env = os.getenv("SGST_PCT")
 
-		settings = await self._get_or_create_default_platform_settings()
+		# OR logic fallback: use env value if present and truthy, otherwise default to 2.5
+		cgst_percent = Decimal(cgst_env) if cgst_env else Decimal("2.5")
+		sgst_percent = Decimal(sgst_env) if sgst_env else Decimal("2.5")
 
 		return {
-			"cgst_percent": settings.cgst_percent,
-			"sgst_percent": settings.sgst_percent,
-		}
-
-	async def update_gst_settings(
-		self,
-		*,
-		cgst_percent: Decimal,
-		sgst_percent: Decimal,
-	) -> dict:
-		"""
-		Updates only the GST percentages.
-		"""
-
-		if cgst_percent < Decimal("0") or cgst_percent > Decimal("100"):
-			raise HTTPException(
-				status_code=status.HTTP_400_BAD_REQUEST,
-				detail="CGST percentage must be between 0 and 100.",
-			)
-
-		if sgst_percent < Decimal("0") or sgst_percent > Decimal("100"):
-			raise HTTPException(
-				status_code=status.HTTP_400_BAD_REQUEST,
-				detail="SGST percentage must be between 0 and 100.",
-			)
-
-		settings = await self._get_or_create_default_platform_settings()
-
-		settings.cgst_percent = cgst_percent
-		settings.sgst_percent = sgst_percent
-
-		self.db.add(settings)
-		await self.db.commit()
-		await self.db.refresh(settings)
-
-		return {
-			"message": "GST settings updated successfully.",
-			"cgst_percent": settings.cgst_percent,
-			"sgst_percent": settings.sgst_percent,
+			"cgst_percent": cgst_percent,
+			"sgst_percent": sgst_percent,
 		}
