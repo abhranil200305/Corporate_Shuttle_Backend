@@ -1,12 +1,20 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
+
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 
 MONEY_QUANT = Decimal("0.01")
 PERCENT_QUANT = Decimal("0.01")
+TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 
 
 def money(value: Decimal | int | str | None) -> Decimal:
@@ -33,6 +41,72 @@ class GSTConfig:
     igst_rate_percent: Decimal = Decimal("0.00")
     apply_on_ac_routes_only: bool = True
     inclusive_pricing: bool = True
+
+
+def _bool_from_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+
+    normalized = raw.strip().lower()
+    if normalized in TRUE_ENV_VALUES:
+        return True
+    if normalized in FALSE_ENV_VALUES:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of: 1, 0, true, false, yes, no, on, off."
+    )
+
+
+def _percent_from_env(name: str, default: Decimal) -> Decimal:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return percent(default)
+
+    try:
+        value = Decimal(raw.strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise RuntimeError(f"{name} must be a decimal percentage.") from exc
+
+    if not value.is_finite() or value < Decimal("0") or value > Decimal("100"):
+        raise RuntimeError(f"{name} must be between 0 and 100.")
+    return percent(value)
+
+
+def gst_config_from_env() -> GSTConfig:
+    """Return the fallback GST configuration loaded from the environment."""
+    defaults = GSTConfig()
+    return GSTConfig(
+        enabled=_bool_from_env("GST_ENABLED", defaults.enabled),
+        cgst_rate_percent=_percent_from_env(
+            "GST_CGST_RATE_PERCENT", defaults.cgst_rate_percent
+        ),
+        sgst_rate_percent=_percent_from_env(
+            "GST_SGST_RATE_PERCENT", defaults.sgst_rate_percent
+        ),
+        igst_rate_percent=_percent_from_env(
+            "GST_IGST_RATE_PERCENT", defaults.igst_rate_percent
+        ),
+        apply_on_ac_routes_only=_bool_from_env(
+            "GST_APPLY_ON_AC_ROUTES_ONLY", defaults.apply_on_ac_routes_only
+        ),
+        inclusive_pricing=_bool_from_env(
+            "GST_INCLUSIVE_PRICING", defaults.inclusive_pricing
+        ),
+    )
+
+
+def gst_settings_kwargs_from_env() -> dict[str, bool | Decimal]:
+    """Build ORM column values for a new environment-seeded settings row."""
+    config = gst_config_from_env()
+    return {
+        "gst_enabled": config.enabled,
+        "gst_cgst_rate_percent": config.cgst_rate_percent,
+        "gst_sgst_rate_percent": config.sgst_rate_percent,
+        "gst_igst_rate_percent": config.igst_rate_percent,
+        "gst_apply_on_ac_routes_only": config.apply_on_ac_routes_only,
+        "gst_inclusive_pricing": config.inclusive_pricing,
+    }
 
 
 @dataclass(frozen=True)
@@ -165,15 +239,45 @@ def build_gst_breakdown(
 
 def gst_config_from_settings(settings: Any | None) -> GSTConfig:
     if settings is None:
-        return GSTConfig()
+        return gst_config_from_env()
+
+    fallback = GSTConfig()
 
     return GSTConfig(
-        enabled=bool(getattr(settings, "gst_enabled", True)),
-        cgst_rate_percent=percent(getattr(settings, "gst_cgst_rate_percent", Decimal("2.50"))),
-        sgst_rate_percent=percent(getattr(settings, "gst_sgst_rate_percent", Decimal("2.50"))),
-        igst_rate_percent=percent(getattr(settings, "gst_igst_rate_percent", Decimal("0.00"))),
-        apply_on_ac_routes_only=bool(
-            getattr(settings, "gst_apply_on_ac_routes_only", True)
+        enabled=bool(getattr(settings, "gst_enabled", fallback.enabled)),
+        cgst_rate_percent=percent(
+            getattr(
+                settings,
+                "gst_cgst_rate_percent",
+                fallback.cgst_rate_percent,
+            )
         ),
-        inclusive_pricing=bool(getattr(settings, "gst_inclusive_pricing", True)),
+        sgst_rate_percent=percent(
+            getattr(
+                settings,
+                "gst_sgst_rate_percent",
+                fallback.sgst_rate_percent,
+            )
+        ),
+        igst_rate_percent=percent(
+            getattr(
+                settings,
+                "gst_igst_rate_percent",
+                fallback.igst_rate_percent,
+            )
+        ),
+        apply_on_ac_routes_only=bool(
+            getattr(
+                settings,
+                "gst_apply_on_ac_routes_only",
+                fallback.apply_on_ac_routes_only,
+            )
+        ),
+        inclusive_pricing=bool(
+            getattr(
+                settings,
+                "gst_inclusive_pricing",
+                fallback.inclusive_pricing,
+            )
+        ),
     )

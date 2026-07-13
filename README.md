@@ -8,3 +8,4 @@ API refresh WebSocket documentation:
 - [Corrected driver CurrentTrip frontend](docs/DRIVER_CURRENT_TRIP_FE_CORRECTED.md)
 - [Admin frontend integration](docs/ADMIN_API_REFRESH_WEBSOCKET.md)
 - [Traveller booking conflict policy](docs/TRAVELLER_BOOKING_CONFLICT_POLICY.md)
+- [GST frontend integration](docs/GST_FRONTEND_INTEGRATION.md)

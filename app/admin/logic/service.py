@@ -13,6 +13,7 @@ from app.db import schema
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService, utcnow
 from app.payments.service import RoutePayoutService
+from app.tax import gst_config_from_settings, gst_settings_kwargs_from_env
 
 
 class AdminService:
@@ -3057,7 +3058,9 @@ class AdminService:
 
 		if settings is None:
 			settings = schema.PlatformSettings(
-				settings_key="default", commission_percent=commission_percent
+				settings_key="default",
+				commission_percent=commission_percent,
+				**gst_settings_kwargs_from_env(),
 			)
 			self.db.add(settings)
 		else:
@@ -3077,15 +3080,18 @@ class AdminService:
 		}
 
 	def _serialize_gst_settings(self, settings):
+		config = gst_config_from_settings(settings)
 		if settings is None:
 			return {
 				"settings_key": "default",
-				"gst_enabled": True,
-				"gst_cgst_rate_percent": Decimal("2.50"),
-				"gst_sgst_rate_percent": Decimal("2.50"),
-				"gst_igst_rate_percent": Decimal("0.00"),
-				"gst_apply_on_ac_routes_only": True,
-				"gst_inclusive_pricing": True,
+				"gst_enabled": config.enabled,
+				"gst_cgst_rate_percent": config.cgst_rate_percent,
+				"gst_sgst_rate_percent": config.sgst_rate_percent,
+				"gst_igst_rate_percent": config.igst_rate_percent,
+				"gst_apply_on_ac_routes_only": (
+					config.apply_on_ac_routes_only
+				),
+				"gst_inclusive_pricing": config.inclusive_pricing,
 				"created_at": None,
 				"updated_at": None,
 			}
@@ -3120,6 +3126,7 @@ class AdminService:
 		settings = schema.PlatformSettings(
 			settings_key="default",
 			commission_percent=Decimal("0.00"),
+			**gst_settings_kwargs_from_env(),
 		)
 		self.db.add(settings)
 		await self.db.flush()
@@ -4685,7 +4692,9 @@ class AdminService:
 			return settings
 
 		settings = schema.PlatformSettings(
-			settings_key="default", commission_percent=Decimal("0.00")
+			settings_key="default",
+			commission_percent=Decimal("0.00"),
+			**gst_settings_kwargs_from_env(),
 		)
 		self.db.add(settings)
 		await self.db.flush()

@@ -29,8 +29,9 @@ def admin_event_for_mutation(method: str, path: str) -> str | None:
         and path.endswith("/setup-payout-account")
     ):
         return "admin.payouts_changed"
-    if path == "/admin/device-settings" or path.startswith(
-        "/admin/commercial-rules"
+    if (
+        path in {"/admin/device-settings", "/admin/gst/settings"}
+        or path.startswith("/admin/commercial-rules")
     ):
         return "admin.settings_changed"
     if path.startswith("/admin/users/") and "/devices" in path:

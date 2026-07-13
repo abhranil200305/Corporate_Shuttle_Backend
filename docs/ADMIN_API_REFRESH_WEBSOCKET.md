@@ -354,19 +354,20 @@ not this general payout group.
 
 ### 4.9 Settings and commercial rules
 
-`admin.settings_changed` invalidates `device_settings`, `commercial_rules`, and
-`rfid_settings`:
+`admin.settings_changed` invalidates `device_settings`, `commercial_rules`,
+`gst_settings`, and `rfid_settings`:
 
 ```text
 GET /admin/device-settings
+GET /admin/gst/settings
 GET /admin/commercial-rules
 GET /admin/commercial-rules/{rule_id}
 GET /admin/rfid/seat-policy
 ```
 
-It follows device settings changes and commercial-rule create/update/delete or
-status changes. RFID seat-policy mutations emit `admin.rfid_changed`, which also
-invalidates `rfid_settings`.
+It follows device settings changes, GST settings changes, and commercial-rule
+create/update/delete or status changes. RFID seat-policy mutations emit
+`admin.rfid_changed`, which also invalidates `rfid_settings`.
 
 ## 5. Exact source-operation coverage
 
@@ -384,7 +385,7 @@ admin refresh events. Failed validation/auth/conflict/server responses do not.
 | `/admin/tickets/*`, `/admin/support/create` | `admin.support_changed` |
 | `/admin/resolve-trip/*` | `admin.incidents_changed` |
 | `/admin/payouts/*`, `/admin/drivers/*/setup-payout-account` | `admin.payouts_changed` |
-| `/admin/device-settings`, `/admin/commercial-rules*` | `admin.settings_changed` |
+| `/admin/device-settings`, `/admin/gst/settings`, `/admin/commercial-rules*` | `admin.settings_changed` |
 
 Middleware-driven event data is:
 
@@ -627,7 +628,7 @@ Every query used by a page should start with one of these resource keys:
 | Payout configuration/drivers | `payout_settings`, `payout_drivers` |
 | Payout bookings/adjustments | `payout_bookings`, `payout_adjustments` |
 | Payout transfers/refunds/dashboard | `payout_transfers`, `refunds`, `payout_dashboard` |
-| Device settings/commercial rules | `device_settings`, `commercial_rules` |
+| Device/GST settings and commercial rules | `device_settings`, `gst_settings`, `commercial_rules` |
 
 After an admin mutation succeeds, keep using the mutation response for immediate
 success/error UI. The socket will also invalidate all admin tabs. It is safe if
