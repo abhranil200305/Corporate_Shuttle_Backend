@@ -8,19 +8,12 @@ from sqlalchemy import and_, desc, func, or_, select, update
 from sqlalchemy.orm import aliased, joinedload, selectinload
 
 from typing import Any
-import os
+
 from app.db import schema
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService, utcnow
 from app.payments.service import RoutePayoutService
-from decimal import Decimal
 
-from fastapi import HTTPException, status
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-from decimal import Decimal
-from fastapi import HTTPException, status
-from app.db.schema import PlatformSettings
 
 class AdminService:
 	def __init__(self, db, ws_hub: WSHub | None = None):
@@ -4767,58 +4760,37 @@ class AdminService:
 
 
 	async def get_booking_session_by_id(
-			self,
-			booking_session_id: str,
-		):
-			stmt = (
-				select(schema.BookingSession)
-				.options(
-					joinedload(schema.BookingSession.owner),
+		self,
+		booking_session_id: str,
+	):
+		stmt = (
+			select(schema.BookingSession)
+			.options(
+				joinedload(schema.BookingSession.owner),
 
-					joinedload(
-						schema.BookingSession.scheduled_trip
-					)
-					.joinedload(schema.ScheduledTrip.driver)
-					.joinedload(schema.User.driver_profile),
-
-					joinedload(
-						schema.BookingSession.scheduled_trip
-					)
-					.joinedload(schema.ScheduledTrip.vehicle),
-
-					joinedload(schema.BookingSession.route),
-					joinedload(schema.BookingSession.pickup_stop),
-					joinedload(schema.BookingSession.dropoff_stop),
-
-					selectinload(schema.BookingSession.bookings),
-
-					selectinload(schema.BookingSession.payments),
+				joinedload(
+					schema.BookingSession.scheduled_trip
 				)
-				.where(
-					schema.BookingSession.id == booking_session_id
+				.joinedload(schema.ScheduledTrip.driver)
+				.joinedload(schema.User.driver_profile),
+
+				joinedload(
+					schema.BookingSession.scheduled_trip
 				)
+				.joinedload(schema.ScheduledTrip.vehicle),
+
+				joinedload(schema.BookingSession.route),
+				joinedload(schema.BookingSession.pickup_stop),
+				joinedload(schema.BookingSession.dropoff_stop),
+
+				selectinload(schema.BookingSession.bookings),
+
+				selectinload(schema.BookingSession.payments),
 			)
+			.where(
+				schema.BookingSession.id == booking_session_id
+			)
+		)
 
-			result = await self.db.execute(stmt)
-			return result.unique().scalar_one_or_none()
-
-	# ==========================================================
-	# GST SETTINGS (READ-ONLY FROM ENV)
-	# ==========================================================
-
-	async def get_gst_settings(self) -> dict:
-		"""
-		Returns the configured GST percentages directly from environment variables.
-		Defaults to 2.5 if the environment variables are missing or empty.
-		"""
-		cgst_env = os.getenv("CGST_PCT")
-		sgst_env = os.getenv("SGST_PCT")
-
-		# OR logic fallback: use env value if present and truthy, otherwise default to 2.5
-		cgst_percent = Decimal(cgst_env) if cgst_env else Decimal("2.5")
-		sgst_percent = Decimal(sgst_env) if sgst_env else Decimal("2.5")
-
-		return {
-			"cgst_percent": cgst_percent,
-			"sgst_percent": sgst_percent,
-		}
+		result = await self.db.execute(stmt)
+		return result.unique().scalar_one_or_none()

@@ -1,4 +1,3 @@
-#app/payments/service.py
 from __future__ import annotations
 
 import json
@@ -34,7 +33,6 @@ from app.db.schema import (
     RFIDPayoutTransfer,
     RFIDPayoutTransferStatus,
     RFIDTripRide,
-    UserRole,
 )
 from app.db import schema
 
@@ -516,75 +514,37 @@ class RoutePayoutService:
         return payout_details.razorpay_linked_account_id, payout_details
 
     async def _ensure_booking_snapshot_values(self, booking: TripBooking) -> None:
-            # 1. Fetch platform configurations for default fallback values
-            stmt = (
-                select(PlatformSettings)
-                .where(PlatformSettings.settings_key == "default")
-                .limit(1)
+        commission_percent = self._quantize_money(booking.commission_percent_snapshot)
+
+        if commission_percent == Decimal("0.00"):
+            commission_percent = await self._get_default_commission_percent()
+
+        fare_amount = self._quantize_money(booking.fare_amount)
+        commission_amount = self._quantize_money(
+            (fare_amount * commission_percent) / Decimal("100")
+        )
+        driver_payout_amount = self._quantize_money(fare_amount - commission_amount)
+
+        if driver_payout_amount <= Decimal("0.00"):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "non_positive_driver_payout_amount",
+                    "message": "Driver payout amount is not positive, so transfer cannot be created.",
+                },
             )
-            result = await self.db.execute(stmt)
-            settings = result.scalar_one_or_none()
 
-            commission_percent = self._quantize_money(booking.commission_percent_snapshot)
-            if commission_percent == Decimal("0.00"):
-                commission_percent = self._quantize_money(settings.commission_percent if settings else Decimal("0.00"))
+        booking.commission_percent_snapshot = commission_percent
+        booking.commission_amount = commission_amount
+        booking.driver_payout_amount = driver_payout_amount
 
-            # Check if the forward tax calculation values were saved at checkout
-            has_taxable = hasattr(booking, 'taxable_amount') and booking.taxable_amount is not None and booking.taxable_amount > Decimal("0.00")
-            
-            if has_taxable:
-                # Forward Flow: Extract exact base and tax amounts saved during checkout
-                taxable_amount = self._quantize_money(booking.taxable_amount)
-                cgst_amount = self._quantize_money(booking.cgst_amount or Decimal("0.00"))
-                sgst_amount = self._quantize_money(booking.sgst_amount or Decimal("0.00"))
-                total_gst_percent = getattr(booking, 'gst_percent', Decimal("14.00"))
-            else:
-                # Backward Flow Fallback: Legacy reverse-calculation fallback loop
-                cgst_percent = self._quantize_money(settings.cgst_percent if (settings and hasattr(settings, 'cgst_percent')) else Decimal("7.00"))
-                sgst_percent = self._quantize_money(settings.sgst_percent if (settings and hasattr(settings, 'sgst_percent')) else Decimal("7.00"))
-                total_gst_percent = cgst_percent + sgst_percent
+        if booking.transfer_status == TransferStatus.NOT_READY:
+            booking.transfer_status = TransferStatus.READY
+            booking.transfer_ready_at = utcnow()
 
-                total_customer_paid = self._quantize_money(booking.fare_amount) 
-                taxable_fraction = Decimal("1.00") + (total_gst_percent / Decimal("100"))
-                taxable_amount = self._quantize_money(total_customer_paid / taxable_fraction)
+        self.db.add(booking)
+        await self.db.flush()
 
-                cgst_amount = self._quantize_money((taxable_amount * cgst_percent) / Decimal("100"))
-                sgst_amount = self._quantize_money((taxable_amount * sgst_percent) / Decimal("100"))
-
-            # Platform Commission is calculated strictly over the base clean fare (Taxable Amount)
-            commission_amount = self._quantize_money((taxable_amount * commission_percent) / Decimal("100"))
-            
-            # Driver Payout = Base price minus company cut
-            driver_payout_amount = self._quantize_money(taxable_amount - commission_amount)
-
-            if driver_payout_amount <= Decimal("0.00"):
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "non_positive_driver_payout_amount",
-                        "message": "Driver payout amount is not positive, so transfer cannot be created.",
-                    },
-                )
-
-            booking.commission_percent_snapshot = commission_percent
-            booking.commission_amount = commission_amount
-            booking.driver_payout_amount = driver_payout_amount
-            
-            if hasattr(booking, 'taxable_amount'):
-                booking.taxable_amount = taxable_amount
-            if hasattr(booking, 'cgst_amount'):
-                booking.cgst_amount = cgst_amount
-            if hasattr(booking, 'sgst_amount'):
-                booking.sgst_amount = sgst_amount
-            if hasattr(booking, 'gst_percent'):
-                booking.gst_percent = total_gst_percent
-
-            if booking.transfer_status == TransferStatus.NOT_READY:
-                booking.transfer_status = TransferStatus.READY
-                booking.transfer_ready_at = utcnow()
-
-            self.db.add(booking)
-            await self.db.flush()
     @staticmethod
     def _map_provider_transfer_status(provider_status: str | None) -> tuple[BookingTransferStatus, TransferStatus]:
         normalized = (provider_status or "").strip().lower()
@@ -1245,18 +1205,6 @@ class RoutePayoutService:
             self.db.add(transfer)
             await self._refresh_rfid_ride_transfer_status(transfer.rfid_ride_id)
             await self.db.flush()
-
-            if self.ws_hub:
-                await self.ws_hub.broadcast_to_role(
-                    role=UserRole.ADMIN,
-                    event_type="admin.rfid_changed",
-                    payload={"transfer_id": transfer.id, "status": "processed"}
-                )
-                await self.ws_hub.broadcast_to_role(
-                    role=UserRole.ADMIN,
-                    event_type="admin.payouts_changed",
-                    payload={"transfer_id": transfer.id, "status": "processed"}
-            )
 
             return {
                 "message": "RFID payout transfer withheld because driver linked account is missing.",
@@ -2371,13 +2319,6 @@ class RoutePayoutService:
                 message="A booking payout has been processed to your linked account.",
                 data=self._build_transfer_notification_data(booking),
             )
-            # Emit Real-time Live Admin Interface Payout WebSockets Update Channels
-            if self.ws_hub:
-                await self.ws_hub.broadcast_to_role(
-                    role="admin",  
-                    event_type="admin.payouts_changed",
-                    payload={"booking_id": booking.id, "status": "transferred"}
-                )
 
         return {
             "message": "Transfer trigger executed.",
@@ -2392,10 +2333,6 @@ class RoutePayoutService:
                 else "driver_payout_details"
             ),
             "payout_details_found": payout_details is not None,
-            "total_amount_paid": booking.fare_amount,
-            "taxable_amount": getattr(booking, 'taxable_amount', net_transfer_amount),
-            "cgst_amount": getattr(booking, 'cgst_amount', Decimal("0.00")),
-            "sgst_amount": getattr(booking, 'sgst_amount', Decimal("0.00")),
             "commission_percent_snapshot": booking.commission_percent_snapshot,
             "commission_amount": booking.commission_amount,
             "driver_payout_amount": booking.driver_payout_amount,
@@ -2412,88 +2349,130 @@ class RoutePayoutService:
         }
     
     async def create_linked_account(
-            self,
-            *,
-            email: str,
-            phone: str,
-            full_name: str,
-            street1: str,
-            street2: str | None = None,
-            city: str = "Kolkata",
-            state: str = "WEST BENGAL",
-            postal_code: str = "700156",
-            country: str = "IN",
-        ) -> dict[str, Any]:
-            cleaned_email = (email or "").strip()
-            cleaned_phone = (phone or "").strip()
-            cleaned_full_name = (full_name or "").strip()
-            cleaned_street1 = (street1 or "").strip()
-            cleaned_street2 = (street2 or "").strip()
-            cleaned_city = (city or "").strip()
-            cleaned_state = (state or "").strip()
-            cleaned_postal_code = (postal_code or "").strip()
-            cleaned_country = (country or "").strip().upper()
+        self,
+        *,
+        email: str,
+        phone: str,
+        full_name: str,
+        street1: str,
+        street2: str | None = None,
+        city: str = "Kolkata",
+        state: str = "WEST BENGAL",
+        postal_code: str = "700156",
+        country: str = "IN",
+    ) -> dict[str, Any]:
+        cleaned_email = (email or "").strip()
+        cleaned_phone = (phone or "").strip()
+        cleaned_full_name = (full_name or "").strip()
+        cleaned_street1 = (street1 or "").strip()
+        cleaned_street2 = (street2 or "").strip()
+        cleaned_city = (city or "").strip()
+        cleaned_state = (state or "").strip()
+        cleaned_postal_code = (postal_code or "").strip()
+        cleaned_country = (country or "").strip().upper()
 
-            if not cleaned_email:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_driver_email", "message": "Driver email is required."},
-                )
-            if not cleaned_phone:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_driver_phone", "message": "Driver phone is required."},
-                )
-            if not cleaned_full_name:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_driver_full_name", "message": "Driver full name is required."},
-                )
-            if not cleaned_street1:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_registered_street1", "message": "Street line 1 is required."},
-                )
-
-            api_root = self._get_razorpay_api_root()
-            payload = {
-                "type": "route",
-                "email": cleaned_email,
-                "phone": cleaned_phone,
-                "legal_business_name": cleaned_full_name,
-                "business_type": "proprietorship",
-                "contact_name": cleaned_full_name,
-                "profile": {
-                    "addresses": {
-                        "registered": {
-                            "street1": cleaned_street1,
-                            "street2": cleaned_street2 or None,
-                            "city": cleaned_city,
-                            "state": cleaned_state,
-                            "postal_code": cleaned_postal_code,
-                            "country": cleaned_country,
-                        }
-                    },
-                    "category": "transport",
-                    "subcategory": "bus",
+        if not cleaned_email:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_email",
+                    "message": "Driver email is required to create a linked account.",
                 },
-            }
-
-            response = await self._razorpay_request(
-                method="POST",
-                path=f"{api_root}/v2/accounts",
-                json_payload=payload,
             )
 
-            if not response.get("id"):
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "error": "missing_provider_linked_account_id",
-                        "message": "Razorpay did not return a linked account ID.",
-                    },
-                )
-            return response
+        if not cleaned_phone:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_phone",
+                    "message": "Driver phone is required to create a linked account.",
+                },
+            )
+
+        if not cleaned_full_name:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_driver_full_name",
+                    "message": "Driver full name is required to create a linked account.",
+                },
+            )
+
+        if not cleaned_street1:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_street1",
+                    "message": "Registered address street line 1 is required.",
+                },
+            )
+
+        if not cleaned_city:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_city",
+                    "message": "Registered city is required.",
+                },
+            )
+
+        if not cleaned_state:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_state",
+                    "message": "Registered state is required.",
+                },
+            )
+
+        if not cleaned_postal_code:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_postal_code",
+                    "message": "Registered postal code is required.",
+                },
+            )
+
+        if not cleaned_country:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_registered_country",
+                    "message": "Registered country is required.",
+                },
+            )
+
+        api_root = self._get_razorpay_api_root()
+
+        payload = {
+            "type": "route",
+            "email": cleaned_email,
+            "phone": cleaned_phone,
+            "legal_business_name": cleaned_full_name,
+            "business_type": "proprietorship",
+            "contact_name": cleaned_full_name,
+            "profile": {
+                "addresses": {
+                    "registered": {
+                        "street1": cleaned_street1,
+                        "street2": cleaned_street2 or None,
+                        "city": cleaned_city,
+                        "state": cleaned_state,
+                        "postal_code": cleaned_postal_code,
+                        "country": cleaned_country,
+                    }
+                },
+                "category": "transport",
+                "subcategory": "bus",
+            },
+        }
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"{api_root}/v2/accounts",
+            json_payload=payload,
+        )
     
 #     async def create_linked_account(
 #     self,
@@ -2567,19 +2546,26 @@ class RoutePayoutService:
 #             json_payload=payload,
 #         )
 
-    async def fetch_linked_account(self, linked_account_id: str) -> dict[str, Any]:
-            cleaned_linked_account_id = (linked_account_id or "").strip()
-            if not cleaned_linked_account_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_linked_account_id", "message": "Linked account id is required."},
-                )
-
-            api_root = self._get_razorpay_api_root()
-            return await self._razorpay_request(
-                method="GET",
-                path=f"{api_root}/v2/accounts/{cleaned_linked_account_id}",
+    async def fetch_linked_account(
+    self,
+    linked_account_id: str,
+) -> dict[str, Any]:
+        cleaned_linked_account_id = (linked_account_id or "").strip()
+        if not cleaned_linked_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_linked_account_id",
+                    "message": "Linked account id is required.",
+                },
             )
+
+        api_root = self._get_razorpay_api_root()
+
+        return await self._razorpay_request(
+            method="GET",
+            path=f"{api_root}/v2/accounts/{cleaned_linked_account_id}",
+        )
     
     async def create_linked_account_stakeholder(
         self,
@@ -2601,8 +2587,8 @@ class RoutePayoutService:
         cleaned_email = (email or "").strip()
         cleaned_phone = (phone or "").strip()
         cleaned_pan_number = (pan_number or "").strip().upper()
-        cleaned_street1 = (residential_street_line_1 or "").strip()
-        cleaned_street2 = (residential_street_line_2 or "").strip()
+        cleaned_street_line_1 = (residential_street_line_1 or "").strip()
+        cleaned_street_line_2 = (residential_street_line_2 or "").strip()
         cleaned_city = (residential_city or "").strip()
         cleaned_state = (residential_state or "").strip()
         cleaned_postal_code = (residential_postal_code or "").strip()
@@ -2653,7 +2639,7 @@ class RoutePayoutService:
                 },
             )
 
-        if not cleaned_street1:
+        if not cleaned_street_line_1:
             raise HTTPException(
                 status_code=400,
                 detail={
@@ -2703,7 +2689,7 @@ class RoutePayoutService:
             },
             "addresses": {
                 "residential": {
-                    "street": cleaned_street1,
+                    "street": cleaned_street_line_1,
                     "city": cleaned_city,
                     "state": cleaned_state,
                     "postal_code": cleaned_postal_code,
@@ -2721,20 +2707,31 @@ class RoutePayoutService:
             json_payload=payload,
         )
     
-    async def request_route_product(self, *, linked_account_id: str) -> dict[str, Any]:
-            cleaned_linked_account_id = (linked_account_id or "").strip()
-            if not cleaned_linked_account_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_linked_account_id", "message": "Linked account ID required."},
-                )
-
-            api_root = self._get_razorpay_api_root()
-            return await self._razorpay_request(
-                method="POST",
-                path=f"{api_root}/v2/accounts/{cleaned_linked_account_id}/products",
-                json_payload={"product_name": "route", "tnc_accepted": True},
+    async def request_route_product(
+        self,
+        *,
+        linked_account_id: str,
+    ) -> dict[str, Any]:
+        cleaned_linked_account_id = (linked_account_id or "").strip()
+        if not cleaned_linked_account_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_linked_account_id",
+                    "message": "Linked account id is required to request Route product.",
+                },
             )
+
+        api_root = self._get_razorpay_api_root()
+
+        return await self._razorpay_request(
+            method="POST",
+            path=f"{api_root}/v2/accounts/{cleaned_linked_account_id}/products",
+            json_payload={
+                "product_name": "route",
+                "tnc_accepted": True,
+            },
+        )
 
     async def update_route_product(
         self,
@@ -2846,159 +2843,126 @@ class RoutePayoutService:
         )
     
     async def onboard_route_linked_account(
-            self,
-            *,
-            driver_user_id: str,
-            linked_account_id: str | None,
-            stakeholder_id: str | None,
-            route_product_id: str | None,
-            email: str,
-            phone: str,
-            full_name: str,
-            pan_number: str,
-            registered_street1: str,
-            registered_street2: str | None,
-            registered_city: str,
-            registered_state: str,
-            registered_postal_code: str,
-            registered_country: str,
-            residential_street_line_1: str,
-            residential_street_line_2: str | None,
-            residential_city: str,
-            residential_state: str,
-            residential_postal_code: str,
-            residential_country: str,
-            beneficiary_name: str,
-            account_number: str,
-            ifsc_code: str,
-        ) -> dict[str, Any]:
-            cleaned_linked_account_id = (linked_account_id or "").strip()
-            cleaned_stakeholder_id = (stakeholder_id or "").strip()
-            cleaned_route_product_id = (route_product_id or "").strip()
-            cleaned_driver_user_id = (driver_user_id or "").strip()
+        self,
+        *,
+        linked_account_id: str | None,
+        stakeholder_id: str | None,
+        route_product_id: str | None,
+        email: str,
+        phone: str,
+        full_name: str,
+        pan_number: str,
+        registered_street1: str,
+        registered_street2: str | None,
+        registered_city: str,
+        registered_state: str,
+        registered_postal_code: str,
+        registered_country: str,
+        residential_street_line_1: str,
+        residential_street_line_2: str | None,
+        residential_city: str,
+        residential_state: str,
+        residential_postal_code: str,
+        residential_country: str,
+        beneficiary_name: str,
+        account_number: str,
+        ifsc_code: str,
+    ) -> dict[str, Any]:
+        cleaned_linked_account_id = (linked_account_id or "").strip()
+        cleaned_stakeholder_id = (stakeholder_id or "").strip()
+        cleaned_route_product_id = (route_product_id or "").strip()
 
-            if not cleaned_driver_user_id:
-                raise HTTPException(
-                    status_code=400,
-                    detail={"error": "missing_driver_user_id", "message": "Driver user ID is required for onboarding mapping."},
-                )
-
-            if cleaned_linked_account_id:
-                account = await self.fetch_linked_account(cleaned_linked_account_id)
-            else:
-                account = await self.create_linked_account(
-                    email=email,
-                    phone=phone,
-                    full_name=full_name,
-                    street1=registered_street1,
-                    street2=registered_street2,
-                    city=registered_city,
-                    state=registered_state,
-                    postal_code=registered_postal_code,
-                    country=registered_country,
-                )
-
-            resolved_linked_account_id = str(account.get("id") or "").strip()
-            if not resolved_linked_account_id:
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "error": "missing_provider_linked_account_id",
-                        "message": "Provider did not return linked account id.",
-                    },
-                )
-
-            stakeholder = None
-            resolved_stakeholder_id = cleaned_stakeholder_id
-
-            if not resolved_stakeholder_id:
-                stakeholder = await self.create_linked_account_stakeholder(
-                    linked_account_id=resolved_linked_account_id,
-                    full_name=full_name,
-                    email=email,
-                    phone=phone,
-                    pan_number=pan_number,
-                    residential_street_line_1=residential_street_line_1,
-                    residential_street_line_2=residential_street_line_2,
-                    residential_city=residential_city,
-                    residential_state=residential_state,
-                    residential_postal_code=residential_postal_code,
-                    residential_country=residential_country,
-                )
-                resolved_stakeholder_id = str(stakeholder.get("id") or "").strip()
-
-            if cleaned_route_product_id:
-                product = await self.fetch_route_product(
-                    linked_account_id=resolved_linked_account_id,
-                    product_id=cleaned_route_product_id,
-                )
-            else:
-                product = await self.request_route_product(
-                    linked_account_id=resolved_linked_account_id,
-                )
-
-            resolved_route_product_id = str(product.get("id") or "").strip()
-            if not resolved_route_product_id:
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "error": "missing_provider_route_product_id",
-                        "message": "Provider did not return Route product id.",
-                    },
-                )
-
-            product = await self.update_route_product(
-                linked_account_id=resolved_linked_account_id,
-                product_id=resolved_route_product_id,
-                beneficiary_name=beneficiary_name,
-                account_number=account_number,
-                ifsc_code=ifsc_code,
+        if cleaned_linked_account_id:
+            account = await self.fetch_linked_account(cleaned_linked_account_id)
+        else:
+            account = await self.create_linked_account(
+                email=email,
+                phone=phone,
+                full_name=full_name,
+                street1=registered_street1,
+                street2=registered_street2,
+                city=registered_city,
+                state=registered_state,
+                postal_code=registered_postal_code,
+                country=registered_country,
             )
 
-            account = await self.fetch_linked_account(resolved_linked_account_id)
+        resolved_linked_account_id = str(account.get("id") or "").strip()
+        if not resolved_linked_account_id:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "missing_provider_linked_account_id",
+                    "message": "Provider did not return linked account id.",
+                },
+            )
+
+        stakeholder = None
+        resolved_stakeholder_id = cleaned_stakeholder_id
+
+        if not resolved_stakeholder_id:
+            stakeholder = await self.create_linked_account_stakeholder(
+                linked_account_id=resolved_linked_account_id,
+                full_name=full_name,
+                email=email,
+                phone=phone,
+                pan_number=pan_number,
+                residential_street_line_1=residential_street_line_1,
+                residential_street_line_2=residential_street_line_2,
+                residential_city=residential_city,
+                residential_state=residential_state,
+                residential_postal_code=residential_postal_code,
+                residential_country=residential_country,
+            )
+            resolved_stakeholder_id = str(stakeholder.get("id") or "").strip()
+
+        if cleaned_route_product_id:
             product = await self.fetch_route_product(
                 linked_account_id=resolved_linked_account_id,
-                product_id=resolved_route_product_id,
+                product_id=cleaned_route_product_id,
+            )
+        else:
+            product = await self.request_route_product(
+                linked_account_id=resolved_linked_account_id,
             )
 
-            mapped_account_status = self._map_provider_linked_account_status(account.get("status"))
-            mapped_product_status = self._map_provider_route_product_status(
+        resolved_route_product_id = str(product.get("id") or "").strip()
+        if not resolved_route_product_id:
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": "missing_provider_route_product_id",
+                    "message": "Provider did not return Route product id.",
+                },
+            )
+
+        product = await self.update_route_product(
+            linked_account_id=resolved_linked_account_id,
+            product_id=resolved_route_product_id,
+            beneficiary_name=beneficiary_name,
+            account_number=account_number,
+            ifsc_code=ifsc_code,
+        )
+
+        account = await self.fetch_linked_account(resolved_linked_account_id)
+        product = await self.fetch_route_product(
+            linked_account_id=resolved_linked_account_id,
+            product_id=resolved_route_product_id,
+        )
+
+        return {
+            "linked_account_id": resolved_linked_account_id,
+            "stakeholder_id": resolved_stakeholder_id or None,
+            "route_product_id": resolved_route_product_id,
+            "linked_account_status": self._map_provider_linked_account_status(
+                account.get("status")
+            ),
+            "route_product_status": self._map_provider_route_product_status(
                 product.get("activation_status") or product.get("status")
-            )
-
-            # Sync local data structure cache mapping rows 
-            payout_details = await self._get_driver_payout_details(cleaned_driver_user_id)
-            
-            if payout_details is None:
-                payout_details = DriverPayoutDetails(
-                    id=schema.new_id(),
-                    driver_user_id=cleaned_driver_user_id,
-                    created_at=utcnow(),
-                )
-            
-            payout_details.razorpay_linked_account_id = resolved_linked_account_id
-            payout_details.razorpay_stakeholder_id = resolved_stakeholder_id or None
-            payout_details.razorpay_route_product_id = resolved_route_product_id
-            payout_details.linked_account_status = mapped_account_status
-            payout_details.route_product_status = mapped_product_status
-            payout_details.updated_at = utcnow()
-
-            payout_details.is_payout_eligible = bool(
-                mapped_account_status == LinkedAccountStatus.ACTIVE and 
-                mapped_product_status == RouteProductStatus.ACTIVATED
-            )
-
-            self.db.add(payout_details)
-            await self.db.flush()
-
-            return {
-                "linked_account_id": resolved_linked_account_id,
-                "stakeholder_id": resolved_stakeholder_id or None,
-                "route_product_id": resolved_route_product_id,
-                "linked_account_status": mapped_account_status,
-                "route_product_status": mapped_product_status,
-                "route_product_requirements": product.get("requirements"),
-                "provider_account": account,
-                "provider_stakeholder": stakeholder,
-                "provider_product": product,
-            }
+            ),
+            "route_product_requirements": product.get("requirements"),
+            "provider_account": account,
+            "provider_stakeholder": stakeholder,
+            "provider_product": product,
+        }
+  

@@ -2534,34 +2534,12 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
         nullable=False,
         default="default",
     )
-
-    # Platform Commission (%)
     commission_percent: Mapped[Decimal] = mapped_column(
         Numeric(5, 2),
         nullable=False,
         default=Decimal("0.00"),
     )
-
-    # CGST (%)
-    cgst_percent: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0.00"),
-    )
-
-    # SGST (%)
-    sgst_percent: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0.00"),
-    )
-
-    commercial_policy_json: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
+    commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     allow_driver_rfid_seat_reservation: Mapped[bool] = mapped_column(
         Boolean,
@@ -2583,18 +2561,11 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
             name="ck_platform_settings_commission_percent_range",
         ),
         CheckConstraint(
-            "cgst_percent >= 0 AND cgst_percent <= 100",
-            name="ck_platform_settings_cgst_percent_range",
-        ),
-        CheckConstraint(
-            "sgst_percent >= 0 AND sgst_percent <= 100",
-            name="ck_platform_settings_sgst_percent_range",
-        ),
-        CheckConstraint(
             "driver_max_active_sessions >= 1",
             name="ck_platform_settings_driver_max_active_sessions_positive",
         ),
     )
+
 
 # ============================================================
 # trips / bookings
@@ -3099,32 +3070,6 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
-    # Add these fields to class TripBooking inside app/db/schema.py
-    taxable_amount: Mapped[Decimal | None] = mapped_column(
-        Numeric(10, 2),
-        nullable=True,
-        default=None,
-    )
-    cgst_percent: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2),
-        nullable=True,
-        default=None,
-    )
-    sgst_percent: Mapped[Decimal | None] = mapped_column(
-        Numeric(5, 2),
-        nullable=True,
-        default=None,
-    )
-    cgst_amount: Mapped[Decimal | None] = mapped_column(
-        Numeric(10, 2),
-        nullable=True,
-        default=None,
-    )
-    sgst_amount: Mapped[Decimal | None] = mapped_column(
-        Numeric(10, 2),
-        nullable=True,
-        default=None,
-    )
     transfer: Mapped["BookingTransfer | None"] = relationship(
         back_populates="booking",
         cascade="all, delete-orphan",
@@ -3541,68 +3486,14 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     )
 
     razorpay_order_id: Mapped[str] = mapped_column(
-        String(64),
-        unique=True,
-        nullable=False,
+        String(64), unique=True, nullable=False
     )
-
     razorpay_payment_id: Mapped[str | None] = mapped_column(
-        String(64),
-        unique=True,
-        nullable=True,
+        String(64), unique=True, nullable=True
     )
+    razorpay_signature: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
-    razorpay_signature: Mapped[str | None] = mapped_column(
-        String(255),
-        nullable=True,
-    )
-
-    # ===========================
-    # Fare & GST Details
-    # ===========================
-
-    base_fare_amount: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0"),
-    )
-
-    cgst_percent: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0"),
-    )
-
-    sgst_percent: Mapped[Decimal] = mapped_column(
-        Numeric(5, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0"),
-    )
-
-    cgst_amount: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0"),
-    )
-
-    sgst_amount: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2),
-        nullable=False,
-        default=Decimal("0.00"),
-        server_default=text("0"),
-    )
-
-    # Final amount paid by customer
-    # (Base Fare + CGST + SGST)
-    amount: Mapped[Decimal] = mapped_column(
-        Numeric(10, 2),
-        nullable=False,
-    )
-
+    amount: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
     status: Mapped[BookingPaymentStatus] = mapped_column(
         enum_type(BookingPaymentStatus, "booking_payment_status"),
         nullable=False,
@@ -3621,36 +3512,10 @@ class BookingPayment(UUIDPKMixin, TimestampMixin, Base):
     )
 
     __table_args__ = (
-        CheckConstraint(
-            "base_fare_amount >= 0",
-            name="ck_booking_payments_base_fare_non_negative",
-        ),
-        CheckConstraint(
-            "cgst_percent >= 0 AND cgst_percent <= 100",
-            name="ck_booking_payments_cgst_percent_range",
-        ),
-        CheckConstraint(
-            "sgst_percent >= 0 AND sgst_percent <= 100",
-            name="ck_booking_payments_sgst_percent_range",
-        ),
-        CheckConstraint(
-            "cgst_amount >= 0",
-            name="ck_booking_payments_cgst_amount_non_negative",
-        ),
-        CheckConstraint(
-            "sgst_amount >= 0",
-            name="ck_booking_payments_sgst_amount_non_negative",
-        ),
-        CheckConstraint(
-            "amount > 0",
-            name="ck_booking_payments_amount_positive",
-        ),
-        Index(
-            "ix_booking_payments_booking_status",
-            "booking_id",
-            "status",
-        ),
+        CheckConstraint("amount > 0", name="ck_booking_payments_amount_positive"),
+        Index("ix_booking_payments_booking_status", "booking_id", "status"),
     )
+
 
 class BookingTransfer(UUIDPKMixin, TimestampMixin, Base):
     __tablename__ = "booking_transfers"

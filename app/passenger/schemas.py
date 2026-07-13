@@ -430,11 +430,7 @@ class BookingPaymentResponse(BaseModel):
     amount: Decimal
     created_at: datetime
     updated_at: datetime
-    base_fare_amount: Decimal | None = None
-    cgst_percent: Decimal | None = None
-    sgst_percent: Decimal | None = None
-    cgst_amount: Decimal | None = None
-    sgst_amount: Decimal | None = None
+
 
 class BookingRatingResponse(BaseModel):
     id: str

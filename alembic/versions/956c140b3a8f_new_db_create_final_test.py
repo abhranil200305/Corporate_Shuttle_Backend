@@ -1,8 +1,8 @@
-"""SGST and CGST added
+"""new db create final test
 
-Revision ID: ebb8b9a272c1
+Revision ID: 956c140b3a8f
 Revises: 
-Create Date: 2026-07-09 14:18:15.091680
+Create Date: 2026-07-03 10:28:28.338694
 
 """
 from typing import Sequence, Union
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision: str = 'ebb8b9a272c1'
+revision: str = '956c140b3a8f'
 down_revision: Union[str, Sequence[str], None] = None
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
@@ -48,18 +48,14 @@ def upgrade() -> None:
     op.create_table('platform_settings',
     sa.Column('settings_key', sa.String(length=32), nullable=False),
     sa.Column('commission_percent', sa.Numeric(precision=5, scale=2), nullable=False),
-    sa.Column('cgst_percent', sa.Numeric(precision=5, scale=2), server_default=sa.text('0.00'), nullable=False),
-    sa.Column('sgst_percent', sa.Numeric(precision=5, scale=2), server_default=sa.text('0.00'), nullable=False),
     sa.Column('commercial_policy_json', sa.Text(), nullable=True),
     sa.Column('allow_driver_rfid_seat_reservation', sa.Boolean(), server_default=sa.text('true'), nullable=False),
     sa.Column('driver_max_active_sessions', sa.Integer(), server_default=sa.text('2'), nullable=False),
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint('cgst_percent >= 0 AND cgst_percent <= 100', name='ck_platform_settings_cgst_percent_range'),
     sa.CheckConstraint('commission_percent >= 0 AND commission_percent <= 100', name='ck_platform_settings_commission_percent_range'),
     sa.CheckConstraint('driver_max_active_sessions >= 1', name='ck_platform_settings_driver_max_active_sessions_positive'),
-    sa.CheckConstraint('sgst_percent >= 0 AND sgst_percent <= 100', name='ck_platform_settings_sgst_percent_range'),
     sa.PrimaryKeyConstraint('id'),
     sa.UniqueConstraint('settings_key')
     )
@@ -744,7 +740,6 @@ def upgrade() -> None:
     sa.Column('booking_session_id', sa.String(length=36), nullable=True),
     sa.Column('booked_by_user_id', sa.String(length=36), nullable=True),
     sa.Column('traveller_profile_id', sa.String(length=36), nullable=True),
-    sa.Column('traveller_identity_key', sa.String(length=255), nullable=False),
     sa.Column('traveller_name_snapshot', sa.String(length=120), nullable=True),
     sa.Column('traveller_phone_snapshot', sa.String(length=20), nullable=True),
     sa.Column('traveller_email_snapshot', sa.String(length=255), nullable=True),
@@ -777,7 +772,6 @@ def upgrade() -> None:
     sa.Column('id', sa.String(length=36), nullable=False),
     sa.Column('created_at', sa.DateTime(timezone=True), nullable=False),
     sa.Column('updated_at', sa.DateTime(timezone=True), nullable=False),
-    sa.CheckConstraint("traveller_identity_key <> ''", name='ck_trip_bookings_traveller_identity_nonempty'),
     sa.CheckConstraint('commission_amount >= 0', name='ck_trip_bookings_commission_amount_nonnegative'),
     sa.CheckConstraint('commission_percent_snapshot >= 0 AND commission_percent_snapshot <= 100', name='ck_trip_bookings_commission_percent_range'),
     sa.CheckConstraint('driver_payout_amount >= 0', name='ck_trip_bookings_driver_payout_nonnegative'),
@@ -802,7 +796,6 @@ def upgrade() -> None:
     op.create_index('ix_trip_bookings_booking_session', 'trip_bookings', ['booking_session_id'], unique=False)
     op.create_index('ix_trip_bookings_passenger_trip_active', 'trip_bookings', ['passenger_user_id', 'scheduled_trip_id'], unique=False, postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.create_index('ix_trip_bookings_status_refund_retry_after', 'trip_bookings', ['booking_status', 'refund_retry_after'], unique=False)
-    op.create_index('ix_trip_bookings_traveller_identity_status', 'trip_bookings', ['traveller_identity_key', 'booking_status'], unique=False)
     op.create_index('ix_trip_bookings_traveller_profile', 'trip_bookings', ['traveller_profile_id'], unique=False)
     op.create_index('ix_trip_bookings_trip_seat_status', 'trip_bookings', ['scheduled_trip_id', 'seat_number', 'booking_status'], unique=False)
     op.create_index('ix_trip_bookings_trip_status', 'trip_bookings', ['scheduled_trip_id', 'booking_status'], unique=False)
@@ -1195,7 +1188,6 @@ def downgrade() -> None:
     op.drop_index('ix_trip_bookings_trip_status', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_trip_seat_status', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_traveller_profile', table_name='trip_bookings')
-    op.drop_index('ix_trip_bookings_traveller_identity_status', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_status_refund_retry_after', table_name='trip_bookings')
     op.drop_index('ix_trip_bookings_passenger_trip_active', table_name='trip_bookings', postgresql_where=sa.text("booking_status IN ('pending_payment', 'booked', 'boarded')"))
     op.drop_index('ix_trip_bookings_booking_session', table_name='trip_bookings')
