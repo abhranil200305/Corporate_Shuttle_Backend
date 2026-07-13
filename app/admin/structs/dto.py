@@ -218,6 +218,15 @@ class PayoutSettingsUpdate(BaseModel):
 	commission_percent: Decimal = Field(..., ge=0, le=100)
 
 
+class GSTSettingsUpdate(BaseModel):
+	gst_enabled: bool | None = None
+	gst_cgst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
+	gst_sgst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
+	gst_igst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
+	gst_apply_on_ac_routes_only: bool | None = None
+	gst_inclusive_pricing: bool | None = None
+
+
 class DriverLinkedAccountUpdate(BaseModel):
 	razorpay_linked_account_id: str | None = Field(default=None, max_length=64)
 	linked_account_status: schema.LinkedAccountStatus
@@ -335,6 +344,16 @@ class PayoutBookingListItem(BaseModel):
 	passenger_user_id: str
 	booking_status: schema.BookingStatus
 	fare_amount: Decimal
+	taxable_amount: Decimal
+	cgst_rate_percent_snapshot: Decimal
+	cgst_amount: Decimal
+	sgst_rate_percent_snapshot: Decimal
+	sgst_amount: Decimal
+	igst_rate_percent_snapshot: Decimal
+	igst_amount: Decimal
+	total_tax_amount: Decimal
+	gst_enabled_snapshot: bool
+	gst_inclusive_snapshot: bool
 	commission_percent_snapshot: Decimal
 	commission_amount: Decimal
 	driver_payout_amount: Decimal
@@ -367,6 +386,16 @@ class RefundQueueItem(BaseModel):
 	passenger_user_id: str
 	driver_user_id: str
 	fare_amount: Decimal
+	taxable_amount: Decimal
+	cgst_rate_percent_snapshot: Decimal
+	cgst_amount: Decimal
+	sgst_rate_percent_snapshot: Decimal
+	sgst_amount: Decimal
+	igst_rate_percent_snapshot: Decimal
+	igst_amount: Decimal
+	total_tax_amount: Decimal
+	gst_enabled_snapshot: bool
+	gst_inclusive_snapshot: bool
 	transfer_status: schema.TransferStatus
 	refund_state: str | None = None
 	latest_payment_status: schema.BookingPaymentStatus | None = None

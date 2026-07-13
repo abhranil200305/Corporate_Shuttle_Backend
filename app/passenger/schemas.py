@@ -231,6 +231,18 @@ class FarePreviewResponse(BaseModel):
     pickup_sequence_no: int
     dropoff_sequence_no: int
     amount: Decimal
+    configured_fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled: bool
+    gst_applicable: bool
+    gst_inclusive: bool
 
 class LegAvailableSeatsRequest(BaseModel):
     route_id: str = Field(..., min_length=1, max_length=36)
@@ -351,6 +363,16 @@ class BookingSessionSeatResponse(BaseModel):
     otp: str | None
     booking_status: str
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     payment_hold_expires_at: datetime | None
     refund: BookingSessionSeatRefundResponse | None = None
     created_at: datetime
@@ -366,6 +388,11 @@ class BookingSessionPaymentResponse(BaseModel):
     status: str
     effective_status: str
     amount: Decimal
+    taxable_amount: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
     refunded_amount: Decimal
     refund_requested_at: datetime | None
     refund_processed_at: datetime | None
@@ -387,6 +414,16 @@ class BookingSessionResponse(BaseModel):
     dropoff_sequence_no_snapshot: int
     status: str
     total_fare_amount: Decimal
+    total_taxable_amount: Decimal
+    total_cgst_amount: Decimal
+    total_sgst_amount: Decimal
+    total_igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
+    cgst_rate_percent_snapshot: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    igst_rate_percent_snapshot: Decimal
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -428,6 +465,11 @@ class BookingPaymentResponse(BaseModel):
     razorpay_payment_id: str | None
     status: str
     amount: Decimal
+    taxable_amount: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
     created_at: datetime
     updated_at: datetime
 
@@ -460,6 +502,16 @@ class TripBookingResponse(BaseModel):
     otp: str | None
     booking_status: str
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     commission_percent_snapshot: Decimal
     commission_amount: Decimal
     driver_payout_amount: Decimal
@@ -495,6 +547,16 @@ class BookingDetailResponse(BaseModel):
     otp: str | None
     booking_status: str
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     payment_hold_expires_at: datetime | None
     commission_percent_snapshot: Decimal
     commission_amount: Decimal
@@ -543,7 +605,10 @@ class PassengerInvoiceBreakdownResponse(BaseModel):
     cgst_amount: Decimal
     sgst_rate_percent: Decimal
     sgst_amount: Decimal
+    igst_rate_percent: Decimal
+    igst_amount: Decimal
     total_tax_amount: Decimal
+    gst_inclusive: bool
     recomputed_total_amount: Decimal
     rounding_adjustment: Decimal
 
@@ -570,6 +635,16 @@ class CurrentTripBookingResponse(BaseModel):
     otp: str | None
     booking_status: str
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     payment_hold_expires_at: datetime | None
     boarded_at: datetime | None
     completed_at: datetime | None
@@ -669,6 +744,16 @@ class CurrentTripBookingSessionResponse(BaseModel):
     dropoff_stop_id: str
     status: str
     total_fare_amount: Decimal
+    total_taxable_amount: Decimal
+    total_cgst_amount: Decimal
+    total_sgst_amount: Decimal
+    total_igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
+    cgst_rate_percent_snapshot: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    igst_rate_percent_snapshot: Decimal
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
@@ -768,6 +853,11 @@ class PassengerTransactionResponse(BaseModel):
     payment_status: str
     effective_status: str
     amount: Decimal
+    taxable_amount: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
     razorpay_order_id: str
     razorpay_payment_id: str | None
     pickup_stop: StopBriefResponse
@@ -818,6 +908,18 @@ class RouteTripDiscoveryOptionResponse(BaseModel):
     pickup_sequence_no: int
     dropoff_sequence_no: int
     fare_amount: Decimal
+    configured_fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled: bool
+    gst_applicable: bool
+    gst_inclusive: bool
 
     upcoming_scheduled_trips: list[RouteTripDiscoveryTripResponse]
     upcoming_scheduled_trip_count: int
@@ -946,6 +1048,16 @@ class PassengerRFIDRideResponse(BaseModel):
     status: str
     hold_amount: Decimal
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     fare_reversed_amount: Decimal
     fare_net_amount: Decimal
 
@@ -1022,6 +1134,11 @@ class PassengerRFIDInProgressTripResponse(BaseModel):
     current_sequence_no: int | None
 
     selected_fare_amount: Decimal
+    selected_taxable_amount: Decimal
+    selected_cgst_amount: Decimal
+    selected_sgst_amount: Decimal
+    selected_igst_amount: Decimal
+    selected_total_tax_amount: Decimal
     required_hold_amount: Decimal | None
 
     available_balance: Decimal
@@ -1052,6 +1169,18 @@ class PassengerRFIDRouteTripDiscoveryOptionResponse(BaseModel):
     pickup_sequence_no: int
     dropoff_sequence_no: int
     fare_amount: Decimal
+    configured_fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled: bool
+    gst_applicable: bool
+    gst_inclusive: bool
 
     upcoming_scheduled_trips: list[RouteTripDiscoveryTripResponse]
     upcoming_scheduled_trip_count: int

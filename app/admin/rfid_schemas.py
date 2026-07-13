@@ -412,6 +412,16 @@ class RFIDTripRideResponse(BaseModel):
     status: str
     hold_amount: Decimal
     fare_amount: Decimal
+    taxable_amount: Decimal
+    cgst_rate_percent_snapshot: Decimal
+    cgst_amount: Decimal
+    sgst_rate_percent_snapshot: Decimal
+    sgst_amount: Decimal
+    igst_rate_percent_snapshot: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    gst_enabled_snapshot: bool
+    gst_inclusive_snapshot: bool
     fare_reversed_amount: Decimal
     fare_net_amount: Decimal
 

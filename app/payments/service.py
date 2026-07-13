@@ -519,11 +519,13 @@ class RoutePayoutService:
         if commission_percent == Decimal("0.00"):
             commission_percent = await self._get_default_commission_percent()
 
-        fare_amount = self._quantize_money(booking.fare_amount)
-        commission_amount = self._quantize_money(
-            (fare_amount * commission_percent) / Decimal("100")
+        taxable_amount = self._quantize_money(
+            getattr(booking, "taxable_amount", None) or booking.fare_amount
         )
-        driver_payout_amount = self._quantize_money(fare_amount - commission_amount)
+        commission_amount = self._quantize_money(
+            (taxable_amount * commission_percent) / Decimal("100")
+        )
+        driver_payout_amount = self._quantize_money(taxable_amount - commission_amount)
 
         if driver_payout_amount <= Decimal("0.00"):
             raise HTTPException(

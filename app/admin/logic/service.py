@@ -2603,6 +2603,54 @@ class AdminService:
 			for payment in getattr(booking, "payments", []) or []
 		]
 
+	def _booking_tax_fields(self, booking) -> dict[str, Any]:
+		fare_amount = self._quantize_money(Decimal(booking.fare_amount or 0))
+		taxable_amount = self._quantize_money(
+			Decimal(getattr(booking, "taxable_amount", 0) or 0)
+		)
+		if taxable_amount <= Decimal("0.00") and fare_amount > Decimal("0.00"):
+			taxable_amount = fare_amount
+
+		cgst_amount = self._quantize_money(
+			Decimal(getattr(booking, "cgst_amount", 0) or 0)
+		)
+		sgst_amount = self._quantize_money(
+			Decimal(getattr(booking, "sgst_amount", 0) or 0)
+		)
+		igst_amount = self._quantize_money(
+			Decimal(getattr(booking, "igst_amount", 0) or 0)
+		)
+		total_tax_amount = self._quantize_money(
+			Decimal(getattr(booking, "total_tax_amount", 0) or 0)
+		)
+		if total_tax_amount <= Decimal("0.00"):
+			total_tax_amount = self._quantize_money(
+				cgst_amount + sgst_amount + igst_amount
+			)
+
+		return {
+			"taxable_amount": taxable_amount,
+			"cgst_rate_percent_snapshot": Decimal(
+				getattr(booking, "cgst_rate_percent_snapshot", 0) or 0
+			),
+			"cgst_amount": cgst_amount,
+			"sgst_rate_percent_snapshot": Decimal(
+				getattr(booking, "sgst_rate_percent_snapshot", 0) or 0
+			),
+			"sgst_amount": sgst_amount,
+			"igst_rate_percent_snapshot": Decimal(
+				getattr(booking, "igst_rate_percent_snapshot", 0) or 0
+			),
+			"igst_amount": igst_amount,
+			"total_tax_amount": total_tax_amount,
+			"gst_enabled_snapshot": bool(
+				getattr(booking, "gst_enabled_snapshot", False)
+			),
+			"gst_inclusive_snapshot": bool(
+				getattr(booking, "gst_inclusive_snapshot", True)
+			),
+		}
+
 	def _has_refunded_payment(self, booking) -> bool:
 		return any(
 			payment.status == schema.BookingPaymentStatus.REFUNDED
@@ -2804,6 +2852,7 @@ class AdminService:
 			else None,
 			"booking_status": booking.booking_status,
 			"fare_amount": booking.fare_amount,
+			**self._booking_tax_fields(booking),
 			"commission_percent_snapshot": booking.commission_percent_snapshot,
 			"commission_amount": booking.commission_amount,
 			"withheld_at": getattr(booking, "withheld_at", None),
@@ -3025,6 +3074,82 @@ class AdminService:
 				"created_at": settings.created_at,
 				"updated_at": settings.updated_at,
 			},
+		}
+
+	def _serialize_gst_settings(self, settings):
+		if settings is None:
+			return {
+				"settings_key": "default",
+				"gst_enabled": True,
+				"gst_cgst_rate_percent": Decimal("2.50"),
+				"gst_sgst_rate_percent": Decimal("2.50"),
+				"gst_igst_rate_percent": Decimal("0.00"),
+				"gst_apply_on_ac_routes_only": True,
+				"gst_inclusive_pricing": True,
+				"created_at": None,
+				"updated_at": None,
+			}
+
+		return {
+			"settings_key": settings.settings_key,
+			"gst_enabled": bool(getattr(settings, "gst_enabled", True)),
+			"gst_cgst_rate_percent": getattr(
+				settings, "gst_cgst_rate_percent", Decimal("2.50")
+			),
+			"gst_sgst_rate_percent": getattr(
+				settings, "gst_sgst_rate_percent", Decimal("2.50")
+			),
+			"gst_igst_rate_percent": getattr(
+				settings, "gst_igst_rate_percent", Decimal("0.00")
+			),
+			"gst_apply_on_ac_routes_only": bool(
+				getattr(settings, "gst_apply_on_ac_routes_only", True)
+			),
+			"gst_inclusive_pricing": bool(
+				getattr(settings, "gst_inclusive_pricing", True)
+			),
+			"created_at": settings.created_at,
+			"updated_at": settings.updated_at,
+		}
+
+	async def _get_or_create_default_platform_settings(self):
+		settings = await self._get_default_platform_settings()
+		if settings is not None:
+			return settings
+
+		settings = schema.PlatformSettings(
+			settings_key="default",
+			commission_percent=Decimal("0.00"),
+		)
+		self.db.add(settings)
+		await self.db.flush()
+		return settings
+
+	async def get_gst_settings(self):
+		settings = await self._get_default_platform_settings()
+		return self._serialize_gst_settings(settings)
+
+	async def update_gst_settings(self, payload):
+		settings = await self._get_or_create_default_platform_settings()
+
+		for field_name in (
+			"gst_enabled",
+			"gst_cgst_rate_percent",
+			"gst_sgst_rate_percent",
+			"gst_igst_rate_percent",
+			"gst_apply_on_ac_routes_only",
+			"gst_inclusive_pricing",
+		):
+			value = getattr(payload, field_name, None)
+			if value is not None:
+				setattr(settings, field_name, value)
+
+		await self.db.commit()
+		await self.db.refresh(settings)
+
+		return {
+			"message": "GST settings updated successfully.",
+			"settings": self._serialize_gst_settings(settings),
 		}
 
 	async def list_driver_payout_profiles(
@@ -3901,6 +4026,7 @@ class AdminService:
 						else None
 					),
 					"fare_amount": booking.fare_amount,
+					**self._booking_tax_fields(booking),
 					"transfer_status": booking.transfer_status,
 					"refund_state": "refund_pending",
 					"latest_payment_status": self._get_latest_payment_status(
