@@ -7,6 +7,12 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from app.db import schema
+from app.tax import (
+	normalize_gst_postal_code,
+	normalize_gst_sac_code,
+	normalize_gst_state_code,
+	normalize_gstin,
+)
 
 
 class stopCreate(BaseModel):
@@ -219,12 +225,72 @@ class PayoutSettingsUpdate(BaseModel):
 
 
 class GSTSettingsUpdate(BaseModel):
+	gstin: str | None = Field(default=None, max_length=15)
+	gst_legal_name: str | None = Field(default=None, max_length=200)
+	gst_trade_name: str | None = Field(default=None, max_length=200)
+	gst_registered_address: str | None = Field(default=None, max_length=2000)
+	gst_state_name: str | None = Field(default=None, max_length=100)
+	gst_state_code: str | None = Field(default=None, max_length=2)
+	gst_postal_code: str | None = Field(default=None, max_length=6)
+	gst_sac_code: str | None = Field(default=None, max_length=8)
+	gst_service_description: str | None = Field(default=None, max_length=255)
+	gst_default_place_of_supply: str | None = Field(default=None, max_length=100)
+	gst_default_place_of_supply_state_code: str | None = Field(
+		default=None, max_length=2
+	)
+	gst_reverse_charge_applicable: bool | None = None
 	gst_enabled: bool | None = None
 	gst_cgst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
 	gst_sgst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
 	gst_igst_rate_percent: Decimal | None = Field(default=None, ge=0, le=100)
 	gst_apply_on_ac_routes_only: bool | None = None
 	gst_inclusive_pricing: bool | None = None
+
+	@field_validator("gstin", mode="before")
+	@classmethod
+	def validate_gstin(cls, value: Any) -> str | None:
+		if value is not None and not isinstance(value, str):
+			raise ValueError("GSTIN must be a string.")
+		return normalize_gstin(value)
+
+	@field_validator(
+		"gst_legal_name",
+		"gst_trade_name",
+		"gst_registered_address",
+		"gst_state_name",
+		"gst_service_description",
+		"gst_default_place_of_supply",
+		mode="before",
+	)
+	@classmethod
+	def clean_optional_invoice_text(cls, value: Any) -> str | None:
+		if value is None:
+			return None
+		if not isinstance(value, str):
+			raise ValueError("GST invoice setting must be a string.")
+		cleaned = value.strip()
+		return cleaned or None
+
+	@field_validator("gst_state_code", "gst_default_place_of_supply_state_code", mode="before")
+	@classmethod
+	def validate_state_code(cls, value: Any) -> str | None:
+		if value is not None and not isinstance(value, str):
+			raise ValueError("GST state code must be a string.")
+		return normalize_gst_state_code(value)
+
+	@field_validator("gst_postal_code", mode="before")
+	@classmethod
+	def validate_postal_code(cls, value: Any) -> str | None:
+		if value is not None and not isinstance(value, str):
+			raise ValueError("GST postal code must be a string.")
+		return normalize_gst_postal_code(value)
+
+	@field_validator("gst_sac_code", mode="before")
+	@classmethod
+	def validate_sac_code(cls, value: Any) -> str | None:
+		if value is not None and not isinstance(value, str):
+			raise ValueError("GST SAC code must be a string.")
+		return normalize_gst_sac_code(value)
 
 
 class DriverLinkedAccountUpdate(BaseModel):

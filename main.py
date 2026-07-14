@@ -55,6 +55,7 @@ from app.jobs.cancelled_booking_refund_reconciler import (
     cancelled_booking_refund_loop,
 )
 from app.jobs.driver_trip_start_reminder import driver_trip_reminder_loop
+from app.jobs.invoice_email_delivery import invoice_email_delivery_loop
 from app.jobs.payment_reconciler import payment_reconcile_loop
 from app.jobs.trip_reminder import trip_reminder_loop
 from app.jobs.unstarted_scheduled_trip_canceller import (
@@ -143,6 +144,10 @@ def _create_background_job_tasks(app: FastAPI) -> list[asyncio.Task]:
     ]
 
     no_arg_task_specs: list[tuple[str, object]] = [
+        (
+            "invoice-email-delivery-loop",
+            invoice_email_delivery_loop,
+        ),
         (
             "traveller-contact-delivery-loop",
             run_traveller_contact_delivery_loop,

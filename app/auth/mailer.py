@@ -78,6 +78,9 @@ def send_mail(
     smtp_port = int(_get_env("SMTP_PORT"))
     smtp_username = _get_env("SMTP_USERNAME", required=False, default="")
     smtp_password = _get_env("SMTP_PASSWORD", required=False, default="")
+    smtp_timeout_seconds = float(
+        _get_env("SMTP_TIMEOUT_SECONDS", required=False, default="20")
+    )
     use_tls = _get_bool_env("SMTP_USE_TLS", default=True)
     use_ssl = _get_bool_env("SMTP_USE_SSL", default=False)
 
@@ -93,13 +96,17 @@ def send_mail(
     )
 
     if use_ssl:
-        with smtplib.SMTP_SSL(smtp_host, smtp_port) as server:
+        with smtplib.SMTP_SSL(
+            smtp_host, smtp_port, timeout=smtp_timeout_seconds
+        ) as server:
             if smtp_username:
                 server.login(smtp_username, smtp_password)
             server.send_message(message)
         return
 
-    with smtplib.SMTP(smtp_host, smtp_port) as server:
+    with smtplib.SMTP(
+        smtp_host, smtp_port, timeout=smtp_timeout_seconds
+    ) as server:
         server.ehlo()
         if use_tls:
             server.starttls()

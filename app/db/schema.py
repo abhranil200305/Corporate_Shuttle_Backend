@@ -2619,6 +2619,27 @@ class PlatformSettings(UUIDPKMixin, TimestampMixin, Base):
     )
     commercial_policy_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    gstin: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    gst_legal_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    gst_trade_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    gst_registered_address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gst_state_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    gst_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    gst_postal_code: Mapped[str | None] = mapped_column(String(6), nullable=True)
+    gst_sac_code: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    gst_service_description: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    gst_default_place_of_supply: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )
+    gst_default_place_of_supply_state_code: Mapped[str | None] = mapped_column(
+        String(2), nullable=True
+    )
+    gst_reverse_charge_applicable: Mapped[bool | None] = mapped_column(
+        Boolean, nullable=True
+    )
+
     gst_enabled: Mapped[bool] = mapped_column(
         Boolean,
         nullable=False,
@@ -3828,6 +3849,49 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
         Index(
             "ix_traveller_contact_notifications_owner",
             "owner_user_id",
+        ),
+    )
+
+
+class InvoiceEmailDelivery(UUIDPKMixin, TimestampMixin, Base):
+    __tablename__ = "invoice_email_deliveries"
+
+    delivery_key: Mapped[str] = mapped_column(
+        String(80), unique=True, nullable=False
+    )
+    booking_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("trip_bookings.id", ondelete="CASCADE"),
+        unique=True,
+        nullable=False,
+    )
+    recipient_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="pending", server_default=text("'pending'")
+    )
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
+    retry_after: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    message_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'sent', 'failed', 'skipped')",
+            name="ck_invoice_email_deliveries_status",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0",
+            name="ck_invoice_email_deliveries_attempt_nonnegative",
+        ),
+        Index(
+            "ix_invoice_email_deliveries_retry",
+            "status",
+            "retry_after",
         ),
     )
 

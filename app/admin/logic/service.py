@@ -13,7 +13,11 @@ from app.db import schema
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService, utcnow
 from app.payments.service import RoutePayoutService
-from app.tax import gst_config_from_settings, gst_settings_kwargs_from_env
+from app.tax import (
+	gst_config_from_settings,
+	gst_invoice_profile_from_settings,
+	gst_settings_kwargs_from_env,
+)
 
 
 class AdminService:
@@ -3162,9 +3166,28 @@ class AdminService:
 
 	def _serialize_gst_settings(self, settings):
 		config = gst_config_from_settings(settings)
+		invoice_profile = gst_invoice_profile_from_settings(settings)
 		if settings is None:
 			return {
 				"settings_key": "default",
+				"gstin": invoice_profile["gstin"],
+				"gst_legal_name": invoice_profile["legal_name"],
+				"gst_trade_name": invoice_profile["trade_name"],
+				"gst_registered_address": invoice_profile["registered_address"],
+				"gst_state_name": invoice_profile["state_name"],
+				"gst_state_code": invoice_profile["state_code"],
+				"gst_postal_code": invoice_profile["postal_code"],
+				"gst_sac_code": invoice_profile["sac_code"],
+				"gst_service_description": invoice_profile["service_description"],
+				"gst_default_place_of_supply": invoice_profile[
+					"default_place_of_supply"
+				],
+				"gst_default_place_of_supply_state_code": invoice_profile[
+					"default_place_of_supply_state_code"
+				],
+				"gst_reverse_charge_applicable": invoice_profile[
+					"reverse_charge_applicable"
+				],
 				"gst_enabled": config.enabled,
 				"gst_cgst_rate_percent": config.cgst_rate_percent,
 				"gst_sgst_rate_percent": config.sgst_rate_percent,
@@ -3179,6 +3202,24 @@ class AdminService:
 
 		return {
 			"settings_key": settings.settings_key,
+			"gstin": invoice_profile["gstin"],
+			"gst_legal_name": invoice_profile["legal_name"],
+			"gst_trade_name": invoice_profile["trade_name"],
+			"gst_registered_address": invoice_profile["registered_address"],
+			"gst_state_name": invoice_profile["state_name"],
+			"gst_state_code": invoice_profile["state_code"],
+			"gst_postal_code": invoice_profile["postal_code"],
+			"gst_sac_code": invoice_profile["sac_code"],
+			"gst_service_description": invoice_profile["service_description"],
+			"gst_default_place_of_supply": invoice_profile[
+				"default_place_of_supply"
+			],
+			"gst_default_place_of_supply_state_code": invoice_profile[
+				"default_place_of_supply_state_code"
+			],
+			"gst_reverse_charge_applicable": invoice_profile[
+				"reverse_charge_applicable"
+			],
 			"gst_enabled": bool(getattr(settings, "gst_enabled", True)),
 			"gst_cgst_rate_percent": getattr(
 				settings, "gst_cgst_rate_percent", Decimal("2.50")
@@ -3219,6 +3260,23 @@ class AdminService:
 
 	async def update_gst_settings(self, payload):
 		settings = await self._get_or_create_default_platform_settings()
+
+		for field_name in (
+			"gstin",
+			"gst_legal_name",
+			"gst_trade_name",
+			"gst_registered_address",
+			"gst_state_name",
+			"gst_state_code",
+			"gst_postal_code",
+			"gst_sac_code",
+			"gst_service_description",
+			"gst_default_place_of_supply",
+			"gst_default_place_of_supply_state_code",
+			"gst_reverse_charge_applicable",
+		):
+			if field_name in payload.model_fields_set:
+				setattr(settings, field_name, getattr(payload, field_name))
 
 		for field_name in (
 			"gst_enabled",
