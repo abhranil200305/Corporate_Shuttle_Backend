@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
@@ -15,6 +16,12 @@ MONEY_QUANT = Decimal("0.01")
 PERCENT_QUANT = Decimal("0.01")
 TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
 FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
+GSTIN_PATTERN = re.compile(
+    r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
+)
+GST_STATE_CODE_PATTERN = re.compile(r"^[0-9]{2}$")
+GST_POSTAL_CODE_PATTERN = re.compile(r"^[1-9][0-9]{5}$")
+GST_SAC_CODE_PATTERN = re.compile(r"^[0-9]{4,8}$")
 
 
 def money(value: Decimal | int | str | None) -> Decimal:
@@ -73,6 +80,159 @@ def _percent_from_env(name: str, default: Decimal) -> Decimal:
     return percent(value)
 
 
+def normalize_gstin(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+    if not GSTIN_PATTERN.fullmatch(normalized):
+        raise ValueError("GSTIN must match the 15-character Indian GSTIN format.")
+    return normalized
+
+
+def gstin_from_env() -> str | None:
+    try:
+        return normalize_gstin(os.getenv("GSTIN"))
+    except ValueError as exc:
+        raise RuntimeError(
+            "GSTIN must match the 15-character Indian GSTIN format."
+        ) from exc
+
+
+def gstin_from_settings(settings: Any | None) -> str | None:
+    persisted_gstin = None if settings is None else getattr(settings, "gstin", None)
+    if persisted_gstin:
+        return normalize_gstin(persisted_gstin)
+    return gstin_from_env()
+
+
+def _optional_text_from_env(name: str) -> str | None:
+    raw = os.getenv(name)
+    if raw is None:
+        return None
+    cleaned = raw.strip()
+    return cleaned or None
+
+
+def _validated_optional_code(
+    value: str | None,
+    *,
+    pattern: re.Pattern[str],
+    message: str,
+) -> str | None:
+    if value is None:
+        return None
+    normalized = value.strip().upper()
+    if not normalized:
+        return None
+    if not pattern.fullmatch(normalized):
+        raise ValueError(message)
+    return normalized
+
+
+def normalize_gst_state_code(value: str | None) -> str | None:
+    return _validated_optional_code(
+        value,
+        pattern=GST_STATE_CODE_PATTERN,
+        message="GST state code must contain exactly 2 digits.",
+    )
+
+
+def normalize_gst_postal_code(value: str | None) -> str | None:
+    return _validated_optional_code(
+        value,
+        pattern=GST_POSTAL_CODE_PATTERN,
+        message="GST postal code must be a valid 6-digit Indian postal code.",
+    )
+
+
+def normalize_gst_sac_code(value: str | None) -> str | None:
+    return _validated_optional_code(
+        value,
+        pattern=GST_SAC_CODE_PATTERN,
+        message="GST SAC code must contain between 4 and 8 digits.",
+    )
+
+
+def _invoice_setting_from_settings_or_env(
+    settings: Any | None,
+    attribute_name: str,
+    environment_name: str,
+) -> str | None:
+    persisted_value = (
+        None if settings is None else getattr(settings, attribute_name, None)
+    )
+    if persisted_value is not None and str(persisted_value).strip():
+        return str(persisted_value).strip()
+    return _optional_text_from_env(environment_name)
+
+
+def gst_invoice_profile_from_settings(settings: Any | None) -> dict[str, Any]:
+    state_code = normalize_gst_state_code(
+        _invoice_setting_from_settings_or_env(
+            settings, "gst_state_code", "GST_STATE_CODE"
+        )
+    )
+    postal_code = normalize_gst_postal_code(
+        _invoice_setting_from_settings_or_env(
+            settings, "gst_postal_code", "GST_POSTAL_CODE"
+        )
+    )
+    sac_code = normalize_gst_sac_code(
+        _invoice_setting_from_settings_or_env(
+            settings, "gst_sac_code", "GST_SAC_CODE"
+        )
+    )
+    place_of_supply_state_code = normalize_gst_state_code(
+        _invoice_setting_from_settings_or_env(
+            settings,
+            "gst_default_place_of_supply_state_code",
+            "GST_DEFAULT_PLACE_OF_SUPPLY_STATE_CODE",
+        )
+    )
+    persisted_reverse_charge = (
+        None
+        if settings is None
+        else getattr(settings, "gst_reverse_charge_applicable", None)
+    )
+    reverse_charge_applicable = (
+        _bool_from_env("GST_REVERSE_CHARGE_APPLICABLE", False)
+        if persisted_reverse_charge is None
+        else bool(persisted_reverse_charge)
+    )
+
+    return {
+        "gstin": gstin_from_settings(settings),
+        "legal_name": _invoice_setting_from_settings_or_env(
+            settings, "gst_legal_name", "GST_LEGAL_NAME"
+        ),
+        "trade_name": _invoice_setting_from_settings_or_env(
+            settings, "gst_trade_name", "GST_TRADE_NAME"
+        ),
+        "registered_address": _invoice_setting_from_settings_or_env(
+            settings, "gst_registered_address", "GST_REGISTERED_ADDRESS"
+        ),
+        "state_name": _invoice_setting_from_settings_or_env(
+            settings, "gst_state_name", "GST_STATE_NAME"
+        ),
+        "state_code": state_code,
+        "postal_code": postal_code,
+        "sac_code": sac_code,
+        "service_description": _invoice_setting_from_settings_or_env(
+            settings, "gst_service_description", "GST_SERVICE_DESCRIPTION"
+        ),
+        "default_place_of_supply": _invoice_setting_from_settings_or_env(
+            settings,
+            "gst_default_place_of_supply",
+            "GST_DEFAULT_PLACE_OF_SUPPLY",
+        ),
+        "default_place_of_supply_state_code": place_of_supply_state_code,
+        "reverse_charge_applicable": reverse_charge_applicable,
+    }
+
+
 def gst_config_from_env() -> GSTConfig:
     """Return the fallback GST configuration loaded from the environment."""
     defaults = GSTConfig()
@@ -96,10 +256,29 @@ def gst_config_from_env() -> GSTConfig:
     )
 
 
-def gst_settings_kwargs_from_env() -> dict[str, bool | Decimal]:
+def gst_settings_kwargs_from_env() -> dict[str, bool | Decimal | str | None]:
     """Build ORM column values for a new environment-seeded settings row."""
     config = gst_config_from_env()
+    invoice_profile = gst_invoice_profile_from_settings(None)
     return {
+        "gstin": invoice_profile["gstin"],
+        "gst_legal_name": invoice_profile["legal_name"],
+        "gst_trade_name": invoice_profile["trade_name"],
+        "gst_registered_address": invoice_profile["registered_address"],
+        "gst_state_name": invoice_profile["state_name"],
+        "gst_state_code": invoice_profile["state_code"],
+        "gst_postal_code": invoice_profile["postal_code"],
+        "gst_sac_code": invoice_profile["sac_code"],
+        "gst_service_description": invoice_profile["service_description"],
+        "gst_default_place_of_supply": invoice_profile[
+            "default_place_of_supply"
+        ],
+        "gst_default_place_of_supply_state_code": invoice_profile[
+            "default_place_of_supply_state_code"
+        ],
+        "gst_reverse_charge_applicable": invoice_profile[
+            "reverse_charge_applicable"
+        ],
         "gst_enabled": config.enabled,
         "gst_cgst_rate_percent": config.cgst_rate_percent,
         "gst_sgst_rate_percent": config.sgst_rate_percent,

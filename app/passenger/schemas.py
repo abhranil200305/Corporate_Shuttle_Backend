@@ -684,11 +684,47 @@ class PassengerInvoicePartyResponse(BaseModel):
     user_id: str
     full_name: str | None
     email: str | None
+    traveller_name: str | None
+    traveller_phone: str | None
+    traveller_email: str | None
+    traveller_relationship_label: str | None
+
+
+class PassengerInvoiceSupplierResponse(BaseModel):
+    gstin: str | None
+    legal_name: str | None
+    trade_name: str | None
+    registered_address: str | None
+    state_name: str | None
+    state_code: str | None
+    postal_code: str | None
+
+
+class PassengerInvoiceServiceResponse(BaseModel):
+    sac_code: str | None
+    description: str | None
+    quantity: int
+    unit: str
+
+
+class PassengerInvoicePlaceOfSupplyResponse(BaseModel):
+    name: str | None
+    state_code: str | None
+
+
+class PassengerInvoiceComplianceResponse(BaseModel):
+    reverse_charge_applicable: bool
+    digital_signature: str | None
+    irn: str | None
+    acknowledgement_number: str | None
+    acknowledgement_date: datetime | None
+    signed_qr_code: str | None
 
 
 class PassengerInvoiceTripResponse(BaseModel):
     scheduled_trip_id: str
     route_id: str
+    seat_number: int
     route_name: str | None
     route_code: str | None
     is_ac: bool
@@ -720,8 +756,15 @@ class PassengerInvoiceBreakdownResponse(BaseModel):
 class PassengerInvoiceResponse(BaseModel):
     invoice_number: str
     booking_id: str
+    booking_created_at: datetime
     invoice_generated_at: datetime
     invoice_status: str
+    currency: str
+    supplier_gstin: str | None
+    supplier: PassengerInvoiceSupplierResponse
+    service: PassengerInvoiceServiceResponse
+    place_of_supply: PassengerInvoicePlaceOfSupplyResponse
+    compliance: PassengerInvoiceComplianceResponse
     passenger: PassengerInvoicePartyResponse
     trip: PassengerInvoiceTripResponse
     breakdown: PassengerInvoiceBreakdownResponse

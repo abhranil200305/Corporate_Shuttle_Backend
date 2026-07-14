@@ -16,6 +16,7 @@ import httpx
 from fastapi import HTTPException, UploadFile
 from sqlalchemy import Numeric, and_, cast, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -62,6 +63,7 @@ from app.db.schema import (
     TravellerContactNotificationStatus,
     BookingSeatRefundRequest,
     BookingSeatRefundRequestStatus,
+    InvoiceEmailDelivery,
 )
 from app.notifications.hub import WSHub
 from app.notifications.service import NotificationService
@@ -88,7 +90,12 @@ from app.passenger.schemas import (
     CreateBookingSessionRequest,
     VerifyBookingSessionPaymentRequest,
 )
-from app.tax import GSTBreakdown, build_gst_breakdown, gst_config_from_settings
+from app.tax import (
+    GSTBreakdown,
+    build_gst_breakdown,
+    gst_config_from_settings,
+    gst_invoice_profile_from_settings,
+)
 
 
 def utcnow() -> datetime:
@@ -943,9 +950,31 @@ class PassengerService:
                 booking.booking_status = BookingStatus.BOOKED
                 booking.payment_hold_expires_at = None
                 self.db.add(booking)
+            await self._queue_invoice_email_delivery(booking)
 
         self.db.add(payment)
         self.db.add(booking_session)
+        await self.db.flush()
+
+    async def _queue_invoice_email_delivery(self, booking: TripBooking) -> None:
+        delivery_key = (
+            f"session:{booking.booking_session_id}"
+            if booking.booking_session_id
+            else f"booking:{booking.id}"
+        )
+        await self.db.execute(
+            pg_insert(InvoiceEmailDelivery)
+            .values(
+                id=new_id(),
+                delivery_key=delivery_key,
+                booking_id=booking.id,
+                status="pending",
+                attempt_count=0,
+            )
+            .on_conflict_do_nothing(
+                index_elements=[InvoiceEmailDelivery.delivery_key]
+            )
+        )
         await self.db.flush()
 
     async def _mark_booking_session_paid_but_expired(
@@ -1494,6 +1523,9 @@ class PassengerService:
                 selectinload(TripBooking.pickup_stop),
                 selectinload(TripBooking.dropoff_stop),
                 selectinload(TripBooking.payments),
+                selectinload(TripBooking.booking_session).selectinload(
+                    BookingSession.payments
+                ),
                 selectinload(TripBooking.rating),
                 selectinload(TripBooking.scan_events),
                 selectinload(TripBooking.scheduled_trip)
@@ -2030,17 +2062,52 @@ class PassengerService:
         reference_time = booking.completed_at or booking.updated_at or booking.created_at
         return f"INV-{reference_time.strftime('%Y%m%d')}-{booking.id[:8].upper()}"
 
-    def _get_latest_paid_payment(self, booking: TripBooking) -> BookingPayment | None:
+    def _get_latest_paid_invoice_payment(
+        self,
+        booking: TripBooking,
+    ) -> BookingPayment | BookingSessionPayment | None:
         paid_payments = [
             payment
             for payment in booking.payments
             if payment.status == BookingPaymentStatus.PAID and payment.razorpay_payment_id
         ]
+        if booking.booking_session is not None:
+            paid_payments.extend(
+                payment
+                for payment in booking.booking_session.payments
+                if payment.status == BookingPaymentStatus.PAID
+                and payment.razorpay_payment_id
+            )
         if not paid_payments:
             return None
 
         paid_payments.sort(key=lambda item: item.created_at, reverse=True)
         return paid_payments[0]
+
+    def _serialize_invoice_payment(
+        self,
+        booking: TripBooking,
+        payment: BookingPayment | BookingSessionPayment,
+    ) -> dict[str, Any]:
+        if isinstance(payment, BookingPayment):
+            return self._serialize_payment(payment)
+
+        tax_fields = self._booking_tax_fields(booking)
+        return {
+            "id": payment.id,
+            "booking_id": booking.id,
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "status": payment.status,
+            "amount": booking.fare_amount,
+            "taxable_amount": tax_fields["taxable_amount"],
+            "cgst_amount": tax_fields["cgst_amount"],
+            "sgst_amount": tax_fields["sgst_amount"],
+            "igst_amount": tax_fields["igst_amount"],
+            "total_tax_amount": tax_fields["total_tax_amount"],
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+        }
 
     def _build_invoice_breakdown(
         self,
@@ -6004,6 +6071,13 @@ class PassengerService:
             )
             payment.status = BookingPaymentStatus.PAID
             self.db.add(payment)
+            for confirmed_booking in bookings:
+                if confirmed_booking.booking_status in {
+                    BookingStatus.BOOKED,
+                    BookingStatus.BOARDED,
+                    BookingStatus.COMPLETED,
+                }:
+                    await self._queue_invoice_email_delivery(confirmed_booking)
             outcome = "already_confirmed"
 
         await self.db.commit()
@@ -6175,6 +6249,7 @@ class PassengerService:
 
         self.db.add(payment)
         self.db.add(booking)
+        await self._queue_invoice_email_delivery(booking)
         await self.db.flush()
 
     async def _mark_booking_paid_but_expired(
@@ -7191,6 +7266,8 @@ class PassengerService:
                 bookings=list(booking_session.bookings),
                 event_type="traveller_seat_confirmed",
             )
+            for confirmed_booking in booking_session.bookings:
+                await self._queue_invoice_email_delivery(confirmed_booking)
             await self.db.commit()
             return {
                 "message": "Payment already verified successfully.",
@@ -8249,6 +8326,8 @@ class PassengerService:
                 BookingStatus.COMPLETED,
             )
         ):
+            await self._queue_invoice_email_delivery(booking)
+            await self.db.commit()
             return {
                 "message": "Payment already verified successfully.",
                 "booking": self._serialize_booking(booking),
@@ -8460,6 +8539,103 @@ class PassengerService:
         )
         return await self._serialize_booking_detail(booking)
     
+    async def _build_booking_invoice_payload(
+        self,
+        *,
+        booking: TripBooking,
+        passenger_user: User,
+        passenger_profile: PassengerProfile | None,
+    ) -> dict[str, Any]:
+        latest_paid_payment = self._get_latest_paid_invoice_payment(booking)
+        if latest_paid_payment is None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "paid_payment_not_found",
+                    "message": "A paid payment record is required before an invoice can be generated.",
+                },
+            )
+
+        platform_settings = await self._get_platform_settings_obj()
+        invoice_profile = gst_invoice_profile_from_settings(platform_settings)
+        route = booking.scheduled_trip.route
+        is_ac = bool(route.has_ac) if route is not None else False
+
+        return {
+            "invoice_number": self._generate_invoice_number(booking),
+            "booking_id": booking.id,
+            "booking_created_at": booking.created_at,
+            "invoice_generated_at": utcnow(),
+            "invoice_status": "preview",
+            "currency": "INR",
+            "supplier_gstin": invoice_profile["gstin"],
+            "supplier": {
+                "gstin": invoice_profile["gstin"],
+                "legal_name": invoice_profile["legal_name"],
+                "trade_name": invoice_profile["trade_name"],
+                "registered_address": invoice_profile["registered_address"],
+                "state_name": invoice_profile["state_name"],
+                "state_code": invoice_profile["state_code"],
+                "postal_code": invoice_profile["postal_code"],
+            },
+            "service": {
+                "sac_code": invoice_profile["sac_code"],
+                "description": invoice_profile["service_description"],
+                "quantity": 1,
+                "unit": "ride",
+            },
+            "place_of_supply": {
+                "name": invoice_profile["default_place_of_supply"],
+                "state_code": invoice_profile[
+                    "default_place_of_supply_state_code"
+                ],
+            },
+            "compliance": {
+                "reverse_charge_applicable": invoice_profile[
+                    "reverse_charge_applicable"
+                ],
+                "digital_signature": None,
+                "irn": None,
+                "acknowledgement_number": None,
+                "acknowledgement_date": None,
+                "signed_qr_code": None,
+            },
+            "passenger": {
+                "user_id": passenger_user.id,
+                "full_name": None if passenger_profile is None else passenger_profile.full_name,
+                "email": passenger_user.email,
+                "traveller_name": booking.traveller_name_snapshot,
+                "traveller_phone": booking.traveller_phone_snapshot,
+                "traveller_email": booking.traveller_email_snapshot,
+                "traveller_relationship_label": (
+                    booking.traveller_relationship_label_snapshot
+                ),
+            },
+            "trip": {
+                "scheduled_trip_id": booking.scheduled_trip_id,
+                "route_id": booking.route_id,
+                "seat_number": booking.seat_number,
+                "route_name": None if route is None else route.name,
+                "route_code": None if route is None else route.code,
+                "is_ac": is_ac,
+                "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
+                "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
+                "planned_start_at": booking.scheduled_trip.planned_start_at,
+                "planned_end_at": booking.scheduled_trip.planned_end_at,
+                "actual_start_at": booking.scheduled_trip.actual_start_at,
+                "actual_end_at": booking.scheduled_trip.actual_end_at,
+                "completed_at": booking.completed_at,
+            },
+            "breakdown": self._build_invoice_breakdown(
+                total_booking_amount=booking.fare_amount,
+                is_ac=is_ac,
+                booking=booking,
+            ),
+            "payment": self._serialize_invoice_payment(
+                booking, latest_paid_payment
+            ),
+        }
+
     async def get_booking_invoice(self, current_user: User, booking_id: str) -> dict[str, Any]:
         self.ensure_passenger(current_user)
 
@@ -8479,62 +8655,27 @@ class PassengerService:
             else str(booking.scheduled_trip.status)
         )
 
-        if booking.booking_status != BookingStatus.COMPLETED:
+        if booking.booking_status not in {
+            BookingStatus.BOOKED,
+            BookingStatus.BOARDED,
+            BookingStatus.COMPLETED,
+        }:
             raise HTTPException(
                 status_code=409,
                 detail={
                     "error": "invoice_not_available",
-                    "message": "Invoice is available only after the trip is completed.",
+                    "message": "Invoice is available only after successful payment.",
                     "booking_status": booking_status,
                     "trip_status": trip_status,
                 },
             )
 
-        latest_paid_payment = self._get_latest_paid_payment(booking)
-        if latest_paid_payment is None:
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "paid_payment_not_found",
-                    "message": "A paid payment record is required before an invoice can be generated.",
-                },
-            )
-
         passenger_profile = await self._get_profile_obj(current_user.id)
-        route = booking.scheduled_trip.route
-        is_ac = bool(route.has_ac) if route is not None else False
-
-        return {
-            "invoice_number": self._generate_invoice_number(booking),
-            "booking_id": booking.id,
-            "invoice_generated_at": utcnow(),
-            "invoice_status": "preview",
-            "passenger": {
-                "user_id": current_user.id,
-                "full_name": None if passenger_profile is None else passenger_profile.full_name,
-                "email": current_user.email,
-            },
-            "trip": {
-                "scheduled_trip_id": booking.scheduled_trip_id,
-                "route_id": booking.route_id,
-                "route_name": None if route is None else route.name,
-                "route_code": None if route is None else route.code,
-                "is_ac": is_ac,
-                "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
-                "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
-                "planned_start_at": booking.scheduled_trip.planned_start_at,
-                "planned_end_at": booking.scheduled_trip.planned_end_at,
-                "actual_start_at": booking.scheduled_trip.actual_start_at,
-                "actual_end_at": booking.scheduled_trip.actual_end_at,
-                "completed_at": booking.completed_at,
-            },
-            "breakdown": self._build_invoice_breakdown(
-                total_booking_amount=booking.fare_amount,
-                is_ac=is_ac,
-                booking=booking,
-            ),
-            "payment": self._serialize_payment(latest_paid_payment),
-        }
+        return await self._build_booking_invoice_payload(
+            booking=booking,
+            passenger_user=current_user,
+            passenger_profile=passenger_profile,
+        )
 
     async def cancel_booking(self, current_user: User, booking_id: str) -> dict[str, Any]:
         self.ensure_passenger(current_user)
