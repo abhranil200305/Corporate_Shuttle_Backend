@@ -2789,6 +2789,18 @@ class ScheduledTrip(UUIDPKMixin, TimestampMixin, Base):
 
     cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    cancellation_source: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    cancelled_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     premature_end_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     route: Mapped["Route"] = relationship(
@@ -2967,6 +2979,15 @@ class BookingSession(UUIDPKMixin, TimestampMixin, Base):
     )
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True),
+        nullable=True,
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancellation_source: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    cancelled_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
     )
     expired_at: Mapped[datetime | None] = mapped_column(
@@ -3283,6 +3304,15 @@ class TripBooking(UUIDPKMixin, TimestampMixin, Base):
     )
     cancelled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancellation_source: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    cancelled_by_user_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
     )
 
     refund_retry_after: Mapped[datetime | None] = mapped_column(

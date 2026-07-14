@@ -348,6 +348,41 @@ class RFIDLedgerEntryListResponse(BaseModel):
     count: int
 
 
+class AdminRFIDTransactionResponse(RFIDLedgerEntryResponse):
+    direction: str
+    card_uid_masked: str | None
+    passenger_name: str | None
+    passenger_email: str | None
+    route_id: str | None
+    route_name: str | None
+    route_code: str | None
+    trip_status: str | None
+    planned_start_at: datetime | None
+    ride_status: str | None
+    ride_fare_amount: Decimal | None
+    stop_name: str | None
+    recharge_status: str | None
+    recharge_amount: Decimal | None
+    recharge_source_type: str | None
+
+
+class AdminRFIDTransactionSummaryResponse(BaseModel):
+    credit_amount: Decimal
+    debit_amount: Decimal
+    held_increase: Decimal
+    held_release: Decimal
+    net_amount_delta: Decimal
+    net_held_delta: Decimal
+
+
+class AdminRFIDTransactionListResponse(BaseModel):
+    items: list[AdminRFIDTransactionResponse]
+    count: int
+    page: int
+    page_size: int
+    summary: AdminRFIDTransactionSummaryResponse
+
+
 # ============================================================
 # RFID rides / scans / payout admin surfaces
 # ============================================================

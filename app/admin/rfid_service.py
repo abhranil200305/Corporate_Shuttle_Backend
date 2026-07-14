@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -1273,6 +1274,225 @@ class AdminRFIDService:
         list_result = await self.db.execute(list_stmt)
 
         return list(list_result.scalars().all()), int(count_result.scalar_one() or 0)
+
+    @staticmethod
+    def _rfid_transaction_direction(
+        entry: schema.RFIDLedgerEntry,
+    ) -> str:
+        amount_delta = Decimal(entry.amount_delta or 0)
+        held_delta = Decimal(entry.held_delta or 0)
+
+        if amount_delta > Decimal("0.00"):
+            return "credit"
+        if amount_delta < Decimal("0.00"):
+            return "debit"
+        if held_delta > Decimal("0.00"):
+            return "hold"
+        if held_delta < Decimal("0.00"):
+            return "hold_release"
+        return "neutral"
+
+    def serialize_rfid_transaction(self, row) -> dict[str, Any]:
+        (
+            entry,
+            card,
+            passenger,
+            passenger_profile,
+            trip,
+            route,
+            stop,
+            ride,
+            recharge,
+        ) = row
+
+        result = self.serialize_ledger_entry(entry)
+        result.update(
+            {
+                "direction": self._rfid_transaction_direction(entry),
+                "card_uid_masked": None if card is None else card.card_uid_masked,
+                "passenger_name": (
+                    None
+                    if passenger_profile is None
+                    else passenger_profile.full_name
+                ),
+                "passenger_email": None if passenger is None else passenger.email,
+                "route_id": None if route is None else route.id,
+                "route_name": None if route is None else route.name,
+                "route_code": None if route is None else route.code,
+                "trip_status": None if trip is None else trip.status,
+                "planned_start_at": (
+                    None if trip is None else trip.planned_start_at
+                ),
+                "ride_status": None if ride is None else ride.status,
+                "ride_fare_amount": None if ride is None else ride.fare_amount,
+                "stop_name": None if stop is None else stop.name,
+                "recharge_status": None if recharge is None else recharge.status,
+                "recharge_amount": None if recharge is None else recharge.amount,
+                "recharge_source_type": (
+                    None if recharge is None else recharge.source_type
+                ),
+            }
+        )
+        return result
+
+    async def list_rfid_transactions(
+        self,
+        *,
+        page: int,
+        page_size: int,
+        entry_type: schema.RFIDLedgerEntryType | None = None,
+        direction: str | None = None,
+        card_id: str | None = None,
+        account_id: str | None = None,
+        passenger_user_id: str | None = None,
+        scheduled_trip_id: str | None = None,
+        route_id: str | None = None,
+        rfid_ride_id: str | None = None,
+        stop_id: str | None = None,
+        source_recharge_id: str | None = None,
+        created_by_admin_id: str | None = None,
+        razorpay_order_id: str | None = None,
+        razorpay_payment_id: str | None = None,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> tuple[list[Any], int, dict[str, Decimal]]:
+        if from_time is not None and to_time is not None and from_time > to_time:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_rfid_transaction_date_range",
+                    "message": "from_time must be earlier than or equal to to_time.",
+                },
+            )
+
+        ledger = schema.RFIDLedgerEntry
+        filters = []
+
+        if entry_type is not None:
+            filters.append(ledger.entry_type == entry_type)
+        if card_id is not None:
+            filters.append(ledger.card_id == card_id)
+        if account_id is not None:
+            filters.append(ledger.account_id == account_id)
+        if passenger_user_id is not None:
+            filters.append(ledger.passenger_user_id == passenger_user_id)
+        if scheduled_trip_id is not None:
+            filters.append(ledger.scheduled_trip_id == scheduled_trip_id)
+        if route_id is not None:
+            filters.append(
+                ledger.scheduled_trip_id.in_(
+                    select(schema.ScheduledTrip.id).where(
+                        schema.ScheduledTrip.route_id == route_id
+                    )
+                )
+            )
+        if rfid_ride_id is not None:
+            filters.append(ledger.rfid_ride_id == rfid_ride_id)
+        if stop_id is not None:
+            filters.append(ledger.stop_id == stop_id)
+        if source_recharge_id is not None:
+            filters.append(ledger.source_recharge_id == source_recharge_id)
+        if created_by_admin_id is not None:
+            filters.append(ledger.created_by_admin_id == created_by_admin_id)
+        if razorpay_order_id is not None:
+            filters.append(ledger.razorpay_order_id == razorpay_order_id)
+        if razorpay_payment_id is not None:
+            filters.append(ledger.razorpay_payment_id == razorpay_payment_id)
+        if from_time is not None:
+            filters.append(ledger.created_at >= from_time)
+        if to_time is not None:
+            filters.append(ledger.created_at <= to_time)
+
+        if direction == "credit":
+            filters.append(ledger.amount_delta > 0)
+        elif direction == "debit":
+            filters.append(ledger.amount_delta < 0)
+        elif direction == "hold":
+            filters.extend((ledger.amount_delta == 0, ledger.held_delta > 0))
+        elif direction == "hold_release":
+            filters.extend((ledger.amount_delta == 0, ledger.held_delta < 0))
+        elif direction == "neutral":
+            filters.extend((ledger.amount_delta == 0, ledger.held_delta == 0))
+
+        count_stmt = select(func.count(ledger.id)).where(*filters)
+        count_result = await self.db.execute(count_stmt)
+        count = int(count_result.scalar_one() or 0)
+
+        list_stmt = (
+            select(
+                ledger,
+                schema.RFIDCard,
+                schema.User,
+                schema.PassengerProfile,
+                schema.ScheduledTrip,
+                schema.Route,
+                schema.Stop,
+                schema.RFIDTripRide,
+                schema.RFIDRecharge,
+            )
+            .outerjoin(schema.RFIDCard, schema.RFIDCard.id == ledger.card_id)
+            .outerjoin(schema.User, schema.User.id == ledger.passenger_user_id)
+            .outerjoin(
+                schema.PassengerProfile,
+                schema.PassengerProfile.user_id == ledger.passenger_user_id,
+            )
+            .outerjoin(
+                schema.ScheduledTrip,
+                schema.ScheduledTrip.id == ledger.scheduled_trip_id,
+            )
+            .outerjoin(
+                schema.Route,
+                schema.Route.id == schema.ScheduledTrip.route_id,
+            )
+            .outerjoin(schema.Stop, schema.Stop.id == ledger.stop_id)
+            .outerjoin(
+                schema.RFIDTripRide,
+                schema.RFIDTripRide.id == ledger.rfid_ride_id,
+            )
+            .outerjoin(
+                schema.RFIDRecharge,
+                schema.RFIDRecharge.id == ledger.source_recharge_id,
+            )
+            .where(*filters)
+            .order_by(ledger.created_at.desc(), ledger.id.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        list_result = await self.db.execute(list_stmt)
+
+        zero = Decimal("0.00")
+        summary_stmt = select(
+            func.coalesce(
+                func.sum(case((ledger.amount_delta > 0, ledger.amount_delta), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((ledger.amount_delta < 0, -ledger.amount_delta), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((ledger.held_delta > 0, ledger.held_delta), else_=0)),
+                0,
+            ),
+            func.coalesce(
+                func.sum(case((ledger.held_delta < 0, -ledger.held_delta), else_=0)),
+                0,
+            ),
+            func.coalesce(func.sum(ledger.amount_delta), 0),
+            func.coalesce(func.sum(ledger.held_delta), 0),
+        ).where(*filters)
+        summary_result = await self.db.execute(summary_stmt)
+        summary_row = summary_result.one()
+        summary = {
+            "credit_amount": Decimal(summary_row[0] or zero),
+            "debit_amount": Decimal(summary_row[1] or zero),
+            "held_increase": Decimal(summary_row[2] or zero),
+            "held_release": Decimal(summary_row[3] or zero),
+            "net_amount_delta": Decimal(summary_row[4] or zero),
+            "net_held_delta": Decimal(summary_row[5] or zero),
+        }
+
+        return list(list_result.all()), count, summary
 
     async def list_card_recharges(
         self,

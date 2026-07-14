@@ -1197,7 +1197,11 @@ async def emergency_end_trip(
         )
         .values(
             booking_status=BookingStatus.CANCELLED,
-            cancelled_at=now
+            cancelled_at=now,
+            cancellation_reason=reason.strip(),
+            cancellation_source="driver",
+            cancelled_by_user_id=current_user.id,
+            refund_retry_after=now,
         )
     )
 
@@ -1208,7 +1212,11 @@ async def emergency_end_trip(
     trip.ended_at_lat = lat
     trip.ended_at_long = lng
     trip.status = ScheduledTripStatus.PREMATURE_END
+    trip.cancellation_reason = reason.strip()
     trip.premature_end_reason = reason
+    trip.cancelled_at = now
+    trip.cancellation_source = "driver"
+    trip.cancelled_by_user_id = current_user.id
 
     await session.commit()
 
@@ -1221,6 +1229,12 @@ async def emergency_end_trip(
         data={
             "route_id": trip.route_id,
             "reason": reason,
+            "cancellation_metadata": {
+                "cancelled_at": now.isoformat(),
+                "reason": reason.strip(),
+                "source": "driver",
+                "cancelled_by_user_id": current_user.id,
+            },
         },
         broadcast_catalog=True,
     )
@@ -1243,7 +1257,15 @@ async def emergency_end_trip(
             user_id=admin.id,
             title="Trip Premature End",
             message="Trip ended early due to emergency",
-            data={"trip_id": trip.id}
+            data={
+                "trip_id": trip.id,
+                "cancellation_metadata": {
+                    "cancelled_at": now.isoformat(),
+                    "reason": reason.strip(),
+                    "source": "driver",
+                    "cancelled_by_user_id": current_user.id,
+                },
+            }
         )
 
     # -----------------------------
@@ -1252,5 +1274,11 @@ async def emergency_end_trip(
     return {
         "message": "Emergency ended",
         "reason": reason,
-        "time": to_ist(trip.actual_end_at)
+        "time": to_ist(trip.actual_end_at),
+        "cancellation_metadata": {
+            "cancelled_at": now.isoformat(),
+            "reason": reason.strip(),
+            "source": "driver",
+            "cancelled_by_user_id": current_user.id,
+        },
     }

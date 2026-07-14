@@ -288,6 +288,7 @@ ADMIN_RFID = RefreshInstruction(
         "/admin/rfid/cards",
         "/admin/rfid/cards/{card_id}",
         "/admin/rfid/cards/{card_id}/ledger",
+        "/admin/rfid/transactions",
         "/admin/rfid/cards/{card_id}/recharges",
         "/admin/rfid/rides/payout-ready",
         "/admin/rfid/payout-transfers",

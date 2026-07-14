@@ -367,6 +367,7 @@ class PayoutBookingListItem(BaseModel):
 	transfer_ready_at: datetime | None = None
 	transfer_processed_at: datetime | None = None
 	cancelled_at: datetime | None = None
+	cancellation_metadata: dict[str, Any] | None = None
 	completed_at: datetime | None = None
 	created_at: datetime
 	updated_at: datetime
@@ -402,6 +403,7 @@ class RefundQueueItem(BaseModel):
 	refund_retry_after: datetime | None = None
 	refund_attempt_count: int | None = None
 	cancelled_at: datetime | None = None
+	cancellation_metadata: dict[str, Any] | None = None
 	created_at: datetime
 	updated_at: datetime
 
