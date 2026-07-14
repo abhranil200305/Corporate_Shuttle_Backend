@@ -586,19 +586,22 @@ GET /passenger/transactions
 
 ```ts
 interface PassengerTransaction extends PaymentTaxSnapshot {
+  payment_source: "booking" | "booking_session";
   payment_id: string;
-  booking_id: string;
-  seat_number: number;
-  scheduled_trip_id: string;
-  route_id: string;
-  booking_status: BookingStatus;
+  booking_id: string | null;              // direct-payment compatibility alias
+  booking_session_id: string | null;
+  booking_ids: string[];
+  seat_number: number | null;             // null for a multi-seat payment
+  scheduled_trip_id: string | null;
+  route_id: string | null;
+  booking_status: BookingStatus | null;   // null for a session-level payment
   payment_status: RawPaymentStatus;
   effective_status: EffectivePaymentStatus;
   amount: DecimalWire;                   // gross
   razorpay_order_id: string;
   razorpay_payment_id: string | null;
-  pickup_stop: StopBrief;
-  dropoff_stop: StopBrief;
+  pickup_stop: StopBrief | null;
+  dropoff_stop: StopBrief | null;
   route_name: string | null;
   route_code: string | null;
   planned_start_at: ISODateTime | null;
@@ -607,6 +610,43 @@ interface PassengerTransaction extends PaymentTaxSnapshot {
   cancelled_at: ISODateTime | null;
   created_at: ISODateTime;
   updated_at: ISODateTime;
+  transaction: {
+    id: string;
+    source: "booking" | "booking_session";
+    booking_id: string | null;
+    booking_session_id: string | null;
+    razorpay_order_id: string;
+    razorpay_payment_id: string | null;
+    status: RawPaymentStatus;
+    effective_status: EffectivePaymentStatus | "partially_refunded";
+    amount: DecimalWire;
+    taxable_amount: DecimalWire;
+    cgst_amount: DecimalWire;
+    sgst_amount: DecimalWire;
+    igst_amount: DecimalWire;
+    total_tax_amount: DecimalWire;
+    razorpay_refund_id: string | null;
+    refunded_amount: DecimalWire;
+    refund_requested_at: ISODateTime | null;
+    refund_processed_at: ISODateTime | null;
+    refund_failure_reason: string | null;
+    created_at: ISODateTime;
+    updated_at: ISODateTime;
+  };
+  booking: BookingDetail | null;          // populated for a paid direct payment
+  bookings: BookingDetail[] | null;       // all seats for any paid payment
+  invoice: PassengerInvoice | null;       // direct-payment compatibility alias
+  invoices: PassengerInvoice[] | null;    // one invoice per paid seat
+  invoice_unavailable_reason: "invoice_configuration_invalid" | null;
+  failure: {
+    code: "payment_failed";
+    message: string;
+    gateway: "razorpay";
+    gateway_order_id: string;
+    gateway_payment_id: string | null;
+    provider_reason: string | null;
+    recorded_at: ISODateTime;
+  } | null;
 }
 
 interface PassengerTransactionHistoryResponse {
@@ -616,7 +656,14 @@ interface PassengerTransactionHistoryResponse {
 ```
 
 The status filter uses raw status. Display `effective_status` so a paid record
-whose booking is cancelled appears as `refund_pending`.
+whose booking is cancelled appears as `refund_pending`. Direct and multi-seat
+session payments share this list and are globally sorted before pagination.
+
+For `paid` transactions, `bookings` and `invoices` reuse the exact payloads from
+the booking-detail and booking-invoice APIs. For `failed`, `created`, and
+`refunded` records those expansions are omitted; use `transaction` and the
+nullable `failure` object. Existing flat direct-payment fields remain available
+for older FE integrations.
 
 ## 12. Invoice
 

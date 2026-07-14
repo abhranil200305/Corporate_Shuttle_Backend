@@ -991,13 +991,51 @@ class BookingRatingMutationResponse(BaseModel):
     message: str
     rating: BookingRatingResponse
 
+
+class PassengerTransactionPaymentDetailsResponse(BaseModel):
+    id: str
+    source: str
+    booking_id: str | None
+    booking_session_id: str | None
+    razorpay_order_id: str
+    razorpay_payment_id: str | None
+    status: str
+    effective_status: str
+    amount: Decimal
+    taxable_amount: Decimal
+    cgst_amount: Decimal
+    sgst_amount: Decimal
+    igst_amount: Decimal
+    total_tax_amount: Decimal
+    razorpay_refund_id: str | None
+    refunded_amount: Decimal
+    refund_requested_at: datetime | None
+    refund_processed_at: datetime | None
+    refund_failure_reason: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PassengerTransactionFailureResponse(BaseModel):
+    code: str
+    message: str
+    gateway: str
+    gateway_order_id: str
+    gateway_payment_id: str | None
+    provider_reason: str | None
+    recorded_at: datetime
+
+
 class PassengerTransactionResponse(BaseModel):
+    payment_source: str
     payment_id: str
-    booking_id: str
-    seat_number: int
-    scheduled_trip_id: str
-    route_id: str
-    booking_status: str
+    booking_id: str | None
+    booking_session_id: str | None
+    booking_ids: list[str]
+    seat_number: int | None
+    scheduled_trip_id: str | None
+    route_id: str | None
+    booking_status: str | None
     payment_status: str
     effective_status: str
     amount: Decimal
@@ -1008,8 +1046,8 @@ class PassengerTransactionResponse(BaseModel):
     total_tax_amount: Decimal
     razorpay_order_id: str
     razorpay_payment_id: str | None
-    pickup_stop: StopBriefResponse
-    dropoff_stop: StopBriefResponse
+    pickup_stop: StopBriefResponse | None
+    dropoff_stop: StopBriefResponse | None
     route_name: str | None
     route_code: str | None
     planned_start_at: datetime | None
@@ -1019,6 +1057,13 @@ class PassengerTransactionResponse(BaseModel):
     cancellation_metadata: CancellationMetadataResponse | None
     created_at: datetime
     updated_at: datetime
+    transaction: PassengerTransactionPaymentDetailsResponse
+    booking: BookingDetailResponse | None
+    bookings: list[BookingDetailResponse] | None
+    invoice: PassengerInvoiceResponse | None
+    invoices: list[PassengerInvoiceResponse] | None
+    invoice_unavailable_reason: str | None
+    failure: PassengerTransactionFailureResponse | None
 
 
 class PassengerTransactionHistoryResponse(BaseModel):
