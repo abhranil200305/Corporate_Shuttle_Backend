@@ -215,7 +215,7 @@ class PassengerService:
     
     @staticmethod
     def _get_payment_hold_minutes() -> int:
-        raw = os.getenv("PASSENGER_PAYMENT_HOLD_MINUTES", "2").strip()
+        raw = os.getenv("PASSENGER_PAYMENT_HOLD_MINUTES", "5").strip()
         try:
             minutes = int(raw)
         except ValueError as exc:
@@ -882,6 +882,295 @@ class PassengerService:
         self.db.add(payment)
         self.db.add(booking_session)
         await self.db.flush()
+
+    async def _mark_booking_session_paid_but_expired(
+        self,
+        *,
+        booking_session: BookingSession,
+        payment: BookingSessionPayment,
+        bookings: list[TripBooking],
+        payments: list[BookingSessionPayment],
+        razorpay_payment_id: str | None,
+    ) -> None:
+        await self._expire_pending_booking_session(
+            booking_session=booking_session,
+            bookings=bookings,
+            payments=payments,
+        )
+
+        now = utcnow()
+        if razorpay_payment_id:
+            payment.razorpay_payment_id = razorpay_payment_id
+        if payment.status != BookingPaymentStatus.REFUNDED:
+            payment.status = BookingPaymentStatus.PAID
+            payment.refund_requested_at = payment.refund_requested_at or now
+            payment.refund_retry_after = payment.refund_retry_after or now
+            payment.refund_attempt_count = payment.refund_attempt_count or 0
+            payment.refund_failure_reason = None
+        self.db.add(payment)
+
+        for booking in bookings:
+            await self._ensure_booking_seat_refund_request(
+                booking_session=booking_session,
+                booking=booking,
+                payment=payment,
+            )
+
+        await self.db.flush()
+
+    async def reconcile_pending_booking_session_payment(
+        self,
+        booking_session: BookingSession,
+        *,
+        bookings: list[TripBooking] | None = None,
+        payments: list[BookingSessionPayment] | None = None,
+    ) -> str:
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            return "skip_non_pending"
+
+        session_bookings = list(
+            booking_session.bookings if bookings is None else bookings
+        )
+        session_payments = sorted(
+            list(booking_session.payments if payments is None else payments),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        hold_expired = (
+            booking_session.payment_hold_expires_at is not None
+            and booking_session.payment_hold_expires_at <= utcnow()
+        )
+
+        if not session_payments:
+            if hold_expired:
+                await self._expire_pending_booking_session(
+                    booking_session=booking_session,
+                    bookings=session_bookings,
+                    payments=session_payments,
+                )
+                return "expired_without_local_payment"
+            return "pending_without_local_payment"
+
+        paid_payment = next(
+            (
+                payment
+                for payment in session_payments
+                if payment.status == BookingPaymentStatus.PAID
+            ),
+            None,
+        )
+        if paid_payment is not None:
+            if hold_expired:
+                await self._mark_booking_session_paid_but_expired(
+                    booking_session=booking_session,
+                    payment=paid_payment,
+                    bookings=session_bookings,
+                    payments=session_payments,
+                    razorpay_payment_id=paid_payment.razorpay_payment_id,
+                )
+                return "paid_after_hold_expiry"
+
+            await self._mark_booking_session_paid_and_confirmed(
+                booking_session=booking_session,
+                payment=paid_payment,
+                bookings=session_bookings,
+                razorpay_payment_id=paid_payment.razorpay_payment_id,
+                razorpay_signature=paid_payment.razorpay_signature,
+            )
+            return "promoted_local_paid"
+
+        best_provider_payment: dict[str, Any] | None = None
+        selected_payment: BookingSessionPayment | None = None
+
+        for payment in session_payments:
+            provider_items = await self._fetch_razorpay_order_payments(
+                payment.razorpay_order_id
+            )
+            provider_payment = self._select_best_razorpay_order_payment(
+                provider_items,
+                expected_order_id=payment.razorpay_order_id,
+                expected_amount_subunits=self._to_subunits(payment.amount),
+            )
+            if provider_payment is None:
+                continue
+
+            provider_status = str(
+                provider_payment.get("status") or ""
+            ).strip().lower()
+            if best_provider_payment is None:
+                best_provider_payment = provider_payment
+                selected_payment = payment
+            if provider_status in {"captured", "authorized"}:
+                best_provider_payment = provider_payment
+                selected_payment = payment
+                break
+
+        if selected_payment is None or best_provider_payment is None:
+            if hold_expired:
+                await self._expire_pending_booking_session(
+                    booking_session=booking_session,
+                    bookings=session_bookings,
+                    payments=session_payments,
+                )
+                return "expired_without_provider_payment"
+            return "pending_without_provider_payment"
+
+        provider_status = str(
+            best_provider_payment.get("status") or ""
+        ).strip().lower()
+        provider_payment_id = (
+            str(best_provider_payment.get("id") or "").strip() or None
+        )
+
+        if provider_status == "captured":
+            if hold_expired:
+                await self._mark_booking_session_paid_but_expired(
+                    booking_session=booking_session,
+                    payment=selected_payment,
+                    bookings=session_bookings,
+                    payments=session_payments,
+                    razorpay_payment_id=provider_payment_id,
+                )
+                return "captured_after_hold_expiry"
+
+            await self._mark_booking_session_paid_and_confirmed(
+                booking_session=booking_session,
+                payment=selected_payment,
+                bookings=session_bookings,
+                razorpay_payment_id=provider_payment_id,
+            )
+            return "confirmed_from_captured_payment"
+
+        if provider_status == "authorized":
+            if hold_expired:
+                await self._expire_pending_booking_session(
+                    booking_session=booking_session,
+                    bookings=session_bookings,
+                    payments=session_payments,
+                )
+                return "expired_with_authorized_payment"
+
+            if not provider_payment_id:
+                return "pending_authorized_without_payment_id"
+
+            captured_payment = await self._capture_razorpay_payment(
+                provider_payment_id,
+                self._to_subunits(selected_payment.amount),
+            )
+            captured_status = str(
+                captured_payment.get("status") or ""
+            ).strip().lower()
+            captured_flag = bool(captured_payment.get("captured", False))
+
+            if captured_status == "captured" or captured_flag:
+                await self._mark_booking_session_paid_and_confirmed(
+                    booking_session=booking_session,
+                    payment=selected_payment,
+                    bookings=session_bookings,
+                    razorpay_payment_id=provider_payment_id,
+                )
+                return "confirmed_after_capture"
+
+            return f"pending_after_capture_attempt_{captured_status or 'unknown'}"
+
+        if hold_expired:
+            await self._expire_pending_booking_session(
+                booking_session=booking_session,
+                bookings=session_bookings,
+                payments=session_payments,
+            )
+            return f"expired_with_{provider_status or 'unknown'}_payment"
+
+        return f"pending_with_{provider_status or 'unknown'}_payment"
+
+    async def reconcile_closed_booking_session_payment(
+        self,
+        booking_session: BookingSession,
+        *,
+        bookings: list[TripBooking] | None = None,
+        payments: list[BookingSessionPayment] | None = None,
+    ) -> str:
+        if booking_session.status not in {
+            BookingSessionStatus.EXPIRED,
+            BookingSessionStatus.CANCELLED,
+        }:
+            return "skip_non_closed"
+
+        session_bookings = list(
+            booking_session.bookings if bookings is None else bookings
+        )
+        session_payments = sorted(
+            list(booking_session.payments if payments is None else payments),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        if not session_payments:
+            return "closed_without_local_payment"
+
+        paid_without_refund = next(
+            (
+                payment
+                for payment in session_payments
+                if payment.status == BookingPaymentStatus.PAID
+                and payment.refund_requested_at is None
+            ),
+            None,
+        )
+        if paid_without_refund is not None:
+            await self._mark_booking_session_paid_but_expired(
+                booking_session=booking_session,
+                payment=paid_without_refund,
+                bookings=session_bookings,
+                payments=session_payments,
+                razorpay_payment_id=paid_without_refund.razorpay_payment_id,
+            )
+            return "closed_paid_payment_refund_queued"
+
+        observed_statuses: set[str] = set()
+        for payment in session_payments:
+            if payment.status in {
+                BookingPaymentStatus.PAID,
+                BookingPaymentStatus.REFUNDED,
+            }:
+                continue
+
+            provider_items = await self._fetch_razorpay_order_payments(
+                payment.razorpay_order_id
+            )
+            provider_payment = self._select_best_razorpay_order_payment(
+                provider_items,
+                expected_order_id=payment.razorpay_order_id,
+                expected_amount_subunits=self._to_subunits(payment.amount),
+            )
+            if provider_payment is None:
+                continue
+
+            provider_status = str(
+                provider_payment.get("status") or ""
+            ).strip().lower()
+            observed_statuses.add(provider_status or "unknown")
+            provider_payment_id = (
+                str(provider_payment.get("id") or "").strip() or None
+            )
+
+            if provider_status != "captured" and not bool(
+                provider_payment.get("captured", False)
+            ):
+                continue
+
+            await self._mark_booking_session_paid_but_expired(
+                booking_session=booking_session,
+                payment=payment,
+                bookings=session_bookings,
+                payments=session_payments,
+                razorpay_payment_id=provider_payment_id,
+            )
+            return "closed_captured_payment_refund_queued"
+
+        if not observed_statuses:
+            return "closed_without_provider_payment"
+
+        return "closed_with_" + "_or_".join(sorted(observed_statuses))
 
     @staticmethod
     def _get_booking_from_session_bookings_or_404(
@@ -5330,6 +5619,346 @@ class PassengerService:
             "receipt": receipt,
         }
 
+    @staticmethod
+    def _verify_razorpay_webhook_signature(
+        raw_body: bytes,
+        received_signature: str | None,
+    ) -> None:
+        secret = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip()
+        if not secret:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "razorpay_webhook_not_configured",
+                    "message": "RAZORPAY_WEBHOOK_SECRET is not configured.",
+                },
+            )
+
+        signature = (received_signature or "").strip()
+        generated_signature = hmac.new(
+            secret.encode("utf-8"),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+        if not signature or not hmac.compare_digest(
+            generated_signature,
+            signature,
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_razorpay_webhook_signature",
+                    "message": "Razorpay webhook signature verification failed.",
+                },
+            )
+
+    async def handle_booking_session_payment_webhook(
+        self,
+        *,
+        raw_body: bytes,
+        received_signature: str | None,
+    ) -> dict[str, Any]:
+        self._verify_razorpay_webhook_signature(
+            raw_body,
+            received_signature,
+        )
+
+        try:
+            event_payload = json.loads(raw_body)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_razorpay_webhook_payload",
+                    "message": "Razorpay webhook body must be valid JSON.",
+                },
+            ) from exc
+
+        if not isinstance(event_payload, dict):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_razorpay_webhook_payload",
+                    "message": "Razorpay webhook body must be a JSON object.",
+                },
+            )
+
+        event_name = str(event_payload.get("event") or "").strip().lower()
+        supported_events = {
+            "order.paid",
+            "payment.authorized",
+            "payment.captured",
+            "payment.failed",
+        }
+        if event_name not in supported_events:
+            return {
+                "message": "Webhook event ignored.",
+                "event": event_name,
+                "outcome": "ignored_unsupported_event",
+            }
+
+        payload = event_payload.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        payment_container = payload.get("payment")
+        payment_entity = (
+            payment_container.get("entity")
+            if isinstance(payment_container, dict)
+            else None
+        )
+        if not isinstance(payment_entity, dict):
+            payment_entity = {}
+        order_container = payload.get("order")
+        order_entity = (
+            order_container.get("entity")
+            if isinstance(order_container, dict)
+            else None
+        )
+        if not isinstance(order_entity, dict):
+            order_entity = {}
+
+        razorpay_order_id = str(
+            payment_entity.get("order_id") or order_entity.get("id") or ""
+        ).strip()
+        if not razorpay_order_id:
+            return {
+                "message": "Webhook event ignored because it has no order id.",
+                "event": event_name,
+                "outcome": "ignored_missing_order_id",
+            }
+
+        payment_lookup_result = await self.db.execute(
+            select(BookingSessionPayment.booking_session_id)
+            .where(
+                BookingSessionPayment.razorpay_order_id == razorpay_order_id
+            )
+        )
+        booking_session_id = payment_lookup_result.scalar_one_or_none()
+        if booking_session_id is None:
+            await self.db.rollback()
+            return {
+                "message": "Webhook event does not belong to a booking session.",
+                "event": event_name,
+                "outcome": "ignored_unknown_booking_session_order",
+            }
+
+        session_result = await self.db.execute(
+            select(BookingSession)
+            .where(BookingSession.id == booking_session_id)
+            .with_for_update()
+        )
+        booking_session = session_result.scalar_one_or_none()
+        if booking_session is None:
+            await self.db.rollback()
+            return {
+                "message": "Webhook booking session no longer exists.",
+                "event": event_name,
+                "outcome": "ignored_missing_booking_session",
+            }
+
+        payments = await self._list_booking_session_payments_for_update(
+            booking_session.id
+        )
+        payment = self._get_booking_session_payment_by_order_id(
+            payments,
+            razorpay_order_id=razorpay_order_id,
+        )
+        if payment is None:
+            await self.db.rollback()
+            return {
+                "message": "Webhook payment order no longer exists.",
+                "event": event_name,
+                "outcome": "ignored_missing_booking_session_payment",
+            }
+
+        provider_status = str(
+            payment_entity.get("status") or ""
+        ).strip().lower()
+        captured = bool(payment_entity.get("captured", False))
+        is_success = (
+            event_name in {"order.paid", "payment.captured"}
+            or provider_status == "captured"
+            or captured
+        )
+
+        if not is_success:
+            if event_name == "payment.failed" and (
+                booking_session.status == BookingSessionStatus.PENDING_PAYMENT
+            ):
+                # A failed payment attempt does not make the Razorpay order
+                # unusable. Keep the order locally retryable.
+                payment.status = BookingPaymentStatus.CREATED
+                self.db.add(payment)
+                await self.db.commit()
+            else:
+                await self.db.rollback()
+            return {
+                "message": "Webhook event recorded; no terminal payment state change.",
+                "event": event_name,
+                "booking_session_id": booking_session.id,
+                "outcome": f"pending_with_{provider_status or event_name.replace('.', '_')}",
+            }
+
+        try:
+            provider_amount = int(payment_entity.get("amount"))
+        except (TypeError, ValueError) as exc:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_razorpay_webhook_amount",
+                    "message": "Captured Razorpay webhook did not contain a valid amount.",
+                },
+            ) from exc
+
+        if provider_amount != self._to_subunits(payment.amount):
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "payment_amount_mismatch",
+                    "message": (
+                        "Captured webhook amount does not match the booking "
+                        "session payment."
+                    ),
+                },
+            )
+
+        razorpay_payment_id = str(payment_entity.get("id") or "").strip()
+        if not razorpay_payment_id:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_razorpay_payment_id",
+                    "message": "Captured webhook did not contain a payment id.",
+                },
+            )
+
+        bookings = await self._list_booking_session_bookings_for_update(
+            booking_session.id
+        )
+        hold_expired = (
+            booking_session.payment_hold_expires_at is not None
+            and booking_session.payment_hold_expires_at <= utcnow()
+        )
+
+        if booking_session.status == BookingSessionStatus.PENDING_PAYMENT:
+            if hold_expired:
+                await self._mark_booking_session_paid_but_expired(
+                    booking_session=booking_session,
+                    payment=payment,
+                    bookings=bookings,
+                    payments=payments,
+                    razorpay_payment_id=razorpay_payment_id,
+                )
+                outcome = "captured_after_hold_expiry"
+            else:
+                await self._mark_booking_session_paid_and_confirmed(
+                    booking_session=booking_session,
+                    payment=payment,
+                    bookings=bookings,
+                    razorpay_payment_id=razorpay_payment_id,
+                )
+                await self._queue_booking_session_traveller_notifications(
+                    booking_session=booking_session,
+                    bookings=bookings,
+                    event_type="traveller_seat_confirmed",
+                )
+                outcome = "confirmed_from_webhook"
+        elif booking_session.status in {
+            BookingSessionStatus.EXPIRED,
+            BookingSessionStatus.CANCELLED,
+        }:
+            late_payment_already_handled = (
+                payment.razorpay_payment_id == razorpay_payment_id
+                and payment.status
+                in {
+                    BookingPaymentStatus.PAID,
+                    BookingPaymentStatus.REFUNDED,
+                }
+                and payment.refund_requested_at is not None
+            )
+            if late_payment_already_handled:
+                outcome = "late_payment_already_handled"
+            else:
+                await self._mark_booking_session_paid_but_expired(
+                    booking_session=booking_session,
+                    payment=payment,
+                    bookings=bookings,
+                    payments=payments,
+                    razorpay_payment_id=razorpay_payment_id,
+                )
+                outcome = "captured_after_session_closed"
+        else:
+            payment.razorpay_payment_id = (
+                payment.razorpay_payment_id or razorpay_payment_id
+            )
+            payment.status = BookingPaymentStatus.PAID
+            self.db.add(payment)
+            outcome = "already_confirmed"
+
+        await self.db.commit()
+
+        if outcome == "confirmed_from_webhook":
+            await self._notify_user(
+                user_id=booking_session.owner_user_id,
+                title="Payment verified",
+                message="Your booking session is confirmed.",
+                data={
+                    "type": "booking_session_confirmed",
+                    "booking_session_id": booking_session.id,
+                    "scheduled_trip_id": booking_session.scheduled_trip_id,
+                    "refresh": [
+                        "bookings_list",
+                        "booking_session_detail",
+                        "current_booking",
+                        "seatmap",
+                    ],
+                },
+            )
+        elif outcome in {
+            "captured_after_hold_expiry",
+            "captured_after_session_closed",
+        }:
+            await self._notify_user(
+                user_id=booking_session.owner_user_id,
+                title="Late payment refund requested",
+                message=(
+                    "The payment arrived after the booking session closed. "
+                    "The seats remain released and a refund was requested."
+                ),
+                data={
+                    "type": "booking_session_late_payment_refund_requested",
+                    "booking_session_id": booking_session.id,
+                    "scheduled_trip_id": booking_session.scheduled_trip_id,
+                    "refresh": [
+                        "bookings_list",
+                        "booking_session_detail",
+                        "seatmap",
+                    ],
+                },
+            )
+
+        if outcome not in {
+            "already_confirmed",
+            "late_payment_already_handled",
+        }:
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason=f"booking_session_payment_webhook:{outcome}",
+            )
+
+        return {
+            "message": "Booking session payment webhook processed.",
+            "event": event_name,
+            "booking_session_id": booking_session.id,
+            "scheduled_trip_id": booking_session.scheduled_trip_id,
+            "owner_user_id": booking_session.owner_user_id,
+            "route_id": booking_session.route_id,
+            "outcome": outcome,
+        }
+
     async def _create_razorpay_order(
         self,
         *,
@@ -6221,6 +6850,161 @@ class PassengerService:
                 razorpay_order_id=order_payload["id"],
                 currency=order_payload.get("currency", "INR"),
                 receipt=order_payload.get("receipt"),
+            ),
+        }
+
+    async def retry_booking_session_payment(
+        self,
+        current_user: User,
+        booking_session_id: str,
+    ) -> dict[str, Any]:
+        self.ensure_passenger(current_user)
+
+        booking_session = await self._get_booking_session_for_update_or_404(
+            booking_session_id=booking_session_id,
+            owner_user_id=current_user.id,
+        )
+        payments = await self._list_booking_session_payments_for_update(
+            booking_session.id
+        )
+        bookings = await self._list_booking_session_bookings_for_update(
+            booking_session.id
+        )
+
+        if not bookings:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_empty",
+                    "message": "Booking session has no seat bookings.",
+                },
+            )
+
+        if booking_session.status == BookingSessionStatus.CONFIRMED:
+            await self.db.rollback()
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            return {
+                "message": "Booking session payment is already confirmed.",
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
+                "payment_order": None,
+            }
+
+        if booking_session.status != BookingSessionStatus.PENDING_PAYMENT:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_not_retryable",
+                    "message": "Payment can only be retried for a pending booking session.",
+                    "status": booking_session.status.value,
+                },
+            )
+
+        outcome = await self.reconcile_pending_booking_session_payment(
+            booking_session,
+            bookings=bookings,
+            payments=payments,
+        )
+
+        confirmed_outcomes = {
+            "promoted_local_paid",
+            "confirmed_from_captured_payment",
+            "confirmed_after_capture",
+        }
+        if outcome in confirmed_outcomes:
+            await self.db.commit()
+            booking_session = await self._get_booking_session_obj(
+                booking_session_id=booking_session.id,
+                owner_user_id=current_user.id,
+            )
+            await self._queue_booking_session_traveller_notifications(
+                booking_session=booking_session,
+                bookings=list(booking_session.bookings),
+                event_type="traveller_seat_confirmed",
+            )
+            await self.db.commit()
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason="booking_session_confirmed_during_payment_retry",
+            )
+            return {
+                "message": "Payment was already successful. Booking session confirmed.",
+                "booking_session": await self._serialize_booking_session_with_refunds(
+                    booking_session
+                ),
+                "payment_order": None,
+            }
+
+        if outcome.startswith("expired_") or outcome in {
+            "paid_after_hold_expiry",
+            "captured_after_hold_expiry",
+        }:
+            await self.db.commit()
+            await self._broadcast_seatmap_snapshots_for_trip(
+                scheduled_trip_id=booking_session.scheduled_trip_id,
+                reason="booking_session_payment_hold_expired",
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_hold_expired",
+                    "message": (
+                        "Payment hold expired. The seats were released and "
+                        "payment can no longer be retried."
+                    ),
+                    "reconciliation_outcome": outcome,
+                },
+            )
+
+        if "authorized" in outcome or outcome.startswith(
+            "pending_after_capture_attempt_"
+        ):
+            await self.db.commit()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "payment_processing",
+                    "message": (
+                        "A payment is already being processed for this "
+                        "booking session. Please wait for confirmation."
+                    ),
+                    "reconciliation_outcome": outcome,
+                },
+            )
+
+        if not payments:
+            await self.db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "booking_session_payment_not_found",
+                    "message": "No Razorpay order exists for this booking session.",
+                },
+            )
+
+        payment = max(payments, key=lambda item: item.created_at)
+        payment.status = BookingPaymentStatus.CREATED
+        payment.razorpay_payment_id = None
+        payment.razorpay_signature = None
+        self.db.add(payment)
+        await self.db.commit()
+
+        booking_session = await self._get_booking_session_obj(
+            booking_session_id=booking_session.id,
+            owner_user_id=current_user.id,
+        )
+        return {
+            "message": "Payment can be retried using the existing Razorpay order.",
+            "booking_session": await self._serialize_booking_session_with_refunds(
+                booking_session
+            ),
+            "payment_order": self._build_booking_session_payment_order_response(
+                booking_session=booking_session,
+                razorpay_order_id=payment.razorpay_order_id,
             ),
         }
     

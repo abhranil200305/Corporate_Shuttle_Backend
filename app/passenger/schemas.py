@@ -528,6 +528,13 @@ class BookingSessionCreateResponse(BaseModel):
     booking_session: BookingSessionResponse
     payment_order: dict[str, Any]
 
+
+class BookingSessionRetryPaymentResponse(BaseModel):
+    message: str
+    booking_session: BookingSessionResponse
+    payment_order: dict[str, Any] | None
+
+
 class BookingSessionMutationResponse(BaseModel):
     message: str
     booking_session: BookingSessionResponse
