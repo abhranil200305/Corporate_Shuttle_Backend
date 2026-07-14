@@ -8,6 +8,13 @@ RFID, cache, and rollout change introduced by that commit.
 The intended reader should not need to inspect the backend source to integrate
 GST correctly.
 
+Passenger-application developers should use the consolidated passenger-only
+handoff in
+[PASSENGER_FE_LATER_COMMITS_INTEGRATION.md](./PASSENGER_FE_LATER_COMMITS_INTEGRATION.md)
+and its exact
+[wire contracts](./PASSENGER_FE_WIRE_CONTRACTS.md). Those documents also cover
+the traveller-validation and payment-retry commits that landed after GST.
+
 ## 1. Executive summary
 
 The commit adds centrally configured GST with these defaults:
@@ -19,7 +26,7 @@ The commit adds centrally configured GST with these defaults:
 | SGST | `2.50%` |
 | IGST | `0.00%` |
 | Apply only to AC routes | `true` |
-| Fare is GST-inclusive | `false` |
+| Fare is GST-inclusive | `true` |
 
 When the database has no `platform_settings` row with `settings_key=default`,
 the backend reads those values from these environment variables:
