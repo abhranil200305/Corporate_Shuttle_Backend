@@ -27,6 +27,7 @@ from app.passenger.schemas import (
     BookingSessionCurrentTripStatusResponse,
     BookingSessionListResponse,
     BookingSessionMutationResponse,
+    BookingSessionRetryPaymentResponse,
     BookingSessionResponse,
     CreateBookingRatingRequest,
     CreateBookingRequest,
@@ -151,6 +152,34 @@ async def create_profile(
         request, current_user, reason="passenger_profile_created"
     )
     return result
+
+
+@router.post("/payments/razorpay/webhook")
+async def handle_razorpay_payment_webhook(
+    request: Request,
+    service: PassengerService = Depends(get_passenger_service),
+) -> dict:
+    result = await service.handle_booking_session_payment_webhook(
+        raw_body=await request.body(),
+        received_signature=request.headers.get("X-Razorpay-Signature"),
+    )
+
+    if result.get("booking_session_id") and result.get("scheduled_trip_id"):
+        await publish_booking_change(
+            get_api_refresh_hub(request.app),
+            service.db,
+            trip_id=result["scheduled_trip_id"],
+            passenger_user_id=result.get("owner_user_id"),
+            reason=f"booking_session_payment_webhook:{result.get('outcome', 'processed')}",
+            booking_session_id=result["booking_session_id"],
+            route_id=result.get("route_id"),
+        )
+
+    return {
+        "message": result.get("message", "Webhook processed."),
+        "event": result.get("event"),
+        "outcome": result.get("outcome"),
+    }
 
 
 @router.get("/profile", response_model=PassengerProfileResponse)
@@ -532,6 +561,30 @@ async def verify_booking_session_payment(
         result,
         reason="booking_session_payment_verified",
     )
+
+
+@router.post(
+    "/booking-sessions/{booking_session_id}/retry-payment",
+    response_model=BookingSessionRetryPaymentResponse,
+)
+async def retry_booking_session_payment(
+    booking_session_id: str,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+    service: PassengerService = Depends(get_passenger_service),
+) -> BookingSessionRetryPaymentResponse:
+    result = await service.retry_booking_session_payment(
+        current_user,
+        booking_session_id,
+    )
+    return await emit_booking_refresh(
+        request,
+        current_user,
+        service,
+        result,
+        reason="booking_session_payment_retried",
+    )
+
 
 @router.post(
     "/booking-sessions/{booking_session_id}/cancel",
