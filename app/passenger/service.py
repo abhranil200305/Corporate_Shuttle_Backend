@@ -258,6 +258,41 @@ class PassengerService:
             return None
         return booking.otp
 
+    @staticmethod
+    def _set_cancellation_metadata(
+        record: Any,
+        *,
+        reason: str,
+        source: str,
+        cancelled_by_user_id: str | None,
+        cancelled_at: datetime | None = None,
+    ) -> datetime:
+        occurred_at = cancelled_at or utcnow()
+        record.cancelled_at = getattr(record, "cancelled_at", None) or occurred_at
+        record.cancellation_reason = reason.strip()
+        record.cancellation_source = source
+        record.cancelled_by_user_id = cancelled_by_user_id
+        return occurred_at
+
+    @staticmethod
+    def _serialize_cancellation_metadata(record: Any) -> dict[str, Any] | None:
+        cancelled_at = getattr(record, "cancelled_at", None)
+        if cancelled_at is None:
+            return None
+
+        return {
+            "cancelled_at": cancelled_at,
+            "reason": (
+                getattr(record, "cancellation_reason", None)
+                or getattr(record, "premature_end_reason", None)
+                or "Cancellation reason was not recorded."
+            ),
+            "source": getattr(record, "cancellation_source", None) or "legacy",
+            "cancelled_by_user_id": getattr(
+                record, "cancelled_by_user_id", None
+            ),
+        }
+
     @classmethod
     def _get_payment_hold_expires_at(cls) -> datetime:
         return utcnow() + timedelta(minutes=cls._get_payment_hold_minutes())
@@ -546,7 +581,12 @@ class PassengerService:
             return
 
         booking.booking_status = BookingStatus.CANCELLED
-        booking.cancelled_at = utcnow()
+        self._set_cancellation_metadata(
+            booking,
+            reason="Payment hold expired before confirmation.",
+            source="system",
+            cancelled_by_user_id=None,
+        )
         booking.payment_hold_expires_at = None
         self.db.add(booking)
 
@@ -577,7 +617,13 @@ class PassengerService:
         for booking in bookings:
             if booking.booking_status == BookingStatus.PENDING_PAYMENT:
                 booking.booking_status = BookingStatus.CANCELLED
-                booking.cancelled_at = booking.cancelled_at or now
+                self._set_cancellation_metadata(
+                    booking,
+                    reason="Booking session payment hold expired before confirmation.",
+                    source="system",
+                    cancelled_by_user_id=None,
+                    cancelled_at=now,
+                )
                 booking.payment_hold_expires_at = None
                 self.db.add(booking)
 
@@ -594,6 +640,7 @@ class PassengerService:
         booking_session: BookingSession,
         bookings: list[TripBooking],
         payments: list[BookingSessionPayment],
+        cancelled_by_user_id: str,
     ) -> None:
         now = utcnow()
 
@@ -601,14 +648,26 @@ class PassengerService:
             return
 
         booking_session.status = BookingSessionStatus.CANCELLED
-        booking_session.cancelled_at = booking_session.cancelled_at or now
+        self._set_cancellation_metadata(
+            booking_session,
+            reason="Booking session cancelled by passenger.",
+            source="passenger",
+            cancelled_by_user_id=cancelled_by_user_id,
+            cancelled_at=now,
+        )
         booking_session.payment_hold_expires_at = None
         self.db.add(booking_session)
 
         for booking in bookings:
             if booking.booking_status == BookingStatus.PENDING_PAYMENT:
                 booking.booking_status = BookingStatus.CANCELLED
-                booking.cancelled_at = booking.cancelled_at or now
+                self._set_cancellation_metadata(
+                    booking,
+                    reason="Booking session cancelled by passenger.",
+                    source="passenger",
+                    cancelled_by_user_id=cancelled_by_user_id,
+                    cancelled_at=now,
+                )
                 booking.payment_hold_expires_at = None
                 self.db.add(booking)
 
@@ -839,7 +898,13 @@ class PassengerService:
         for booking in bookings:
             if booking.booking_status == BookingStatus.PENDING_PAYMENT:
                 booking.booking_status = BookingStatus.CANCELLED
-                booking.cancelled_at = booking.cancelled_at or now
+                self._set_cancellation_metadata(
+                    booking,
+                    reason="Booking session payment hold expired before confirmation.",
+                    source="system",
+                    cancelled_by_user_id=None,
+                    cancelled_at=now,
+                )
                 booking.payment_hold_expires_at = None
                 self.db.add(booking)
 
@@ -1321,7 +1386,28 @@ class PassengerService:
 
         if booking_session.status == BookingSessionStatus.CONFIRMED:
             booking_session.status = BookingSessionStatus.CANCELLED
-            booking_session.cancelled_at = booking_session.cancelled_at or utcnow()
+            cancelled_booking = max(
+                (item for item in bookings if item.cancelled_at is not None),
+                key=lambda item: item.cancelled_at,
+                default=None,
+            )
+            self._set_cancellation_metadata(
+                booking_session,
+                reason=(
+                    getattr(cancelled_booking, "cancellation_reason", None)
+                    or "All seats in the booking session were cancelled."
+                ),
+                source=(
+                    getattr(cancelled_booking, "cancellation_source", None)
+                    or "system"
+                ),
+                cancelled_by_user_id=getattr(
+                    cancelled_booking, "cancelled_by_user_id", None
+                ),
+                cancelled_at=(
+                    None if cancelled_booking is None else cancelled_booking.cancelled_at
+                ),
+            )
             self.db.add(booking_session)
             await self.db.flush()
 
@@ -1875,6 +1961,7 @@ class PassengerService:
             "actual_end_at": trip.actual_end_at,
             "status": trip.status,
             "admin_note": trip.admin_note,
+            "cancellation_metadata": self._serialize_cancellation_metadata(trip),
             "available_seats": available_seats,
             "trip_from_stop": trip_from_stop,
             "trip_to_stop": trip_to_stop,
@@ -1928,6 +2015,7 @@ class PassengerService:
             "boarded_at": booking.boarded_at,
             "completed_at": booking.completed_at,
             "cancelled_at": booking.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
@@ -2143,6 +2231,7 @@ class PassengerService:
             "boarded_at": booking.boarded_at,
             "completed_at": booking.completed_at,
             "cancelled_at": booking.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
             "payments": [self._serialize_payment(payment) for payment in booking.payments],
@@ -2246,6 +2335,7 @@ class PassengerService:
             "fare_amount": booking.fare_amount,
             **tax_fields,
             "payment_hold_expires_at": booking.payment_hold_expires_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "refund": self._serialize_booking_seat_refund_request(
                 refund_request
             ),
@@ -2313,6 +2403,9 @@ class PassengerService:
             "payment_hold_expires_at": booking_session.payment_hold_expires_at,
             "confirmed_at": booking_session.confirmed_at,
             "cancelled_at": booking_session.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(
+                booking_session
+            ),
             "expired_at": booking_session.expired_at,
             "bookings": [
                 self._serialize_booking_session_seat(
@@ -2445,18 +2538,31 @@ class PassengerService:
         booking_session: BookingSession,
         bookings: list[TripBooking],
         payment: BookingSessionPayment,
+        cancelled_by_user_id: str,
     ) -> None:
         now = utcnow()
 
         booking_session.status = BookingSessionStatus.CANCELLED
-        booking_session.cancelled_at = booking_session.cancelled_at or now
+        self._set_cancellation_metadata(
+            booking_session,
+            reason="Confirmed booking session cancelled by passenger.",
+            source="passenger",
+            cancelled_by_user_id=cancelled_by_user_id,
+            cancelled_at=now,
+        )
         booking_session.payment_hold_expires_at = None
         self.db.add(booking_session)
 
         for booking in bookings:
             if booking.booking_status == BookingStatus.BOOKED:
                 booking.booking_status = BookingStatus.CANCELLED
-                booking.cancelled_at = booking.cancelled_at or now
+                self._set_cancellation_metadata(
+                    booking,
+                    reason="Confirmed booking session cancelled by passenger.",
+                    source="passenger",
+                    cancelled_by_user_id=cancelled_by_user_id,
+                    cancelled_at=now,
+                )
                 booking.payment_hold_expires_at = None
                 booking.refund_retry_after = booking.refund_retry_after or now
                 booking.refund_attempt_count = booking.refund_attempt_count or 0
@@ -2495,6 +2601,7 @@ class PassengerService:
             "boarded_at": booking.boarded_at,
             "completed_at": booking.completed_at,
             "cancelled_at": booking.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "pickup_stop": self._serialize_stop_brief(booking.pickup_stop),
             "dropoff_stop": self._serialize_stop_brief(booking.dropoff_stop),
             "scheduled_trip": await self._serialize_trip(booking.scheduled_trip),
@@ -3016,6 +3123,7 @@ class PassengerService:
             "planned_end_at": None if trip is None else trip.planned_end_at,
             "completed_at": booking.completed_at,
             "cancelled_at": booking.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "created_at": payment.created_at,
             "updated_at": payment.updated_at,
         }
@@ -6083,7 +6191,15 @@ class PassengerService:
 
         payment.status = BookingPaymentStatus.PAID
         booking.booking_status = BookingStatus.CANCELLED
-        booking.cancelled_at = booking.cancelled_at or utcnow()
+        self._set_cancellation_metadata(
+            booking,
+            reason=(
+                "Payment was captured after the booking hold expired; "
+                "the booking remains cancelled and requires reconciliation."
+            ),
+            source="system",
+            cancelled_by_user_id=None,
+        )
         booking.payment_hold_expires_at = None
 
         self.db.add(payment)
@@ -7374,6 +7490,7 @@ class PassengerService:
                 booking_session=booking_session,
                 bookings=bookings,
                 payment=paid_payment,
+                cancelled_by_user_id=current_user.id,
             )
 
             await self.db.commit()
@@ -7431,6 +7548,7 @@ class PassengerService:
             booking_session=booking_session,
             bookings=bookings,
             payments=payments,
+            cancelled_by_user_id=current_user.id,
         )
 
         await self.db.commit()
@@ -7560,7 +7678,13 @@ class PassengerService:
         now = utcnow()
 
         booking.booking_status = BookingStatus.CANCELLED
-        booking.cancelled_at = booking.cancelled_at or now
+        self._set_cancellation_metadata(
+            booking,
+            reason="Seat cancelled by passenger.",
+            source="passenger",
+            cancelled_by_user_id=current_user.id,
+            cancelled_at=now,
+        )
         booking.payment_hold_expires_at = None
         booking.refund_retry_after = booking.refund_retry_after or now
         booking.refund_attempt_count = booking.refund_attempt_count or 0
@@ -8455,7 +8579,12 @@ class PassengerService:
             )
 
         booking.booking_status = BookingStatus.CANCELLED
-        booking.cancelled_at = utcnow()
+        self._set_cancellation_metadata(
+            booking,
+            reason="Booking cancelled by passenger.",
+            source="passenger",
+            cancelled_by_user_id=current_user.id,
+        )
         booking.payment_hold_expires_at = None
 
         self.db.add(booking)

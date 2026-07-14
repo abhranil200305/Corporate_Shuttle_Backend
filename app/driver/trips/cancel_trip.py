@@ -130,9 +130,15 @@ async def cancel_trip(
     # CANCEL TRIP
     # ---------------------------
     trip.status = ScheduledTripStatus.CANCELLED
-
-    if cancellation_reason:
-        trip.premature_end_reason = cancellation_reason
+    normalized_reason = (
+        cancellation_reason.strip()
+        if cancellation_reason and cancellation_reason.strip()
+        else "Trip cancelled by driver."
+    )
+    trip.cancellation_reason = normalized_reason
+    trip.cancelled_at = now_utc
+    trip.cancellation_source = "driver"
+    trip.cancelled_by_user_id = current_driver.id
 
     # ---------------------------
     # CANCEL BOOKINGS
@@ -152,6 +158,10 @@ async def cancel_trip(
         .values(
             booking_status=BookingStatus.CANCELLED,
             cancelled_at=now_utc,
+            cancellation_reason=normalized_reason,
+            cancellation_source="driver",
+            cancelled_by_user_id=current_driver.id,
+            refund_retry_after=now_utc,
         )
     )
 
@@ -164,7 +174,7 @@ async def cancel_trip(
         await fine_service.register_driver_trip_cancellation_fines(
             scheduled_trip_id=trip.id,
             driver_user_id=current_driver.id,
-            cancellation_reason=cancellation_reason,
+            cancellation_reason=normalized_reason,
             occurred_at=now_utc,
         )
     )
@@ -180,6 +190,12 @@ async def cancel_trip(
     )
 
     if passenger_ids:
+        cancellation_metadata = {
+            "cancelled_at": now_utc.isoformat(),
+            "reason": normalized_reason,
+            "source": "driver",
+            "cancelled_by_user_id": current_driver.id,
+        }
         await notification_service.notify_user(
             user_id=passenger_ids[0],
             user_ids=passenger_ids[1:],
@@ -187,8 +203,9 @@ async def cancel_trip(
             message="Your booked trip has been cancelled by the driver.",
             data={
                 "trip_id": trip.id,
-                "reason": cancellation_reason,
+                "reason": normalized_reason,
                 "type": "TRIP_CANCELLED",
+                "cancellation_metadata": cancellation_metadata,
             },
             commit=False,
         )
@@ -209,7 +226,8 @@ async def cancel_trip(
         trip_id=trip.id,
         data={
             "route_id": trip.route_id,
-            "reason": cancellation_reason,
+            "reason": normalized_reason,
+            "cancellation_metadata": cancellation_metadata,
         },
         broadcast_catalog=True,
     )
@@ -221,7 +239,8 @@ async def cancel_trip(
         "message": "Trip cancelled successfully.",
         "trip_id": trip.id,
         "status": trip.status.value,
-        "cancellation_reason": trip.premature_end_reason,
+        "cancellation_reason": trip.cancellation_reason,
+        "cancellation_metadata": cancellation_metadata,
         "notified_passengers": len(passenger_ids),
         "fine_summary": fine_result,
     }

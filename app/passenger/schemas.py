@@ -263,6 +263,13 @@ class ScheduledTripDriverVehicleInfoResponse(BaseModel):
     vehicle_total_seat: str | int | None
 
 
+class CancellationMetadataResponse(BaseModel):
+    cancelled_at: datetime
+    reason: str
+    source: str
+    cancelled_by_user_id: str | None
+
+
 class ScheduledTripResponse(BaseModel):
     id: str
     route_id: str
@@ -274,6 +281,7 @@ class ScheduledTripResponse(BaseModel):
     actual_end_at: datetime | None
     status: str
     admin_note: str | None
+    cancellation_metadata: CancellationMetadataResponse | None
     available_seats: int | None
 
     trip_from_stop: StopBriefResponse | None
@@ -459,6 +467,7 @@ class BookingSessionSeatResponse(BaseModel):
     gst_enabled_snapshot: bool
     gst_inclusive_snapshot: bool
     payment_hold_expires_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     refund: BookingSessionSeatRefundResponse | None = None
     created_at: datetime
     updated_at: datetime
@@ -512,6 +521,7 @@ class BookingSessionResponse(BaseModel):
     payment_hold_expires_at: datetime | None
     confirmed_at: datetime | None
     cancelled_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     expired_at: datetime | None
     bookings: list[BookingSessionSeatResponse]
     payments: list[BookingSessionPaymentResponse]
@@ -613,6 +623,7 @@ class TripBookingResponse(BaseModel):
     boarded_at: datetime | None
     completed_at: datetime | None
     cancelled_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
     payment_hold_expires_at: datetime | None
@@ -659,6 +670,7 @@ class BookingDetailResponse(BaseModel):
     boarded_at: datetime | None
     completed_at: datetime | None
     cancelled_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
     scheduled_trip: ScheduledTripResponse
@@ -741,6 +753,7 @@ class CurrentTripBookingResponse(BaseModel):
     boarded_at: datetime | None
     completed_at: datetime | None
     cancelled_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     pickup_stop: StopBriefResponse
     dropoff_stop: StopBriefResponse
     scheduled_trip: ScheduledTripResponse
@@ -960,6 +973,7 @@ class PassengerTransactionResponse(BaseModel):
     planned_end_at: datetime | None
     completed_at: datetime | None
     cancelled_at: datetime | None
+    cancellation_metadata: CancellationMetadataResponse | None
     created_at: datetime
     updated_at: datetime
 

@@ -305,7 +305,13 @@ class AdminService:
 		result = await self.db.execute(stmt)
 		return result.unique().scalars().all()
 
-	async def cancel_trip(self, trip_id: str, reason: str):
+	async def cancel_trip(
+		self,
+		trip_id: str,
+		reason: str,
+		*,
+		cancelled_by_user_id: str,
+	):
 		# 1. Fetch the trip to check timing
 		trip_stmt = select(schema.ScheduledTrip).where(
 			schema.ScheduledTrip.id == trip_id
@@ -327,14 +333,21 @@ class AdminService:
 		# 3. Update the Trip Status
 		trip.status = schema.ScheduledTripStatus.CANCELLED
 		trip.cancellation_reason = reason
+		trip.cancelled_at = now
+		trip.cancellation_source = "admin"
+		trip.cancelled_by_user_id = cancelled_by_user_id
 		trip.admin_note = f"Admin Cancelled at {now}. Reason: {reason}"
 
 		booking_update_stmt = (
 			update(schema.TripBooking)
 			.where(schema.TripBooking.scheduled_trip_id == trip_id)
 			.values(
-				booking_status="cancelled"  # Adjust to your specific Enum if needed
-				# cancel_reason=f"Trip cancelled by admin: {reason}",
+				booking_status=schema.BookingStatus.CANCELLED,
+				cancelled_at=now,
+				cancellation_reason=reason,
+				cancellation_source="admin",
+				cancelled_by_user_id=cancelled_by_user_id,
+				refund_retry_after=now,
 			)
 		)
 		await self.db.execute(booking_update_stmt)
@@ -511,6 +524,7 @@ class AdminService:
 			"boarded_at": booking.boarded_at,
 			"completed_at": booking.completed_at,
 			"cancelled_at": booking.cancelled_at,
+			"cancellation_metadata": self.serialize_cancellation_metadata(booking),
 			"updated_at": booking.updated_at,
 		}
 
@@ -528,6 +542,7 @@ class AdminService:
 			"planned_end_at": trip.planned_end_at,
 			"actual_start_at": trip.actual_start_at,
 			"actual_end_at": trip.actual_end_at,
+			"cancellation_metadata": self.serialize_cancellation_metadata(trip),
 			"last_lat": trip.last_lat,
 			"last_lng": trip.last_lng,
 			# "last_location_at": trip.last_location_at,
@@ -659,6 +674,7 @@ class AdminService:
 			"boarded_at": booking.boarded_at,
 			"completed_at": booking.completed_at,
 			"cancelled_at": booking.cancelled_at,
+			"cancellation_metadata": self.serialize_cancellation_metadata(booking),
 			"updated_at": booking.updated_at,
 		}
 	
@@ -676,6 +692,7 @@ class AdminService:
 			"planned_end_at": trip.planned_end_at,
 			"actual_start_at": trip.actual_start_at,
 			"actual_end_at": trip.actual_end_at,
+			"cancellation_metadata": self.serialize_cancellation_metadata(trip),
 			"last_lat": trip.last_lat,
 			"last_lng": trip.last_lng,
 			"route": None if trip.route is None else {
@@ -2036,9 +2053,15 @@ class AdminService:
 		result = await self.db.execute(stmt)
 		return result.unique().scalars().all()
 
-	async def handle_premature_trip_end(self, trip_id: str):
+	async def handle_premature_trip_end(
+		self,
+		trip_id: str,
+		*,
+		cancelled_by_user_id: str,
+	):
 		try:
-			now = datetime.utcnow()  # Capture a single consistent timestamp
+			now = datetime.now(timezone.utc)
+			reason = "Trip ended prematurely by admin."
 
 			# 1. Update the Trip Status and End Time
 			trip_stmt = (
@@ -2046,7 +2069,12 @@ class AdminService:
 				.where(schema.ScheduledTrip.id == trip_id)
 				.values(
 					status=schema.ScheduledTripStatus.PREMATURE_END,
-					actual_end_at=now,  # <--- Added actual end time
+					actual_end_at=now,
+					cancelled_at=now,
+					cancellation_reason=reason,
+					premature_end_reason=reason,
+					cancellation_source="admin",
+					cancelled_by_user_id=cancelled_by_user_id,
 					updated_at=now,
 				)
 			)
@@ -2069,7 +2097,10 @@ class AdminService:
 				)
 				.values(
 					booking_status=schema.BookingStatus.CANCELLED,
-					cancelled_at=now,  # <--- Matches the trip end time
+					cancelled_at=now,
+					cancellation_reason=reason,
+					cancellation_source="admin",
+					cancelled_by_user_id=cancelled_by_user_id,
 					refund_retry_after=now,
 				)
 			)
@@ -2084,6 +2115,12 @@ class AdminService:
 				"cancelled_bookings": affected_bookings_count,
 				"trip_status": "premature_end",
 				"ended_at": now.isoformat(),  # Return the time to the frontend
+				"cancellation_metadata": {
+					"cancelled_at": now.isoformat(),
+					"reason": reason,
+					"source": "admin",
+					"cancelled_by_user_id": cancelled_by_user_id,
+				},
 			}
 
 		except Exception as e:
@@ -2569,6 +2606,27 @@ class AdminService:
 	def _quantize_money(value: Decimal) -> Decimal:
 		return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+	@staticmethod
+	def serialize_cancellation_metadata(record) -> dict[str, Any] | None:
+		cancelled_at = getattr(record, "cancelled_at", None)
+		if cancelled_at is None:
+			return None
+
+		return {
+			"cancelled_at": cancelled_at,
+			"reason": (
+				getattr(record, "cancellation_reason", None)
+				or getattr(record, "premature_end_reason", None)
+				or "Cancellation reason was not recorded."
+			),
+			"source": (
+				getattr(record, "cancellation_source", None) or "legacy"
+			),
+			"cancelled_by_user_id": getattr(
+				record, "cancelled_by_user_id", None
+			),
+		}
+
 	def _get_adjustment_applied_total(self, adjustment) -> Decimal:
 		total = Decimal("0.00")
 		for application in adjustment.applications:
@@ -2871,6 +2929,7 @@ class AdminService:
 			"boarded_at": booking.boarded_at,
 			"completed_at": booking.completed_at,
 			"cancelled_at": booking.cancelled_at,
+			"cancellation_metadata": self.serialize_cancellation_metadata(booking),
 			"refund_retry_after": booking.refund_retry_after,
 			"refund_attempt_count": booking.refund_attempt_count,
 			"pickup_stop_id": booking.pickup_stop_id,
@@ -4042,6 +4101,9 @@ class AdminService:
 					"refund_retry_after": booking.refund_retry_after,
 					"refund_attempt_count": booking.refund_attempt_count,
 					"cancelled_at": booking.cancelled_at,
+					"cancellation_metadata": self.serialize_cancellation_metadata(
+						booking
+					),
 					"created_at": booking.created_at,
 					"updated_at": booking.updated_at,
 				}

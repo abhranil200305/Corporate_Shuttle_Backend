@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from fastapi import (
 	APIRouter,
 	Body,
@@ -16,6 +18,7 @@ from sqlalchemy.orm import aliased, joinedload
 
 from app.admin.logic.service import AdminService
 from app.admin.rfid_schemas import (
+	AdminRFIDTransactionListResponse,
 	AdminRFIDSeatPolicyResponse,
 	AdminRFIDSeatPolicyUpdateRequest,
 	RFIDCardAssignRequest,
@@ -1428,6 +1431,76 @@ async def list_rfid_card_ledger_entries(
 
 
 @router.get(
+	"/rfid/transactions",
+	response_model=AdminRFIDTransactionListResponse,
+	tags=["Admin RFID"],
+)
+async def list_all_rfid_transactions(
+	page: int = Query(default=1, ge=1),
+	page_size: int = Query(default=25, ge=1, le=200),
+	entry_type: schema.RFIDLedgerEntryType | None = Query(default=None),
+	direction: str | None = Query(
+		default=None,
+		pattern="^(credit|debit|hold|hold_release|neutral)$",
+	),
+	card_id: str | None = Query(default=None, min_length=1, max_length=36),
+	account_id: str | None = Query(default=None, min_length=1, max_length=36),
+	passenger_user_id: str | None = Query(
+		default=None, min_length=1, max_length=36
+	),
+	scheduled_trip_id: str | None = Query(
+		default=None, min_length=1, max_length=36
+	),
+	route_id: str | None = Query(default=None, min_length=1, max_length=36),
+	rfid_ride_id: str | None = Query(default=None, min_length=1, max_length=36),
+	stop_id: str | None = Query(default=None, min_length=1, max_length=36),
+	source_recharge_id: str | None = Query(
+		default=None, min_length=1, max_length=36
+	),
+	created_by_admin_id: str | None = Query(
+		default=None, min_length=1, max_length=36
+	),
+	razorpay_order_id: str | None = Query(
+		default=None, min_length=1, max_length=64
+	),
+	razorpay_payment_id: str | None = Query(
+		default=None, min_length=1, max_length=64
+	),
+	from_time: datetime | None = Query(default=None),
+	to_time: datetime | None = Query(default=None),
+	db: AsyncSession = Depends(get_async_session),
+) -> AdminRFIDTransactionListResponse:
+	service = AdminRFIDService(db)
+	rows, count, summary = await service.list_rfid_transactions(
+		page=page,
+		page_size=page_size,
+		entry_type=entry_type,
+		direction=direction,
+		card_id=card_id,
+		account_id=account_id,
+		passenger_user_id=passenger_user_id,
+		scheduled_trip_id=scheduled_trip_id,
+		route_id=route_id,
+		rfid_ride_id=rfid_ride_id,
+		stop_id=stop_id,
+		source_recharge_id=source_recharge_id,
+		created_by_admin_id=created_by_admin_id,
+		razorpay_order_id=razorpay_order_id,
+		razorpay_payment_id=razorpay_payment_id,
+		from_time=from_time,
+		to_time=to_time,
+	)
+
+	return AdminRFIDTransactionListResponse(
+		items=[service.serialize_rfid_transaction(row) for row in rows],
+		count=count,
+		page=page,
+		page_size=page_size,
+		summary=summary,
+	)
+
+
+@router.get(
 	"/rfid/cards/{card_id}/recharges",
 	response_model=RFIDRechargeListResponse,
 	tags=["Admin RFID"],
@@ -2602,6 +2675,7 @@ async def monitor_all_trips(
 			"premature_end_reason": t.premature_end_reason
 			if t.premature_end_reason
 			else None,
+			"cancellation_metadata": service.serialize_cancellation_metadata(t),
 			"admin_note": t.admin_note if t.admin_note else None,
 		}
 		for t in trips
@@ -2617,6 +2691,7 @@ async def cancel_trip_by_id(
 	request: Request,
 	reason: str = Body(..., embed=True),
 	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
 	hub = get_ws_hub(request)
 	service = AdminService(db, ws_hub=hub)
@@ -2628,11 +2703,19 @@ async def cancel_trip_by_id(
 	if not trip:
 		raise HTTPException(status_code=404, detail="Trip not found")
 
-	result = await service.cancel_trip(trip_id, reason)
+	result = await service.cancel_trip(
+		trip_id,
+		reason,
+		cancelled_by_user_id=current_admin.id,
+	)
 
 	if not result["success"]:
 		status_code = 404 if "not found" in result["error"] else 400
 		raise HTTPException(status_code=status_code, detail=result["error"])
+
+	cancellation_metadata = service.serialize_cancellation_metadata(trip)
+	if cancellation_metadata is not None:
+		cancellation_metadata["cancelled_at"] = trip.cancelled_at.isoformat()
 
 	# 2. Notify the Driver
 	if trip.driver_user_id:
@@ -2642,7 +2725,10 @@ async def cancel_trip_by_id(
 				user_id=trip.driver_user_id,
 				title="Trip Cancelled by Admin",
 				message=f"Your trip on {trip.route.name} has been cancelled. Reason: {reason}",
-				data={"type": "Trip_cancel_UPDATE"},
+				data={
+					"type": "Trip_cancel_UPDATE",
+					"cancellation_metadata": cancellation_metadata,
+				},
 				commit=False,  # Don't commit yet
 			)
 		except Exception as e:
@@ -2653,15 +2739,18 @@ async def cancel_trip_by_id(
 		try:
 			# Call using the instance 'notif_service'
 			await notif_service.notify_user(
-				user_id=booking.passenger_id,
+				user_id=booking.passenger_user_id,
 				title="Urgent: Trip Cancelled",
 				message=f"Your ride for {trip.route.name} is cancelled. A refund has been initiated.",
-				data={"type": "Trip_cancel_UPDATE"},
+				data={
+					"type": "Trip_cancel_UPDATE",
+					"cancellation_metadata": cancellation_metadata,
+				},
 				commit=False,  # Don't commit yet
 			)
 		except Exception as e:
 			print(
-				f"Passenger Notification failed for {booking.passenger_id}: {e}"
+				f"Passenger Notification failed for {booking.passenger_user_id}: {e}"
 			)
 
 	# 4. Final single commit for the cancellation AND all notification records
@@ -2671,13 +2760,18 @@ async def cancel_trip_by_id(
 		db,
 		event="trip.cancelled",
 		trip_id=trip_id,
-		data={"route_id": trip.route_id, "reason": reason},
+		data={
+			"route_id": trip.route_id,
+			"reason": reason,
+			"cancellation_metadata": cancellation_metadata,
+		},
 		broadcast_catalog=True,
 	)
 
 	return {
 		"status": "success",
 		"message": "Trip cancelled and users notified.",
+		"cancellation_metadata": cancellation_metadata,
 	}
 
 
@@ -2689,15 +2783,20 @@ async def premature_end_trip(
 	trip_id: str,
 	request: Request,
 	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
 ):
 	hub = get_ws_hub(request)
 	service = AdminService(db, ws_hub=hub)
-	result = await service.handle_premature_trip_end(trip_id)
+	result = await service.handle_premature_trip_end(
+		trip_id,
+		cancelled_by_user_id=current_admin.id,
+	)
 	await publish_trip_event(
 		get_api_refresh_hub(request.app),
 		db,
 		event="trip.premature_ended",
 		trip_id=trip_id,
+		data={"cancellation_metadata": result["cancellation_metadata"]},
 		broadcast_catalog=True,
 	)
 	return result
@@ -4011,11 +4110,15 @@ async def get_all_transactions(
 				"refund_info": {
 					"is_refunded": b.booking_status
 					in ["cancelled", "refunded"],
-					"reason": getattr(
-						b, "cancellation_reason", "No reason provided"
+					**(
+						service.serialize_cancellation_metadata(b)
+						or {
+							"reason": "Cancellation reason was not recorded.",
+							"source": "legacy",
+							"cancelled_by_user_id": None,
+							"cancelled_at": b.cancelled_at,
+						}
 					),
-					"cancelled_by": getattr(b, "cancelled_by", "N/A"),
-					"cancelled_at": getattr(b, "cancelled_at", None),
 				}
 				if b.booking_status in ["cancelled", "refunded"]
 				else None,

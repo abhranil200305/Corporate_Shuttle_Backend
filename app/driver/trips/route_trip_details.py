@@ -96,6 +96,20 @@ async def get_route_trip_details(
                 "actual_end": trip.actual_end_at,
                 "cancellation_reason": trip.cancellation_reason,
                 "premature_end_reason": trip.premature_end_reason,
+                "cancellation_metadata": (
+                    {
+                        "cancelled_at": trip.cancelled_at,
+                        "reason": (
+                            trip.cancellation_reason
+                            or trip.premature_end_reason
+                            or "Cancellation reason was not recorded."
+                        ),
+                        "source": trip.cancellation_source or "legacy",
+                        "cancelled_by_user_id": trip.cancelled_by_user_id,
+                    }
+                    if trip.cancelled_at is not None
+                    else None
+                ),
 
                 # 🚀 Stops
                 "stops": [

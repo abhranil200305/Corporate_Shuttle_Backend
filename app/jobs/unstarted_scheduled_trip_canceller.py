@@ -145,6 +145,9 @@ async def _cancel_trip_and_bookings(
 
     trip.status = ScheduledTripStatus.CANCELLED
     trip.cancellation_reason = _build_cancellation_reason()
+    trip.cancelled_at = current_time
+    trip.cancellation_source = "system"
+    trip.cancelled_by_user_id = None
     db.add(trip)
 
     affected_bookings: list[TripBooking] = []
@@ -161,6 +164,9 @@ async def _cancel_trip_and_bookings(
 
         booking.booking_status = BookingStatus.CANCELLED
         booking.cancelled_at = booking.cancelled_at or current_time
+        booking.cancellation_reason = trip.cancellation_reason
+        booking.cancellation_source = "system"
+        booking.cancelled_by_user_id = None
         booking.payment_hold_expires_at = None
         booking.refund_retry_after = None
         db.add(booking)
@@ -187,6 +193,12 @@ async def _cancel_trip_and_bookings(
                 "booking_id": booking.id,
                 "scheduled_trip_id": booking.scheduled_trip_id,
                 "booking_status": booking.booking_status.value,
+                "cancellation_metadata": {
+                    "cancelled_at": current_time.isoformat(),
+                    "reason": trip.cancellation_reason,
+                    "source": "system",
+                    "cancelled_by_user_id": None,
+                },
                 "refresh": ["bookings_list", "booking_detail", "history"],
             },
         )
@@ -198,6 +210,12 @@ async def _cancel_trip_and_bookings(
         data={
             "scheduled_trip_id": trip.id,
             "trip_status": trip.status.value,
+            "cancellation_metadata": {
+                "cancelled_at": current_time.isoformat(),
+                "reason": trip.cancellation_reason,
+                "source": "system",
+                "cancelled_by_user_id": None,
+            },
             "refresh": ["driver_trips"],
         },
     )
@@ -212,6 +230,12 @@ async def _cancel_trip_and_bookings(
                 "route_id": trip.route_id,
                 "reason": trip.cancellation_reason,
                 "automatic": True,
+                "cancellation_metadata": {
+                    "cancelled_at": current_time.isoformat(),
+                    "reason": trip.cancellation_reason,
+                    "source": "system",
+                    "cancelled_by_user_id": None,
+                },
             },
             broadcast_catalog=True,
         )
