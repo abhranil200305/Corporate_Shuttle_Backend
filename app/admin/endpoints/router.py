@@ -3516,9 +3516,7 @@ async def get_user_transaction_history(
 
 	report = []
 	for b in bookings:
-		# Payout consistency check
-		audit_payout = b.fare_amount - b.commission_amount
-		is_payout_correct = audit_payout == b.driver_payout_amount
+		is_payout_correct = service.is_booking_payout_audit_correct(b)
 
 		report.append(
 			{
@@ -4065,9 +4063,7 @@ async def get_all_transactions(
 
 	report = []
 	for b in bookings:
-		# Payout consistency check
-		audit_payout = b.fare_amount - b.commission_amount
-		is_payout_correct = audit_payout == b.driver_payout_amount
+		is_payout_correct = service.is_booking_payout_audit_correct(b)
 
 		report.append(
 			{

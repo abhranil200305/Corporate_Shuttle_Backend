@@ -2606,6 +2606,28 @@ class AdminService:
 	def _quantize_money(value: Decimal) -> Decimal:
 		return Decimal(value).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+	@classmethod
+	def is_booking_payout_audit_correct(cls, booking) -> bool:
+		"""Validate the stored driver payout against the GST-exclusive basis."""
+		fare_amount = cls._quantize_money(Decimal(booking.fare_amount or 0))
+		taxable_amount = cls._quantize_money(
+			Decimal(getattr(booking, "taxable_amount", 0) or 0)
+		)
+		if taxable_amount <= Decimal("0.00") and fare_amount > Decimal("0.00"):
+			taxable_amount = fare_amount
+
+		commission_amount = cls._quantize_money(
+			Decimal(booking.commission_amount or 0)
+		)
+		stored_driver_payout = cls._quantize_money(
+			Decimal(booking.driver_payout_amount or 0)
+		)
+		expected_driver_payout = cls._quantize_money(
+			taxable_amount - commission_amount
+		)
+
+		return expected_driver_payout == stored_driver_payout
+
 	@staticmethod
 	def serialize_cancellation_metadata(record) -> dict[str, Any] | None:
 		cancelled_at = getattr(record, "cancelled_at", None)
