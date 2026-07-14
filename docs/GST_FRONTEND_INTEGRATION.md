@@ -8,6 +8,10 @@ RFID, cache, and rollout change introduced by that commit.
 The intended reader should not need to inspect the backend source to integrate
 GST correctly.
 
+Admin-application developers and operations admins can use the focused
+[Admin GST operations and API guide](./ADMIN_GST_OPERATIONS_AND_API.md) for the
+settings lifecycle, decision rules, downstream effects, and admin UI contract.
+
 Passenger-application developers should use the consolidated passenger-only
 handoff in
 [PASSENGER_FE_LATER_COMMITS_INTEGRATION.md](./PASSENGER_FE_LATER_COMMITS_INTEGRATION.md)
