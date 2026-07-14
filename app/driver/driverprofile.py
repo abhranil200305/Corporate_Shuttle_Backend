@@ -109,7 +109,15 @@ async def create_driver_profile(
 ):
     
     # =========================
-    # CHECK EXISTING PROFILE
+    # CLEAN INPUTS
+    # =========================
+    full_name = full_name.strip()
+    phone = phone.strip()
+    residential_street_line_1 = residential_street_line_1.strip()
+    residential_street_line_2 = residential_street_line_2.strip()
+
+    # =========================
+    # CHECK EXISTING PROFILE FOR THIS USER
     # =========================
     result = await db.execute(
         select(DriverProfile).where(
@@ -121,71 +129,40 @@ async def create_driver_profile(
     if existing:
         raise HTTPException(
             status_code=400,
-            detail="Driver profile already exists",
+            detail="Driver profile already exists for this user",
         )
 
     # =========================
-    # CLEAN REQUIRED FIELDS
+    # NEW LOGIC: CHECK IF PHONE NUMBER IS ALREADY TAKEN
     # =========================
-    full_name = full_name.strip()
-    phone = phone.strip()
-
-    residential_street_line_1 = residential_street_line_1.strip()
-    residential_street_line_2 = residential_street_line_2.strip()
+    phone_check = await db.execute(
+        select(DriverProfile).where(DriverProfile.phone == phone)
+    )
+    if phone_check.scalar_one_or_none():
+        raise HTTPException(
+            status_code=400,
+            detail="A driver profile with this phone number is already registered",
+        )
 
     # =========================
     # VALIDATE REQUIRED FIELDS
     # =========================
     if not full_name:
-        raise HTTPException(
-            status_code=422,
-            detail="full_name cannot be empty",
-        )
-
+        raise HTTPException(status_code=422, detail="full_name cannot be empty")
     if not phone:
-        raise HTTPException(
-            status_code=422,
-            detail="phone cannot be empty",
-        )
-
+        raise HTTPException(status_code=422, detail="phone cannot be empty")
     if not residential_street_line_1:
-        raise HTTPException(
-            status_code=422,
-            detail="residential_street_line_1 cannot be empty",
-        )
-
+        raise HTTPException(status_code=422, detail="residential_street_line_1 cannot be empty")
     if not residential_street_line_2:
-        raise HTTPException(
-            status_code=422,
-            detail="residential_street_line_2 cannot be empty",
-        )
+        raise HTTPException(status_code=422, detail="residential_street_line_2 cannot be empty")
 
     # =========================
     # CLEAN OPTIONAL FIELDS
     # =========================
-    residential_city = (
-        residential_city.strip()
-        if residential_city
-        else None
-    )
-
-    residential_state = (
-        residential_state.strip()
-        if residential_state
-        else None
-    )
-
-    residential_postal_code = (
-        residential_postal_code.strip()
-        if residential_postal_code
-        else None
-    )
-
-    residential_country = (
-        residential_country.strip()
-        if residential_country
-        else None
-    )
+    residential_city = residential_city.strip() if residential_city else None
+    residential_state = residential_state.strip() if residential_state else None
+    residential_postal_code = residential_postal_code.strip() if residential_postal_code else None
+    residential_country = residential_country.strip() if residential_country else None
 
     # =========================
     # SAVE PROFILE PICTURE
@@ -201,23 +178,17 @@ async def create_driver_profile(
     # =========================
     driver_profile = DriverProfile(
         user_id=current_user.id,
-
         full_name=full_name,
         phone=phone,
-
         profile_picture_path=profile_pic_path,
-
         residential_street_line_1=residential_street_line_1,
         residential_street_line_2=residential_street_line_2,
-
         residential_city=residential_city,
         residential_state=residential_state,
         residential_postal_code=residential_postal_code,
         residential_country=residential_country,
-
         aadhaar_file_path="",
         pan_file_path="",
-
         verification_status=DriverVerificationStatus.DRAFT,
     )
 
@@ -229,13 +200,11 @@ async def create_driver_profile(
     try:
         await db.commit()
         await db.refresh(driver_profile)
-
     except IntegrityError as e:
         await db.rollback()
-
         raise HTTPException(
             status_code=400,
-            detail=str(e.orig),
+            detail=f"Database error: {str(e.orig)}",
         )
 
     await publish_admin_event(
