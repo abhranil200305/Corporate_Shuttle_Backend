@@ -1,10 +1,63 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from email_validator import EmailNotValidError, validate_email
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+TRAVELLER_PHONE_SEPARATORS = re.compile(r"[\s().-]+")
+INDIAN_MOBILE_NUMBER = re.compile(r"^[6-9][0-9]{9}$")
+E164_NUMBER = re.compile(r"^[1-9][0-9]{7,14}$")
+
+
+def normalize_traveller_phone(value: str) -> str:
+    cleaned = value.strip()
+    compact = TRAVELLER_PHONE_SEPARATORS.sub("", cleaned)
+
+    if compact.startswith("+91"):
+        national_number = compact[3:]
+        if INDIAN_MOBILE_NUMBER.fullmatch(national_number):
+            return f"+91{national_number}"
+        raise ValueError(
+            "Indian traveller phone must contain a valid 10-digit mobile "
+            "number starting with 6, 7, 8, or 9."
+        )
+
+    if compact.startswith("+"):
+        international_number = compact[1:]
+        if E164_NUMBER.fullmatch(international_number):
+            return f"+{international_number}"
+        raise ValueError(
+            "Traveller phone must be a valid international number with "
+            "8 to 15 digits after the country code."
+        )
+
+    if compact.startswith("0"):
+        compact = compact[1:]
+    elif compact.startswith("91") and len(compact) == 12:
+        compact = compact[2:]
+
+    if INDIAN_MOBILE_NUMBER.fullmatch(compact):
+        return f"+91{compact}"
+
+    raise ValueError(
+        "Traveller phone must be a valid Indian mobile number or an "
+        "international number prefixed with +."
+    )
+
+
+def normalize_traveller_email(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    try:
+        return validate_email(value, check_deliverability=False).normalized
+    except EmailNotValidError as exc:
+        raise ValueError("Traveller email must be a valid email address.") from exc
 
 
 class PassengerProfileUpsertRequest(BaseModel):
@@ -56,6 +109,16 @@ class PassengerTravellerProfileCreateRequest(BaseModel):
             raise ValueError("This field cannot be empty.")
         return cleaned
 
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_traveller_phone(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: str | None) -> str | None:
+        return normalize_traveller_email(value)
+
 
 class PassengerTravellerProfileUpdateRequest(BaseModel):
     full_name: str | None = Field(default=None, min_length=1, max_length=120)
@@ -72,6 +135,18 @@ class PassengerTravellerProfileUpdateRequest(BaseModel):
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_traveller_phone(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: str | None) -> str | None:
+        return normalize_traveller_email(value)
 
     @model_validator(mode="after")
     def require_at_least_one_field(self):
@@ -294,6 +369,16 @@ class BookingSessionGuestTravellerRequest(BaseModel):
         if not cleaned:
             raise ValueError("This field cannot be empty.")
         return cleaned
+
+    @field_validator("phone")
+    @classmethod
+    def validate_phone(cls, value: str) -> str:
+        return normalize_traveller_phone(value)
+
+    @field_validator("email")
+    @classmethod
+    def validate_email_format(cls, value: str | None) -> str | None:
+        return normalize_traveller_email(value)
 
 
 class CreateBookingSessionSeatRequest(BaseModel):

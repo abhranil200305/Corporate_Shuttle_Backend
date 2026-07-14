@@ -72,6 +72,27 @@ Guest identities are owner-scoped. The backend does not claim that matching
 phone numbers across two different passenger accounts represent the same
 physical person.
 
+## Traveller contact validation
+
+Saved traveller create/update payloads and ad-hoc booking-session traveller
+payloads use the same contact validation.
+
+Phone rules:
+
+- A local Indian mobile number must contain 10 digits and start with `6`, `7`,
+  `8`, or `9`.
+- Indian forms such as `9876543210`, `09876543210`, `91 98765 43210`, and
+  `+91 98765-43210` are accepted and normalized to `+919876543210`.
+- International numbers are accepted when prefixed with `+` and contain 8 to
+  15 digits after formatting separators are removed.
+- Spaces, parentheses, periods, and hyphens are accepted formatting
+  separators. Letters and other characters are rejected.
+
+Email is optional. When supplied, it must be a syntactically valid email
+address. The backend normalizes the domain portion. Invalid phone or email
+input is rejected by request validation with HTTP `422`; no profile, booking,
+or payment order is created.
+
 If an ad-hoc guest phone matches any saved traveller profile owned by the same
 account, the API rejects the guest input with
 `guest_matches_saved_traveller` and returns the profile ID. The frontend should
@@ -185,6 +206,8 @@ Frontend behavior should be:
 6. Do not calculate overlap, stop timing, active status, or transfer buffers in
    the frontend. A client-side warning is fine, but it must never override the
    backend result.
+7. Validate traveller contact fields for immediate feedback, but submit the
+   backend-supported formats above and treat HTTP `422` as authoritative.
 
 Existing seat-capacity errors such as `seat_unavailable` and
 `trip_segment_full` remain unchanged.
