@@ -8705,6 +8705,46 @@ class PassengerService:
             passenger_user_id=current_user.id,
         )
         return await self._serialize_booking_detail(booking)
+
+    def _build_invoice_passenger_party(
+        self,
+        *,
+        booking: TripBooking,
+        passenger_user: User,
+        passenger_profile: PassengerProfile | None,
+    ) -> dict[str, Any]:
+        account_name = self._clean_optional_text(
+            None if passenger_profile is None else passenger_profile.full_name
+        )
+        account_email = self._clean_optional_text(passenger_user.email)
+        traveller_name = self._clean_optional_text(
+            booking.traveller_name_snapshot
+        )
+        traveller_email = self._clean_optional_text(
+            booking.traveller_email_snapshot
+        )
+
+        # Older bookings may predate traveller snapshots, while a passenger
+        # profile itself is optional. Use the durable user/profile identity as
+        # fallback so API invoices and emailed PDFs never lose known details.
+        account_name = account_name or traveller_name
+        account_email = account_email or traveller_email
+        traveller_name = traveller_name or account_name
+        traveller_email = traveller_email or account_email
+
+        return {
+            "user_id": passenger_user.id,
+            "full_name": account_name,
+            "email": account_email,
+            "traveller_name": traveller_name,
+            "traveller_phone": self._clean_optional_text(
+                booking.traveller_phone_snapshot
+            ),
+            "traveller_email": traveller_email,
+            "traveller_relationship_label": self._clean_optional_text(
+                booking.traveller_relationship_label_snapshot
+            ),
+        }
     
     async def _build_booking_invoice_payload(
         self,
@@ -8767,17 +8807,11 @@ class PassengerService:
                 "acknowledgement_date": None,
                 "signed_qr_code": None,
             },
-            "passenger": {
-                "user_id": passenger_user.id,
-                "full_name": None if passenger_profile is None else passenger_profile.full_name,
-                "email": passenger_user.email,
-                "traveller_name": booking.traveller_name_snapshot,
-                "traveller_phone": booking.traveller_phone_snapshot,
-                "traveller_email": booking.traveller_email_snapshot,
-                "traveller_relationship_label": (
-                    booking.traveller_relationship_label_snapshot
-                ),
-            },
+            "passenger": self._build_invoice_passenger_party(
+                booking=booking,
+                passenger_user=passenger_user,
+                passenger_profile=passenger_profile,
+            ),
             "trip": {
                 "scheduled_trip_id": booking.scheduled_trip_id,
                 "route_id": booking.route_id,
