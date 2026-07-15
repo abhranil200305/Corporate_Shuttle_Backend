@@ -256,6 +256,7 @@ async def get_booking_details(
         in (
             "completed",
             "premature_end",
+            "cancelled",
         )
     )
 
