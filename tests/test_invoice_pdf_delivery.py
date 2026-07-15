@@ -86,7 +86,10 @@ class InvoicePDFTests(unittest.TestCase):
         self.assertTrue(pdf.endswith(b"%%EOF\n"))
         self.assertIn(b"INV-20260714-ABCDEF12", pdf)
         self.assertIn(b"19ABCDE1234F1Z5", pdf)
-        self.assertIn(b"Razorpay payment ID: pay_1", pdf)
+        self.assertIn(b"Razorpay payment ID", pdf)
+        self.assertIn(b"pay_1", pdf)
+        self.assertIn(b"TAX COMPONENT", pdf)
+        self.assertIn(b"This is a system-generated invoice", pdf)
 
     def test_session_payment_is_eligible_for_seat_invoice(self) -> None:
         created_at = datetime(2026, 7, 14, 10, 30, tzinfo=timezone.utc)
