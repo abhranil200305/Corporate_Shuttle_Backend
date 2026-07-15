@@ -390,11 +390,11 @@ def _draw_tax_table(page: _Page, invoice: dict[str, Any], y: float) -> float:
             f"{_text(breakdown.get('sgst_rate_percent'), '0.00')}%",
             _money(breakdown.get("sgst_amount")),
         ),
-        (
-            "Integrated GST (IGST)",
-            f"{_text(breakdown.get('igst_rate_percent'), '0.00')}%",
-            _money(breakdown.get("igst_amount")),
-        ),
+        # (
+        #     "Integrated GST (IGST)",
+        #     f"{_text(breakdown.get('igst_rate_percent'), '0.00')}%",
+        #     _money(breakdown.get("igst_amount")),
+        # ),
     ]
     total_height = header_height + (len(rows) * row_height) + 38
     page.rectangle(MARGIN, y - total_height, width, total_height, fill=WHITE, stroke=LINE)
