@@ -14,7 +14,7 @@ from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException, UploadFile
-from sqlalchemy import Numeric, and_, cast, func, or_, select, text
+from sqlalchemy import Numeric, and_, cast, func, literal, or_, select, text, union_all
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -3154,16 +3154,20 @@ class PassengerService:
         booking = payment.booking
         route = booking.route
         trip = booking.scheduled_trip
+        effective_status = self._get_transaction_effective_status(booking, payment)
 
         return {
+            "payment_source": "booking",
             "payment_id": payment.id,
             "booking_id": booking.id,
+            "booking_session_id": booking.booking_session_id,
+            "booking_ids": [booking.id],
             "seat_number": booking.seat_number,
             "scheduled_trip_id": booking.scheduled_trip_id,
             "route_id": booking.route_id,
             "booking_status": booking.booking_status,
             "payment_status": payment.status,
-            "effective_status": self._get_transaction_effective_status(booking, payment),
+            "effective_status": effective_status,
             "amount": payment.amount,
             "taxable_amount": self._quantize_money(
                 Decimal(getattr(payment, "taxable_amount", 0) or 0)
@@ -3193,6 +3197,169 @@ class PassengerService:
             "cancellation_metadata": self._serialize_cancellation_metadata(booking),
             "created_at": payment.created_at,
             "updated_at": payment.updated_at,
+            "transaction": self._serialize_transaction_payment_details(
+                payment,
+                source="booking",
+                effective_status=effective_status,
+                booking_id=booking.id,
+                booking_session_id=booking.booking_session_id,
+            ),
+            "booking": None,
+            "bookings": None,
+            "invoice": None,
+            "invoices": None,
+            "invoice_unavailable_reason": None,
+            "failure": self._serialize_transaction_failure(
+                payment,
+                effective_status=effective_status,
+            ),
+        }
+
+    def _serialize_booking_session_transaction(
+        self,
+        payment: BookingSessionPayment,
+    ) -> dict[str, Any]:
+        booking_session = payment.booking_session
+        bookings = sorted(booking_session.bookings, key=lambda item: item.seat_number)
+        first_booking = bookings[0] if bookings else None
+        route = booking_session.route
+        trip = booking_session.scheduled_trip
+        refunded_amount = self._quantize_money(
+            Decimal(getattr(payment, "refunded_amount", 0) or 0)
+        )
+        if payment.status == BookingPaymentStatus.REFUNDED:
+            effective_status = "refunded"
+        elif payment.status == BookingPaymentStatus.PAID and refunded_amount > 0:
+            effective_status = "partially_refunded"
+        else:
+            effective_status = payment.status.value
+
+        return {
+            "payment_source": "booking_session",
+            "payment_id": payment.id,
+            "booking_id": None,
+            "booking_session_id": booking_session.id,
+            "booking_ids": [booking.id for booking in bookings],
+            "seat_number": None,
+            "scheduled_trip_id": booking_session.scheduled_trip_id,
+            "route_id": booking_session.route_id,
+            "booking_status": None,
+            "payment_status": payment.status,
+            "effective_status": effective_status,
+            "amount": payment.amount,
+            "taxable_amount": self._quantize_money(
+                Decimal(getattr(payment, "taxable_amount", 0) or 0)
+            ),
+            "cgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "cgst_amount", 0) or 0)
+            ),
+            "sgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "sgst_amount", 0) or 0)
+            ),
+            "igst_amount": self._quantize_money(
+                Decimal(getattr(payment, "igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(payment, "total_tax_amount", 0) or 0)
+            ),
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "pickup_stop": self._serialize_stop_brief(booking_session.pickup_stop),
+            "dropoff_stop": self._serialize_stop_brief(booking_session.dropoff_stop),
+            "route_name": None if route is None else route.name,
+            "route_code": None if route is None else route.code,
+            "planned_start_at": None if trip is None else trip.planned_start_at,
+            "planned_end_at": None if trip is None else trip.planned_end_at,
+            "completed_at": (
+                None
+                if first_booking is None
+                else first_booking.completed_at
+            ),
+            "cancelled_at": booking_session.cancelled_at,
+            "cancellation_metadata": self._serialize_cancellation_metadata(
+                booking_session
+            ),
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+            "transaction": self._serialize_transaction_payment_details(
+                payment,
+                source="booking_session",
+                effective_status=effective_status,
+                booking_id=None,
+                booking_session_id=booking_session.id,
+            ),
+            "booking": None,
+            "bookings": None,
+            "invoice": None,
+            "invoices": None,
+            "invoice_unavailable_reason": None,
+            "failure": self._serialize_transaction_failure(
+                payment,
+                effective_status=effective_status,
+            ),
+        }
+
+    def _serialize_transaction_payment_details(
+        self,
+        payment: BookingPayment | BookingSessionPayment,
+        *,
+        source: str,
+        effective_status: str,
+        booking_id: str | None,
+        booking_session_id: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "id": payment.id,
+            "source": source,
+            "booking_id": booking_id,
+            "booking_session_id": booking_session_id,
+            "razorpay_order_id": payment.razorpay_order_id,
+            "razorpay_payment_id": payment.razorpay_payment_id,
+            "status": payment.status,
+            "effective_status": effective_status,
+            "amount": payment.amount,
+            "taxable_amount": self._quantize_money(
+                Decimal(getattr(payment, "taxable_amount", 0) or 0)
+            ),
+            "cgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "cgst_amount", 0) or 0)
+            ),
+            "sgst_amount": self._quantize_money(
+                Decimal(getattr(payment, "sgst_amount", 0) or 0)
+            ),
+            "igst_amount": self._quantize_money(
+                Decimal(getattr(payment, "igst_amount", 0) or 0)
+            ),
+            "total_tax_amount": self._quantize_money(
+                Decimal(getattr(payment, "total_tax_amount", 0) or 0)
+            ),
+            "razorpay_refund_id": getattr(payment, "razorpay_refund_id", None),
+            "refunded_amount": self._quantize_money(
+                Decimal(getattr(payment, "refunded_amount", 0) or 0)
+            ),
+            "refund_requested_at": getattr(payment, "refund_requested_at", None),
+            "refund_processed_at": getattr(payment, "refund_processed_at", None),
+            "refund_failure_reason": getattr(payment, "refund_failure_reason", None),
+            "created_at": payment.created_at,
+            "updated_at": payment.updated_at,
+        }
+
+    @staticmethod
+    def _serialize_transaction_failure(
+        payment: BookingPayment | BookingSessionPayment,
+        *,
+        effective_status: str,
+    ) -> dict[str, Any] | None:
+        if payment.status != BookingPaymentStatus.FAILED:
+            return None
+        return {
+            "code": "payment_failed",
+            "message": "The payment attempt failed before the booking was confirmed.",
+            "gateway": "razorpay",
+            "gateway_order_id": payment.razorpay_order_id,
+            "gateway_payment_id": payment.razorpay_payment_id,
+            "provider_reason": None,
+            "recorded_at": payment.updated_at,
         }
     
     def _get_notification_service(self) -> NotificationService:
@@ -8538,6 +8705,46 @@ class PassengerService:
             passenger_user_id=current_user.id,
         )
         return await self._serialize_booking_detail(booking)
+
+    def _build_invoice_passenger_party(
+        self,
+        *,
+        booking: TripBooking,
+        passenger_user: User,
+        passenger_profile: PassengerProfile | None,
+    ) -> dict[str, Any]:
+        account_name = self._clean_optional_text(
+            None if passenger_profile is None else passenger_profile.full_name
+        )
+        account_email = self._clean_optional_text(passenger_user.email)
+        traveller_name = self._clean_optional_text(
+            booking.traveller_name_snapshot
+        )
+        traveller_email = self._clean_optional_text(
+            booking.traveller_email_snapshot
+        )
+
+        # Older bookings may predate traveller snapshots, while a passenger
+        # profile itself is optional. Use the durable user/profile identity as
+        # fallback so API invoices and emailed PDFs never lose known details.
+        account_name = account_name or traveller_name
+        account_email = account_email or traveller_email
+        traveller_name = traveller_name or account_name
+        traveller_email = traveller_email or account_email
+
+        return {
+            "user_id": passenger_user.id,
+            "full_name": account_name,
+            "email": account_email,
+            "traveller_name": traveller_name,
+            "traveller_phone": self._clean_optional_text(
+                booking.traveller_phone_snapshot
+            ),
+            "traveller_email": traveller_email,
+            "traveller_relationship_label": self._clean_optional_text(
+                booking.traveller_relationship_label_snapshot
+            ),
+        }
     
     async def _build_booking_invoice_payload(
         self,
@@ -8600,17 +8807,11 @@ class PassengerService:
                 "acknowledgement_date": None,
                 "signed_qr_code": None,
             },
-            "passenger": {
-                "user_id": passenger_user.id,
-                "full_name": None if passenger_profile is None else passenger_profile.full_name,
-                "email": passenger_user.email,
-                "traveller_name": booking.traveller_name_snapshot,
-                "traveller_phone": booking.traveller_phone_snapshot,
-                "traveller_email": booking.traveller_email_snapshot,
-                "traveller_relationship_label": (
-                    booking.traveller_relationship_label_snapshot
-                ),
-            },
+            "passenger": self._build_invoice_passenger_party(
+                booking=booking,
+                passenger_user=passenger_user,
+                passenger_profile=passenger_profile,
+            ),
             "trip": {
                 "scheduled_trip_id": booking.scheduled_trip_id,
                 "route_id": booking.route_id,
@@ -9075,6 +9276,114 @@ class PassengerService:
             "items": [self._serialize_booking(booking) for booking in bookings],
             "count": len(bookings),
         }
+
+    @staticmethod
+    def _transaction_booking_load_options() -> list[Any]:
+        booking = selectinload(BookingPayment.booking)
+        trip = booking.selectinload(TripBooking.scheduled_trip)
+        return [
+            booking.selectinload(TripBooking.pickup_stop),
+            booking.selectinload(TripBooking.dropoff_stop),
+            booking.selectinload(TripBooking.route),
+            booking.selectinload(TripBooking.payments),
+            booking.selectinload(TripBooking.booking_session).selectinload(
+                BookingSession.payments
+            ),
+            booking.selectinload(TripBooking.rating),
+            booking.selectinload(TripBooking.scan_events),
+            trip.selectinload(ScheduledTrip.route)
+            .selectinload(Route.route_stops)
+            .selectinload(RouteStop.stop),
+            trip.selectinload(ScheduledTrip.vehicle),
+            trip.selectinload(ScheduledTrip.driver),
+            trip.selectinload(ScheduledTrip.trip_events).selectinload(
+                TripEvent.stop
+            ),
+        ]
+
+    @staticmethod
+    def _transaction_session_load_options() -> list[Any]:
+        session = selectinload(BookingSessionPayment.booking_session)
+        bookings = session.selectinload(BookingSession.bookings)
+        trip = session.selectinload(BookingSession.scheduled_trip)
+        booking_trip = bookings.selectinload(TripBooking.scheduled_trip)
+        return [
+            session.selectinload(BookingSession.payments),
+            session.selectinload(BookingSession.pickup_stop),
+            session.selectinload(BookingSession.dropoff_stop),
+            session.selectinload(BookingSession.route),
+            trip.selectinload(ScheduledTrip.route)
+            .selectinload(Route.route_stops)
+            .selectinload(RouteStop.stop),
+            trip.selectinload(ScheduledTrip.vehicle),
+            trip.selectinload(ScheduledTrip.driver),
+            trip.selectinload(ScheduledTrip.trip_events).selectinload(
+                TripEvent.stop
+            ),
+            bookings.selectinload(TripBooking.pickup_stop),
+            bookings.selectinload(TripBooking.dropoff_stop),
+            bookings.selectinload(TripBooking.route),
+            bookings.selectinload(TripBooking.payments),
+            bookings.selectinload(TripBooking.rating),
+            bookings.selectinload(TripBooking.scan_events),
+            booking_trip.selectinload(ScheduledTrip.route)
+            .selectinload(Route.route_stops)
+            .selectinload(RouteStop.stop),
+            booking_trip.selectinload(ScheduledTrip.vehicle),
+            booking_trip.selectinload(ScheduledTrip.driver),
+            booking_trip.selectinload(ScheduledTrip.trip_events).selectinload(
+                TripEvent.stop
+            ),
+        ]
+
+    async def _serialize_detailed_transaction(
+        self,
+        payment: BookingPayment | BookingSessionPayment,
+        *,
+        current_user: User,
+        passenger_profile: PassengerProfile | None,
+    ) -> dict[str, Any]:
+        if isinstance(payment, BookingPayment):
+            item = self._serialize_transaction(payment)
+            related_bookings = [payment.booking]
+        else:
+            item = self._serialize_booking_session_transaction(payment)
+            related_bookings = sorted(
+                payment.booking_session.bookings,
+                key=lambda booking: booking.seat_number,
+            )
+
+        # Failed/pending attempts intentionally expose only payment and failure
+        # diagnostics. Successful captures reuse the existing booking-detail and
+        # invoice payloads so the FE sees one canonical representation.
+        if payment.status != BookingPaymentStatus.PAID:
+            return item
+
+        booking_details = [
+            await self._serialize_booking_detail(booking)
+            for booking in related_bookings
+        ]
+        item["bookings"] = booking_details
+        if isinstance(payment, BookingPayment) and booking_details:
+            item["booking"] = booking_details[0]
+
+        try:
+            invoices = [
+                await self._build_booking_invoice_payload(
+                    booking=booking,
+                    passenger_user=current_user,
+                    passenger_profile=passenger_profile,
+                )
+                for booking in related_bookings
+            ]
+        except (RuntimeError, ValueError):
+            item["invoice_unavailable_reason"] = "invoice_configuration_invalid"
+            return item
+
+        item["invoices"] = invoices
+        if isinstance(payment, BookingPayment) and invoices:
+            item["invoice"] = invoices[0]
+        return item
     
     async def list_transaction_history(
         self,
@@ -9097,61 +9406,133 @@ class PassengerService:
                 },
             )
 
-        stmt = (
-            select(BookingPayment)
-            .join(TripBooking, TripBooking.id == BookingPayment.booking_id)
-            .where(TripBooking.passenger_user_id == current_user.id)
-            .options(
-                selectinload(BookingPayment.booking).selectinload(TripBooking.pickup_stop),
-                selectinload(BookingPayment.booking).selectinload(TripBooking.dropoff_stop),
-                selectinload(BookingPayment.booking).selectinload(TripBooking.route),
-                selectinload(BookingPayment.booking).selectinload(TripBooking.scheduled_trip),
-            )
-            .order_by(BookingPayment.created_at.desc())
-            .offset(offset)
-            .limit(limit)
+        visible_statuses = (
+            BookingPaymentStatus.PAID,
+            BookingPaymentStatus.FAILED,
+            BookingPaymentStatus.REFUNDED,
         )
-
-        count_stmt = (
-            select(func.count(BookingPayment.id))
+        direct_index = (
+            select(
+                BookingPayment.id.label("payment_id"),
+                literal("booking").label("payment_source"),
+                BookingPayment.created_at.label("created_at"),
+            )
             .join(TripBooking, TripBooking.id == BookingPayment.booking_id)
             .where(TripBooking.passenger_user_id == current_user.id)
+        )
+        session_index = (
+            select(
+                BookingSessionPayment.id.label("payment_id"),
+                literal("booking_session").label("payment_source"),
+                BookingSessionPayment.created_at.label("created_at"),
+            )
+            .join(
+                BookingSession,
+                BookingSession.id == BookingSessionPayment.booking_session_id,
+            )
+            .where(BookingSession.owner_user_id == current_user.id)
         )
 
         if status is not None:
-            stmt = stmt.where(BookingPayment.status == status)
-            count_stmt = count_stmt.where(BookingPayment.status == status)
-        else:
-            visible_statuses = (
-                BookingPaymentStatus.PAID,
-                BookingPaymentStatus.FAILED,
-                BookingPaymentStatus.REFUNDED,
+            direct_index = direct_index.where(BookingPayment.status == status)
+            session_index = session_index.where(
+                BookingSessionPayment.status == status
             )
-            stmt = stmt.where(BookingPayment.status.in_(visible_statuses))
-            count_stmt = count_stmt.where(BookingPayment.status.in_(visible_statuses))
+        else:
+            direct_index = direct_index.where(
+                BookingPayment.status.in_(visible_statuses)
+            )
+            session_index = session_index.where(
+                BookingSessionPayment.status.in_(visible_statuses)
+            )
 
         if year is not None:
-            stmt = stmt.where(func.extract("year", BookingPayment.created_at) == year)
-            count_stmt = count_stmt.where(
+            direct_index = direct_index.where(
                 func.extract("year", BookingPayment.created_at) == year
             )
-
+            session_index = session_index.where(
+                func.extract("year", BookingSessionPayment.created_at) == year
+            )
         if month is not None:
-            stmt = stmt.where(func.extract("month", BookingPayment.created_at) == month)
-            count_stmt = count_stmt.where(
+            direct_index = direct_index.where(
                 func.extract("month", BookingPayment.created_at) == month
             )
+            session_index = session_index.where(
+                func.extract("month", BookingSessionPayment.created_at) == month
+            )
 
-        result = await self.db.execute(stmt)
-        payments = result.scalars().unique().all()
+        history_index = union_all(direct_index, session_index).subquery()
+        page_result = await self.db.execute(
+            select(
+                history_index.c.payment_id,
+                history_index.c.payment_source,
+                history_index.c.created_at,
+            )
+            .order_by(
+                history_index.c.created_at.desc(),
+                history_index.c.payment_id.desc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        )
+        page_rows = page_result.all()
 
-        count_result = await self.db.execute(count_stmt)
+        count_result = await self.db.execute(
+            select(func.count()).select_from(history_index)
+        )
         total_count = int(count_result.scalar_one() or 0)
 
-        return {
-            "items": [self._serialize_transaction(payment) for payment in payments],
-            "count": total_count,
-        }
+        direct_ids = [
+            row.payment_id for row in page_rows if row.payment_source == "booking"
+        ]
+        session_ids = [
+            row.payment_id
+            for row in page_rows
+            if row.payment_source == "booking_session"
+        ]
+
+        payments_by_key: dict[
+            tuple[str, str], BookingPayment | BookingSessionPayment
+        ] = {}
+        if direct_ids:
+            direct_result = await self.db.execute(
+                select(BookingPayment)
+                .where(BookingPayment.id.in_(direct_ids))
+                .options(*self._transaction_booking_load_options())
+            )
+            for payment in direct_result.scalars().unique().all():
+                payments_by_key[("booking", payment.id)] = payment
+
+        if session_ids:
+            session_result = await self.db.execute(
+                select(BookingSessionPayment)
+                .where(BookingSessionPayment.id.in_(session_ids))
+                .options(*self._transaction_session_load_options())
+            )
+            for payment in session_result.scalars().unique().all():
+                payments_by_key[("booking_session", payment.id)] = payment
+
+        has_success = any(
+            payment.status == BookingPaymentStatus.PAID
+            for payment in payments_by_key.values()
+        )
+        passenger_profile = (
+            await self._get_profile_obj(current_user.id) if has_success else None
+        )
+
+        items: list[dict[str, Any]] = []
+        for row in page_rows:
+            payment = payments_by_key.get((row.payment_source, row.payment_id))
+            if payment is None:
+                continue
+            item = await self._serialize_detailed_transaction(
+                payment,
+                current_user=current_user,
+                passenger_profile=passenger_profile,
+            )
+            items.append(item)
+
+        return {"items": items, "count": total_count}
     
     @staticmethod
     def _normalize_optional_datetime(value: datetime | None) -> datetime | None:

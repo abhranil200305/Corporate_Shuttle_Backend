@@ -1,3 +1,4 @@
+from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
 from types import SimpleNamespace
@@ -86,7 +87,31 @@ class InvoicePDFTests(unittest.TestCase):
         self.assertTrue(pdf.endswith(b"%%EOF\n"))
         self.assertIn(b"INV-20260714-ABCDEF12", pdf)
         self.assertIn(b"19ABCDE1234F1Z5", pdf)
-        self.assertIn(b"Razorpay payment ID: pay_1", pdf)
+        self.assertIn(b"RAZORPAY PAYMENT ID", pdf)
+        self.assertIn(b"pay_1", pdf)
+        self.assertIn(b"FARE AND TAX SUMMARY", pdf)
+        self.assertIn(b"System-generated payment receipt", pdf)
+        self.assertIn(b"/MediaBox [0 0 595.28 841.89]", pdf)
+        self.assertIn(b"/BaseFont /Helvetica-Bold", pdf)
+
+    def test_pdf_distinguishes_traveller_from_booking_account(self) -> None:
+        invoice = deepcopy(sample_invoice())
+        invoice["passenger"].update(
+            {
+                "full_name": "Account Holder",
+                "email": "account@example.com",
+                "traveller_name": "Guest Traveller",
+                "traveller_email": "guest@example.com",
+            }
+        )
+
+        pdf = generate_invoice_pdf(invoice)
+
+        self.assertIn(b"Guest Traveller", pdf)
+        self.assertIn(b"BOOKED BY", pdf)
+        self.assertIn(b"Account Holder", pdf)
+        self.assertIn(b"ACCOUNT EMAIL", pdf)
+        self.assertIn(b"account@example.com", pdf)
 
     def test_session_payment_is_eligible_for_seat_invoice(self) -> None:
         created_at = datetime(2026, 7, 14, 10, 30, tzinfo=timezone.utc)
@@ -140,6 +165,51 @@ class InvoiceDeliveryQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(db.execute.await_count, 1)
         statement = db.execute.await_args.args[0]
         self.assertIn("DO NOTHING", str(statement.compile()))
+
+
+class InvoicePassengerIdentityTests(unittest.TestCase):
+    def test_account_identity_fills_missing_traveller_snapshots(self) -> None:
+        service = PassengerService(MagicMock())
+        party = service._build_invoice_passenger_party(
+            booking=SimpleNamespace(
+                traveller_name_snapshot=None,
+                traveller_phone_snapshot=None,
+                traveller_email_snapshot=None,
+                traveller_relationship_label_snapshot=None,
+            ),
+            passenger_user=SimpleNamespace(
+                id="passenger-1",
+                email=" passenger@example.com ",
+            ),
+            passenger_profile=SimpleNamespace(full_name=" Passenger Name "),
+        )
+
+        self.assertEqual(party["full_name"], "Passenger Name")
+        self.assertEqual(party["email"], "passenger@example.com")
+        self.assertEqual(party["traveller_name"], "Passenger Name")
+        self.assertEqual(party["traveller_email"], "passenger@example.com")
+
+    def test_booking_snapshot_fills_missing_optional_profile(self) -> None:
+        service = PassengerService(MagicMock())
+        party = service._build_invoice_passenger_party(
+            booking=SimpleNamespace(
+                traveller_name_snapshot="Booked Traveller",
+                traveller_phone_snapshot=" +919876543210 ",
+                traveller_email_snapshot="traveller@example.com",
+                traveller_relationship_label_snapshot="Guest",
+            ),
+            passenger_user=SimpleNamespace(
+                id="passenger-1",
+                email="account@example.com",
+            ),
+            passenger_profile=None,
+        )
+
+        self.assertEqual(party["full_name"], "Booked Traveller")
+        self.assertEqual(party["email"], "account@example.com")
+        self.assertEqual(party["traveller_name"], "Booked Traveller")
+        self.assertEqual(party["traveller_email"], "traveller@example.com")
+        self.assertEqual(party["traveller_phone"], "+919876543210")
 
 
 class InvoiceEmailWorkerTests(unittest.IsolatedAsyncioTestCase):

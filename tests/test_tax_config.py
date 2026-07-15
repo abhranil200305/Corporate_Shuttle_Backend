@@ -130,12 +130,21 @@ class GSTEnvironmentConfigTests(unittest.TestCase):
         with gst_environment(GSTIN="27ABCDE1234F1Z5"):
             self.assertEqual(gstin_from_settings(settings), "29ABCDE1234F1Z3")
 
+    def test_fourteen_character_organisation_identifier_is_accepted(self) -> None:
+        self.assertEqual(
+            normalize_gstin(" ab12cd34ef56gh "),
+            "AB12CD34EF56GH",
+        )
+
+        with gst_environment(GSTIN="ab12cd34ef56gh"):
+            self.assertEqual(gstin_from_env(), "AB12CD34EF56GH")
+
     def test_invalid_gstin_is_rejected(self) -> None:
-        with self.assertRaisesRegex(ValueError, "15-character Indian GSTIN format"):
+        with self.assertRaisesRegex(ValueError, "14-character alphanumeric"):
             normalize_gstin("not-a-gstin")
 
         with gst_environment(GSTIN="not-a-gstin"):
-            with self.assertRaisesRegex(RuntimeError, "GSTIN must match"):
+            with self.assertRaisesRegex(RuntimeError, "14-character alphanumeric"):
                 gstin_from_env()
 
     def test_persisted_settings_override_environment(self) -> None:

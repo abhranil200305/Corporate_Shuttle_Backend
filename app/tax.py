@@ -19,6 +19,7 @@ FALSE_ENV_VALUES = frozenset({"0", "false", "no", "off"})
 GSTIN_PATTERN = re.compile(
     r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]$"
 )
+GST_ORGANISATION_IDENTIFIER_PATTERN = re.compile(r"^[0-9A-Z]{14}$")
 GST_STATE_CODE_PATTERN = re.compile(r"^[0-9]{2}$")
 GST_POSTAL_CODE_PATTERN = re.compile(r"^[1-9][0-9]{5}$")
 GST_SAC_CODE_PATTERN = re.compile(r"^[0-9]{4,8}$")
@@ -87,8 +88,14 @@ def normalize_gstin(value: str | None) -> str | None:
     normalized = value.strip().upper()
     if not normalized:
         return None
-    if not GSTIN_PATTERN.fullmatch(normalized):
-        raise ValueError("GSTIN must match the 15-character Indian GSTIN format.")
+    if not (
+        GSTIN_PATTERN.fullmatch(normalized)
+        or GST_ORGANISATION_IDENTIFIER_PATTERN.fullmatch(normalized)
+    ):
+        raise ValueError(
+            "GSTIN must be either a 14-character alphanumeric organisation "
+            "identifier or match the 15-character Indian GSTIN format."
+        )
     return normalized
 
 
@@ -97,7 +104,8 @@ def gstin_from_env() -> str | None:
         return normalize_gstin(os.getenv("GSTIN"))
     except ValueError as exc:
         raise RuntimeError(
-            "GSTIN must match the 15-character Indian GSTIN format."
+            "GSTIN must be either a 14-character alphanumeric organisation "
+            "identifier or match the 15-character Indian GSTIN format."
         ) from exc
 
 
