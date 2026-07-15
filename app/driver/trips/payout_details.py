@@ -36,16 +36,16 @@ def _money(value: Decimal | None) -> Decimal:
     )
 
 
-def _validate_month_year_pair(
+def _validate_month_year_filter(
     *,
     month: int | None,
     year: int | None,
     label: str,
 ) -> None:
-    if (month is None) != (year is None):
+    if month is not None and year is None:
         raise HTTPException(
             status_code=400,
-            detail=f"{label}_month and {label}_year must be provided together",
+            detail=f"{label}_year is required when {label}_month is provided",
         )
 
     if month is not None and not (1 <= month <= 12):
@@ -78,22 +78,29 @@ def _build_trip_window_utc(
     to_month: int | None,
     to_year: int | None,
 ) -> tuple[datetime | None, datetime | None]:
-    _validate_month_year_pair(month=from_month, year=from_year, label="from")
-    _validate_month_year_pair(month=to_month, year=to_year, label="to")
+    _validate_month_year_filter(month=from_month, year=from_year, label="from")
+    _validate_month_year_filter(month=to_month, year=to_year, label="to")
 
     start_utc = None
     end_utc = None
 
-    if from_month is not None and from_year is not None:
-        start_utc = _month_start_ist(from_year, from_month).astimezone(timezone.utc)
+    if from_year is not None:
+        start_utc = _month_start_ist(from_year, from_month or 1).astimezone(
+            timezone.utc
+        )
 
-    if to_month is not None and to_year is not None:
-        end_utc = _next_month_start_ist(to_year, to_month).astimezone(timezone.utc)
+    if to_year is not None:
+        if to_month is None:
+            end_utc = _month_start_ist(to_year + 1, 1).astimezone(timezone.utc)
+        else:
+            end_utc = _next_month_start_ist(to_year, to_month).astimezone(
+                timezone.utc
+            )
 
     if start_utc is not None and end_utc is not None and start_utc >= end_utc:
         raise HTTPException(
             status_code=400,
-            detail="from month/year must be before or equal to to month/year",
+            detail="from period must be before or equal to to period",
         )
 
     return start_utc, end_utc
@@ -208,10 +215,22 @@ async def get_driver_payout_details(
         pattern="^(pending|paid)$",
         description="Filter by derived payout status: pending or paid",
     ),
-    from_month: int | None = Query(default=None),
-    from_year: int | None = Query(default=None),
-    to_month: int | None = Query(default=None),
-    to_year: int | None = Query(default=None),
+    from_month: int | None = Query(
+        default=None,
+        description="Start month in IST; requires from_year. Omit for January.",
+    ),
+    from_year: int | None = Query(
+        default=None,
+        description="Start year in IST. Without from_month, starts on January 1.",
+    ),
+    to_month: int | None = Query(
+        default=None,
+        description="End month in IST; requires to_year. Omit for December.",
+    ),
+    to_year: int | None = Query(
+        default=None,
+        description="End year in IST. Without to_month, includes the full year.",
+    ),
     db: AsyncSession = Depends(get_async_session),
     current_user: User = Depends(get_current_user),
 ):
