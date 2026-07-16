@@ -161,6 +161,99 @@ class TripManifestResponse(BaseModel):
 	passengers: list[PassengerManifestItem]
 
 
+class AdminTripTrackingStopBriefResponse(BaseModel):
+	stop_id: str
+	name: str
+	sequence_no: int
+
+
+class AdminTripTrackingProgressPointResponse(AdminTripTrackingStopBriefResponse):
+	action: Literal["arrived", "departed"]
+	occurred_at: datetime
+
+
+class AdminTripTrackingStopResponse(AdminTripTrackingStopBriefResponse):
+	route_stop_id: str
+	lat: float
+	lng: float
+	radius_meters: int
+	assume_time_diff_minutes: int | None
+	boarding_allowed: bool
+	deboarding_allowed: bool
+	planned_time_at_stop: datetime
+	arrival_time: datetime | None
+	departure_time: datetime | None
+	state: Literal["upcoming", "arrived", "departed", "not_visited"]
+	is_current_stop: bool
+	is_next_stop: bool
+
+
+class AdminTripTrackingActionResponse(AdminTripTrackingProgressPointResponse):
+	event_id: str
+
+
+class AdminTripTrackingRouteResponse(BaseModel):
+	id: str
+	name: str
+	code: str
+	has_ac: bool | None
+
+
+class AdminTripTrackingDriverResponse(BaseModel):
+	id: str
+	name: str | None
+	email: str
+
+
+class AdminTripTrackingVehicleResponse(BaseModel):
+	id: str
+	registration_number: str
+	vehicle_name: str
+	vehicle_model: str
+
+
+class AdminTripTrackingLocationResponse(BaseModel):
+	lat: float | None
+	lng: float | None
+
+
+class AdminTripTrackingProgressResponse(BaseModel):
+	total_stops: int
+	arrived_stops: int
+	departed_stops: int
+	remaining_stops: int
+	progress_percent: float
+	position_state: Literal[
+		"not_started",
+		"at_stop",
+		"between_stops",
+		"finished",
+	]
+
+
+class AdminTripStopTrackingResponse(BaseModel):
+	trip_id: str
+	status: str
+	is_current_trip: bool
+	planned_start_at: datetime
+	planned_end_at: datetime
+	actual_start_at: datetime | None
+	actual_end_at: datetime | None
+	last_updated: datetime
+	route: AdminTripTrackingRouteResponse
+	driver: AdminTripTrackingDriverResponse | None
+	vehicle: AdminTripTrackingVehicleResponse | None
+	last_known_location: AdminTripTrackingLocationResponse
+	progress: AdminTripTrackingProgressResponse
+	current_stop: AdminTripTrackingProgressPointResponse | None
+	last_action: AdminTripTrackingProgressPointResponse | None
+	last_arrived_stop: AdminTripTrackingProgressPointResponse | None
+	last_departed_stop: AdminTripTrackingProgressPointResponse | None
+	next_stop: AdminTripTrackingStopBriefResponse | None
+	stops: list[AdminTripTrackingStopResponse]
+	actions: list[AdminTripTrackingActionResponse]
+
+
 class BookingTimeDetails(BaseModel):
 	booked_at: datetime
 	arrived_at_bus: datetime | None = None
