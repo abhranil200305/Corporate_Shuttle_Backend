@@ -226,6 +226,7 @@ ADMIN_TRIPS = RefreshInstruction(
         "dashboard",
         "trips",
         "trip_details",
+        "trip_stop_tracking",
         "trip_manifest",
         "bookings",
         "incidents",
@@ -234,6 +235,7 @@ ADMIN_TRIPS = RefreshInstruction(
     endpoints=(
         "/admin/trips/monitor",
         "/admin/trips/{trip_id}",
+        "/admin/trips/{trip_id}/stop-tracking",
         "/admin/trips/{trip_id}/bookings",
         "/admin/{trip_id}/passengers",
         "/admin/booking/{booking_id}",

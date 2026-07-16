@@ -56,6 +56,7 @@ from app.admin.rfid_schemas import (
 )
 from app.admin.rfid_service import AdminRFIDService
 from app.admin.structs.dto import (
+	AdminTripStopTrackingResponse,
 	AdminVehicleInspectionStatusListResponse,
 	BookingFullDetailsResponsee,
 	BulkPayoutTriggerRequest,
@@ -2680,6 +2681,19 @@ async def monitor_all_trips(
 		}
 		for t in trips
 	]
+
+
+@router.get(
+	"/trips/{trip_id}/stop-tracking",
+	response_model=AdminTripStopTrackingResponse,
+)
+async def get_trip_stop_tracking(
+	trip_id: str,
+	db: AsyncSession = Depends(get_async_session),
+	current_admin: schema.User = Depends(get_current_admin),
+):
+	service = AdminService(db)
+	return await service.get_trip_stop_tracking(trip_id)
 
 
 # -----------------------------

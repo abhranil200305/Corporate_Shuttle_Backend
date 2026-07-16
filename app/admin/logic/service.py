@@ -581,6 +581,298 @@ class AdminService:
 			for event in (trip.trip_events or [])
 		}
 
+	@staticmethod
+	def _tracking_stop_brief(route_stop: schema.RouteStop) -> dict[str, Any]:
+		return {
+			"stop_id": route_stop.stop_id,
+			"name": route_stop.stop.name,
+			"sequence_no": route_stop.sequence_no,
+		}
+
+	def _serialize_trip_stop_tracking(
+		self,
+		trip: schema.ScheduledTrip,
+	) -> dict[str, Any]:
+		route_stops = sorted(
+			trip.route.route_stops,
+			key=lambda item: item.sequence_no,
+		)
+		event_by_stop_id = {
+			str(event.stop_id): event for event in (trip.trip_events or [])
+		}
+		route_stop_by_stop_id = {
+			str(route_stop.stop_id): route_stop for route_stop in route_stops
+		}
+		active_statuses = {
+			schema.ScheduledTripStatus.IN_PROGRESS,
+			schema.ScheduledTripStatus.PREMATURED_END_REQUEST,
+		}
+
+		actions: list[dict[str, Any]] = []
+		for event in trip.trip_events or []:
+			route_stop = route_stop_by_stop_id.get(str(event.stop_id))
+			if route_stop is None:
+				continue
+			brief = self._tracking_stop_brief(route_stop)
+			if event.arrival_time is not None:
+				actions.append(
+					{
+						"event_id": event.id,
+						**brief,
+						"action": "arrived",
+						"occurred_at": event.arrival_time,
+					}
+				)
+			if event.departure_time is not None:
+				actions.append(
+					{
+						"event_id": event.id,
+						**brief,
+						"action": "departed",
+						"occurred_at": event.departure_time,
+					}
+				)
+		actions.sort(key=lambda item: item["occurred_at"])
+
+		active_route_stops = [
+			route_stop
+			for route_stop in route_stops
+			if (
+				(event := event_by_stop_id.get(str(route_stop.stop_id)))
+				and event.arrival_time is not None
+				and event.departure_time is None
+			)
+		]
+		current_route_stop = (
+			max(active_route_stops, key=lambda item: item.sequence_no)
+			if (
+				active_route_stops
+				and trip.status in active_statuses
+			)
+			else None
+		)
+
+		terminal_statuses = {
+			schema.ScheduledTripStatus.COMPLETED,
+			schema.ScheduledTripStatus.CANCELLED,
+			schema.ScheduledTripStatus.PREMATURE_END,
+		}
+		next_route_stop = None
+		if trip.status not in terminal_statuses:
+			next_route_stop = next(
+				(
+					route_stop
+					for route_stop in route_stops
+					if (
+						(event_by_stop_id.get(str(route_stop.stop_id)) is None)
+						or (
+							event_by_stop_id[str(route_stop.stop_id)].arrival_time
+							is None
+						)
+					)
+				),
+				None,
+			)
+
+		def progress_point(action: dict[str, Any] | None) -> dict[str, Any] | None:
+			if action is None:
+				return None
+			return {
+				"stop_id": action["stop_id"],
+				"name": action["name"],
+				"sequence_no": action["sequence_no"],
+				"action": action["action"],
+				"occurred_at": action["occurred_at"],
+			}
+
+		last_action = actions[-1] if actions else None
+		last_arrival = next(
+			(item for item in reversed(actions) if item["action"] == "arrived"),
+			None,
+		)
+		last_departure = next(
+			(item for item in reversed(actions) if item["action"] == "departed"),
+			None,
+		)
+		current_stop = None
+		if current_route_stop is not None:
+			current_event = event_by_stop_id[str(current_route_stop.stop_id)]
+			current_stop = {
+				**self._tracking_stop_brief(current_route_stop),
+				"action": "arrived",
+				"occurred_at": current_event.arrival_time,
+			}
+
+		arrived_count = sum(
+			1
+			for route_stop in route_stops
+			if (
+				(event := event_by_stop_id.get(str(route_stop.stop_id)))
+				and event.arrival_time is not None
+			)
+		)
+		departed_count = sum(
+			1
+			for route_stop in route_stops
+			if (
+				(event := event_by_stop_id.get(str(route_stop.stop_id)))
+				and event.departure_time is not None
+			)
+		)
+		if current_route_stop is not None:
+			position_state = "at_stop"
+		elif trip.status in terminal_statuses:
+			position_state = "finished"
+		elif last_action is not None and last_action["action"] == "departed":
+			position_state = "between_stops"
+		else:
+			position_state = "not_started"
+
+		stops: list[dict[str, Any]] = []
+		cumulative_minutes = 0
+		for index, route_stop in enumerate(route_stops):
+			if index > 0:
+				cumulative_minutes += max(
+					int(route_stop.assume_time_diff_minutes or 0),
+					0,
+				)
+			event = event_by_stop_id.get(str(route_stop.stop_id))
+			if event is not None and event.departure_time is not None:
+				state = "departed"
+			elif event is not None and event.arrival_time is not None:
+				state = "arrived"
+			elif trip.status in terminal_statuses:
+				state = "not_visited"
+			else:
+				state = "upcoming"
+
+			stops.append(
+				{
+					"route_stop_id": route_stop.id,
+					**self._tracking_stop_brief(route_stop),
+					"lat": float(route_stop.stop.lat),
+					"lng": float(route_stop.stop.lng),
+					"radius_meters": int(route_stop.stop.radius_meters or 0),
+					"assume_time_diff_minutes": (
+						route_stop.assume_time_diff_minutes
+					),
+					"boarding_allowed": route_stop.boarding_allowed,
+					"deboarding_allowed": route_stop.deboarding_allowed,
+					"planned_time_at_stop": (
+						trip.planned_start_at
+						+ timedelta(minutes=cumulative_minutes)
+					),
+					"arrival_time": None if event is None else event.arrival_time,
+					"departure_time": (
+						None if event is None else event.departure_time
+					),
+					"state": state,
+					"is_current_stop": (
+						current_route_stop is not None
+						and route_stop.id == current_route_stop.id
+					),
+					"is_next_stop": (
+						next_route_stop is not None
+						and route_stop.id == next_route_stop.id
+					),
+				}
+			)
+
+		total_stops = len(route_stops)
+		return {
+			"trip_id": trip.id,
+			"status": (
+				trip.status.value
+				if hasattr(trip.status, "value")
+				else str(trip.status)
+			),
+			"is_current_trip": trip.status in active_statuses,
+			"planned_start_at": trip.planned_start_at,
+			"planned_end_at": trip.planned_end_at,
+			"actual_start_at": trip.actual_start_at,
+			"actual_end_at": trip.actual_end_at,
+			"last_updated": trip.updated_at,
+			"route": {
+				"id": trip.route.id,
+				"name": trip.route.name,
+				"code": trip.route.code,
+				"has_ac": trip.route.has_ac,
+			},
+			"driver": None if trip.driver is None else {
+				"id": trip.driver.id,
+				"name": (
+					None
+					if trip.driver.driver_profile is None
+					else trip.driver.driver_profile.full_name
+				),
+				"email": trip.driver.email,
+			},
+			"vehicle": None if trip.vehicle is None else {
+				"id": trip.vehicle.id,
+				"registration_number": trip.vehicle.registration_number,
+				"vehicle_name": trip.vehicle.vehicle_name,
+				"vehicle_model": trip.vehicle.vehicle_model,
+			},
+			"last_known_location": {
+				"lat": None if trip.last_lat is None else float(trip.last_lat),
+				"lng": None if trip.last_lng is None else float(trip.last_lng),
+			},
+			"progress": {
+				"total_stops": total_stops,
+				"arrived_stops": arrived_count,
+				"departed_stops": departed_count,
+				"remaining_stops": max(total_stops - arrived_count, 0),
+				"progress_percent": (
+					round((arrived_count / total_stops) * 100, 2)
+					if total_stops
+					else 0.0
+				),
+				"position_state": position_state,
+			},
+			"current_stop": current_stop,
+			"last_action": progress_point(last_action),
+			"last_arrived_stop": progress_point(last_arrival),
+			"last_departed_stop": progress_point(last_departure),
+			"next_stop": (
+				None
+				if next_route_stop is None
+				else self._tracking_stop_brief(next_route_stop)
+			),
+			"stops": stops,
+			"actions": actions,
+		}
+
+	async def get_trip_stop_tracking(self, trip_id: str) -> dict[str, Any]:
+		stmt = (
+			select(schema.ScheduledTrip)
+			.where(schema.ScheduledTrip.id == trip_id)
+			.options(
+				selectinload(schema.ScheduledTrip.route)
+				.selectinload(schema.Route.route_stops)
+				.selectinload(schema.RouteStop.stop),
+				selectinload(schema.ScheduledTrip.trip_events).selectinload(
+					schema.TripEvent.stop
+				),
+				selectinload(schema.ScheduledTrip.driver).selectinload(
+					schema.User.driver_profile
+				),
+				selectinload(schema.ScheduledTrip.vehicle),
+			)
+			.limit(1)
+		)
+		result = await self.db.execute(stmt)
+		trip = result.scalar_one_or_none()
+		if trip is None:
+			raise HTTPException(
+				status_code=404,
+				detail={
+					"error": "trip_not_found",
+					"message": "Scheduled trip not found.",
+					"trip_id": trip_id,
+				},
+			)
+		return self._serialize_trip_stop_tracking(trip)
+
 	def _serialize_admin_booking_trip_detail_booking(
 		self,
 		booking: schema.TripBooking,
