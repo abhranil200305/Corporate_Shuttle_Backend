@@ -89,6 +89,8 @@ from app.passenger.schemas import (
     PassengerRFIDRechargeVerifyPaymentRequest,
     CreateBookingSessionRequest,
     VerifyBookingSessionPaymentRequest,
+    normalize_traveller_email,
+    normalize_traveller_phone,
 )
 from app.tax import (
     GSTBreakdown,
@@ -743,6 +745,67 @@ class PassengerService:
                 },
             )
         return cleaned
+
+    @staticmethod
+    def _normalize_traveller_contact(
+        *,
+        phone: str,
+        email: str | None,
+    ) -> tuple[str, str | None]:
+        try:
+            normalized_phone = normalize_traveller_phone(phone)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_traveller_phone",
+                    "message": str(exc),
+                },
+            ) from exc
+
+        try:
+            normalized_email = normalize_traveller_email(email)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_traveller_email",
+                    "message": str(exc),
+                },
+            ) from exc
+
+        return normalized_phone, normalized_email
+
+    async def _ensure_traveller_profile_phone_unique(
+        self,
+        *,
+        owner_user_id: str,
+        phone: str,
+        except_profile_id: str | None = None,
+    ) -> None:
+        filters = [
+            PassengerTravellerProfile.owner_user_id == owner_user_id,
+            PassengerTravellerProfile.phone == phone,
+        ]
+        if except_profile_id is not None:
+            filters.append(PassengerTravellerProfile.id != except_profile_id)
+
+        result = await self.db.execute(
+            select(PassengerTravellerProfile.id).where(*filters).limit(1)
+        )
+        existing_profile_id = result.scalar_one_or_none()
+        if existing_profile_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "traveller_phone_already_saved",
+                    "message": (
+                        "A saved traveller already uses this phone number. "
+                        "Update or reactivate that traveller instead."
+                    ),
+                    "traveller_profile_id": existing_profile_id,
+                },
+            )
 
     def _serialize_traveller_profile(
         self,
@@ -3558,7 +3621,7 @@ class PassengerService:
         event_type: str,
         title: str,
         message: str,
-    ) -> TravellerContactNotification:
+    ) -> bool:
         channel = self._get_traveller_notification_channel(booking)
 
         status = (
@@ -3573,34 +3636,41 @@ class PassengerService:
             event_type=event_type,
         )
 
-        notification = TravellerContactNotification(
-            booking_session_id=booking_session.id,
-            booking_id=booking.id,
-            owner_user_id=booking_session.owner_user_id,
-            traveller_profile_id=booking.traveller_profile_id,
-            traveller_name_snapshot=booking.traveller_name_snapshot,
-            traveller_phone_snapshot=booking.traveller_phone_snapshot,
-            traveller_email_snapshot=booking.traveller_email_snapshot,
-            channel=channel,
-            event_type=event_type,
-            title=title,
-            message=message,
-            payload_json=json.dumps(
-                payload,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                default=str,
-            ),
-            status=status,
-            failure_reason=None
-            if channel != "none"
-            else "No traveller phone or email snapshot is available.",
+        result = await self.db.execute(
+            pg_insert(TravellerContactNotification)
+            .values(
+                id=new_id(),
+                booking_session_id=booking_session.id,
+                booking_id=booking.id,
+                owner_user_id=booking_session.owner_user_id,
+                traveller_profile_id=booking.traveller_profile_id,
+                traveller_name_snapshot=booking.traveller_name_snapshot,
+                traveller_phone_snapshot=booking.traveller_phone_snapshot,
+                traveller_email_snapshot=booking.traveller_email_snapshot,
+                channel=channel,
+                event_type=event_type,
+                title=title,
+                message=message,
+                payload_json=json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    default=str,
+                ),
+                status=status,
+                failure_reason=None
+                if channel != "none"
+                else "No traveller phone or email snapshot is available.",
+                delivery_attempt_count=0,
+            )
+            .on_conflict_do_nothing(
+                constraint="uq_traveller_contact_notifications_booking_event"
+            )
+            .returning(TravellerContactNotification.id)
         )
-
-        self.db.add(notification)
         await self.db.flush()
 
-        return notification
+        return result.scalar_one_or_none() is not None
 
     async def _queue_booking_session_traveller_notifications(
         self,
@@ -4492,6 +4562,22 @@ class PassengerService:
             field_name="phone",
             max_length=20,
         )
+        phone, email = self._normalize_traveller_contact(
+            phone=phone,
+            email=payload.email,
+        )
+
+        if not payload.is_self:
+            self._ensure_explicit_traveller_is_not_account_owner(
+                owner_user=current_user,
+                traveller_email=email,
+                seat_number=None,
+            )
+
+        await self._ensure_traveller_profile_phone_unique(
+            owner_user_id=current_user.id,
+            phone=phone,
+        )
 
         if payload.is_self:
             await self._clear_existing_self_traveller_profile(current_user.id)
@@ -4500,7 +4586,7 @@ class PassengerService:
             owner_user_id=current_user.id,
             full_name=full_name,
             phone=phone,
-            email=self._clean_optional_text(payload.email),
+            email=email,
             relationship_label=self._clean_optional_text(payload.relationship_label),
             is_self=payload.is_self,
             is_active=True,
@@ -4536,14 +4622,27 @@ class PassengerService:
             )
 
         if payload.phone is not None:
-            profile.phone = self._clean_required_text(
+            phone = self._clean_required_text(
                 payload.phone,
                 field_name="phone",
                 max_length=20,
             )
+            phone, _ = self._normalize_traveller_contact(
+                phone=phone,
+                email=None,
+            )
+            await self._ensure_traveller_profile_phone_unique(
+                owner_user_id=current_user.id,
+                phone=phone,
+                except_profile_id=profile.id,
+            )
+            profile.phone = phone
 
         if payload.email is not None:
-            profile.email = self._clean_optional_text(payload.email)
+            _, profile.email = self._normalize_traveller_contact(
+                phone=profile.phone,
+                email=payload.email,
+            )
 
         if payload.relationship_label is not None:
             profile.relationship_label = self._clean_optional_text(
@@ -4560,6 +4659,13 @@ class PassengerService:
                     except_profile_id=profile.id,
                 )
             profile.is_self = payload.is_self
+
+        if not profile.is_self:
+            self._ensure_explicit_traveller_is_not_account_owner(
+                owner_user=current_user,
+                traveller_email=profile.email,
+                seat_number=None,
+            )
 
         self.db.add(profile)
         await self.db.commit()
@@ -6684,16 +6790,18 @@ class PassengerService:
         *,
         owner_user: User,
         traveller_email: str | None,
-        seat_number: int,
+        seat_number: int | None,
     ) -> None:
         if self._emails_match(traveller_email, owner_user.email):
+            detail = {
+                "error": "traveller_matches_account_owner",
+                "message": "A traveller booked as someone else cannot use the account owner's email. Omit traveller details when booking for yourself.",
+            }
+            if seat_number is not None:
+                detail["seat_number"] = seat_number
             raise HTTPException(
                 status_code=400,
-                detail={
-                    "error": "traveller_matches_account_owner",
-                    "message": "A traveller booked as someone else cannot use the account owner's email. Omit traveller details when booking for yourself.",
-                    "seat_number": seat_number,
-                },
+                detail=detail,
             )
 
     async def _ensure_guest_does_not_match_saved_traveller(
