@@ -189,13 +189,14 @@ async def cancel_trip(
         ws_hub=ws_hub,
     )
 
+    cancellation_metadata = {
+        "cancelled_at": now_utc.isoformat(),
+        "reason": normalized_reason,
+        "source": "driver",
+        "cancelled_by_user_id": current_driver.id,
+    }
+
     if passenger_ids:
-        cancellation_metadata = {
-            "cancelled_at": now_utc.isoformat(),
-            "reason": normalized_reason,
-            "source": "driver",
-            "cancelled_by_user_id": current_driver.id,
-        }
         await notification_service.notify_user(
             user_id=passenger_ids[0],
             user_ids=passenger_ids[1:],
