@@ -11,14 +11,15 @@ A4_HEIGHT = 841.89
 MARGIN = 36.0
 IST = timezone(timedelta(hours=5, minutes=30))
 
-NAVY = (0.055, 0.118, 0.224)
-BLUE = (0.075, 0.353, 0.596)
-TEAL = (0.000, 0.525, 0.482)
-INK = (0.102, 0.129, 0.173)
-MUTED = (0.392, 0.455, 0.533)
-LINE = (0.839, 0.867, 0.902)
-PANEL = (0.965, 0.976, 0.988)
+NAVY = (0.090, 0.125, 0.165)
+BLUE = (0.145, 0.300, 0.380)
+TEAL = (0.150, 0.390, 0.370)
+INK = (0.105, 0.120, 0.140)
+MUTED = (0.360, 0.390, 0.425)
+LINE = (0.760, 0.780, 0.800)
+PANEL = (0.975, 0.978, 0.980)
 WHITE = (1.0, 1.0, 1.0)
+CONTENT_BOTTOM = 68.0
 
 
 def _text(value: Any, fallback: str = "N/A") -> str:
@@ -158,6 +159,27 @@ class _Page:
             ]
         )
 
+    def right_text(
+        self,
+        right_x: float,
+        y: float,
+        value: Any,
+        *,
+        size: float = 9,
+        bold: bool = False,
+        color: tuple[float, float, float] = INK,
+    ) -> None:
+        rendered = _text(value, "")
+        approximate_width = len(rendered) * size * 0.52
+        self.text(
+            right_x - approximate_width,
+            y,
+            rendered,
+            size=size,
+            bold=bold,
+            color=color,
+        )
+
     def wrapped_text(
         self,
         x: float,
@@ -198,8 +220,20 @@ def _label_value(
 
 
 def _section_title(page: _Page, y: float, title: str) -> None:
-    page.rectangle(MARGIN, y - 3, 4, 14, fill=TEAL)
-    page.text(MARGIN + 11, y, title.upper(), size=8.5, bold=True, color=NAVY)
+    page.text(MARGIN, y, title.upper(), size=8.2, bold=True, color=NAVY)
+    page.line(MARGIN, y - 7, A4_WIDTH - MARGIN, y - 7, color=TEAL, line_width=1.2)
+
+
+def _party_panel_height(
+    width: float,
+    fields: list[tuple[str, Any]],
+) -> float:
+    inner_width = width - 24
+    field_lines = [
+        _wrap(value, inner_width, 8.3) for _, value in fields
+    ]
+    # Title area + every label/value group + reliable bottom padding.
+    return max(40 + sum(12 + (len(lines) * 10) for lines in field_lines) + 10, 112)
 
 
 def _party_panel(
@@ -215,26 +249,23 @@ def _party_panel(
     field_lines = [
         (label, _wrap(value, inner_width, 8.3)) for label, value in fields
     ]
-    content_height = sum(11 + (len(lines) * 9) for _, lines in field_lines)
-    height = max(content_height + 28, 102)
-    page.rectangle(x, y - height, width, height, fill=PANEL, stroke=LINE)
-    page.text(x + 12, y - 18, title.upper(), size=7.5, bold=True, color=BLUE)
-    cursor = y - 35
+    height = _party_panel_height(width, fields)
+    page.rectangle(x, y - height, width, height, fill=WHITE, stroke=LINE)
+    page.rectangle(x, y - 29, width, 29, fill=PANEL)
+    page.text(x + 12, y - 19, title.upper(), size=7.5, bold=True, color=BLUE)
+    cursor = y - 44
     for label, lines in field_lines:
         page.text(x + 12, cursor, label.upper(), size=6.3, bold=True, color=MUTED)
-        cursor -= 10
+        cursor -= 11
         for line in lines:
             page.text(x + 12, cursor, line, size=8.1, color=INK)
-            cursor -= 9
-        cursor -= 2
+            cursor -= 10
+        cursor -= 1
     return height
 
 
 def _draw_header(page: _Page, invoice: dict[str, Any]) -> float:
     supplier = invoice.get("supplier") or {}
-    page.rectangle(0, A4_HEIGHT - 104, A4_WIDTH, 104, fill=NAVY)
-    page.rectangle(0, A4_HEIGHT - 108, A4_WIDTH, 4, fill=TEAL)
-
     supplier_name = (
         supplier.get("trade_name")
         or supplier.get("legal_name")
@@ -242,34 +273,47 @@ def _draw_header(page: _Page, invoice: dict[str, Any]) -> float:
     )
     page.wrapped_text(
         MARGIN,
-        A4_HEIGHT - 39,
+        A4_HEIGHT - 35,
         supplier_name,
-        300,
-        size=16,
+        330,
+        size=12,
         bold=True,
-        color=WHITE,
-        leading=18,
+        color=NAVY,
+        leading=14,
     )
     page.text(
         MARGIN,
-        A4_HEIGHT - 79,
+        A4_HEIGHT - 55,
         f"GSTIN  {_text(supplier.get('gstin'))}",
-        size=8,
-        color=(0.78, 0.84, 0.91),
+        size=7.2,
+        color=MUTED,
     )
 
-    page.text(395, A4_HEIGHT - 38, "GST INVOICE", size=18, bold=True, color=WHITE)
-    page.text(423, A4_HEIGHT - 57, "PAYMENT RECEIPT", size=7.5, color=(0.78, 0.84, 0.91))
-    page.rectangle(470, A4_HEIGHT - 88, 84, 20, fill=TEAL)
-    page.text(
-        487,
-        A4_HEIGHT - 81,
-        _text(invoice.get("invoice_status"), "preview").upper(),
-        size=7.5,
+    page.right_text(
+        A4_WIDTH - MARGIN,
+        A4_HEIGHT - 35,
+        "GST INVOICE",
+        size=15,
         bold=True,
-        color=WHITE,
+        color=NAVY,
     )
-    return A4_HEIGHT - 126
+    page.right_text(
+        A4_WIDTH - MARGIN,
+        A4_HEIGHT - 53,
+        f"{_text(invoice.get('invoice_status'), 'preview').upper()} PAYMENT RECEIPT",
+        size=7,
+        bold=True,
+        color=MUTED,
+    )
+    page.line(
+        MARGIN,
+        A4_HEIGHT - 70,
+        A4_WIDTH - MARGIN,
+        A4_HEIGHT - 70,
+        color=TEAL,
+        line_width=1.5,
+    )
+    return A4_HEIGHT - 90
 
 
 def _draw_meta(page: _Page, invoice: dict[str, Any], y: float) -> float:
@@ -290,11 +334,11 @@ def _draw_meta(page: _Page, invoice: dict[str, Any], y: float) -> float:
     return y - 78
 
 
-def _draw_parties(page: _Page, invoice: dict[str, Any], y: float) -> float:
+def _party_fields(
+    invoice: dict[str, Any],
+) -> tuple[list[tuple[str, Any]], list[tuple[str, Any]]]:
     supplier = invoice.get("supplier") or {}
     passenger = invoice.get("passenger") or {}
-    gap = 14
-    width = (A4_WIDTH - (2 * MARGIN) - gap) / 2
     supplier_fields = [
         ("Legal name", supplier.get("legal_name")),
         ("Registered address", supplier.get("registered_address")),
@@ -319,6 +363,23 @@ def _draw_parties(page: _Page, invoice: dict[str, Any], y: float) -> float:
         recipient_fields.append(("Booked by", account_name))
     if account_email and account_email != traveller_email:
         recipient_fields.append(("Account email", account_email))
+    return supplier_fields, recipient_fields
+
+
+def _parties_required_height(invoice: dict[str, Any]) -> float:
+    gap = 14
+    width = (A4_WIDTH - (2 * MARGIN) - gap) / 2
+    supplier_fields, recipient_fields = _party_fields(invoice)
+    return max(
+        _party_panel_height(width, supplier_fields),
+        _party_panel_height(width, recipient_fields),
+    ) + 20
+
+
+def _draw_parties(page: _Page, invoice: dict[str, Any], y: float) -> float:
+    gap = 14
+    width = (A4_WIDTH - (2 * MARGIN) - gap) / 2
+    supplier_fields, recipient_fields = _party_fields(invoice)
     left_height = _party_panel(
         page,
         x=MARGIN,
@@ -347,12 +408,11 @@ def _draw_journey(page: _Page, invoice: dict[str, Any], y: float) -> float:
     width = A4_WIDTH - (2 * MARGIN)
     height = 100
     _section_title(page, y, "Journey and service")
-    y -= 18
+    y -= 19
     page.rectangle(MARGIN, y - height, width, height, fill=WHITE, stroke=LINE)
-    page.rectangle(MARGIN, y - height, 6, height, fill=BLUE)
 
-    page.text(MARGIN + 18, y - 22, "FROM", size=6.5, bold=True, color=MUTED)
-    page.wrapped_text(MARGIN + 18, y - 38, pickup.get("name"), 135, size=10, bold=True)
+    page.text(MARGIN + 14, y - 22, "FROM", size=6.5, bold=True, color=MUTED)
+    page.wrapped_text(MARGIN + 14, y - 38, pickup.get("name"), 140, size=10, bold=True)
     page.text(MARGIN + 183, y - 22, "TO", size=6.5, bold=True, color=MUTED)
     page.wrapped_text(MARGIN + 183, y - 38, dropoff.get("name"), 135, size=10, bold=True)
     page.text(MARGIN + 348, y - 22, "ROUTE / SEAT", size=6.5, bold=True, color=MUTED)
@@ -360,12 +420,12 @@ def _draw_journey(page: _Page, invoice: dict[str, Any], y: float) -> float:
     page.wrapped_text(MARGIN + 348, y - 38, route, 145, size=9, bold=True)
     page.text(MARGIN + 348, y - 64, f"Seat {_text(trip.get('seat_number'))}", size=8.5)
 
-    page.line(MARGIN + 18, y - 67, MARGIN + width - 14, y - 67, color=LINE)
+    page.line(MARGIN + 14, y - 67, MARGIN + width - 14, y - 67, color=LINE)
     service_line = (
         f"{_text(service.get('description'))}  |  SAC {_text(service.get('sac_code'))}  |  "
         f"Place of supply: {_text(place.get('name'))} ({_text(place.get('state_code'))})"
     )
-    page.wrapped_text(MARGIN + 18, y - 82, service_line, width - 36, size=7.6, color=MUTED)
+    page.wrapped_text(MARGIN + 14, y - 82, service_line, 315, size=7.6, color=MUTED)
     page.text(MARGIN + 348, y - 91, _date(trip.get("planned_start_at")), size=7.2, color=MUTED)
     return y - height - 20
 
@@ -398,20 +458,38 @@ def _draw_tax_table(page: _Page, invoice: dict[str, Any], y: float) -> float:
     ]
     total_height = header_height + (len(rows) * row_height) + 38
     page.rectangle(MARGIN, y - total_height, width, total_height, fill=WHITE, stroke=LINE)
-    page.rectangle(MARGIN, y - header_height, width, header_height, fill=NAVY)
-    page.text(MARGIN + 12, y - 16, "DESCRIPTION", size=7, bold=True, color=WHITE)
-    page.text(MARGIN + 335, y - 16, "RATE", size=7, bold=True, color=WHITE)
-    page.text(MARGIN + 420, y - 16, "AMOUNT", size=7, bold=True, color=WHITE)
+    page.rectangle(MARGIN, y - header_height, width, header_height, fill=PANEL)
+    page.text(MARGIN + 12, y - 16, "DESCRIPTION", size=7, bold=True, color=NAVY)
+    page.text(MARGIN + 335, y - 16, "RATE", size=7, bold=True, color=NAVY)
+    page.right_text(
+        MARGIN + width - 12,
+        y - 16,
+        "AMOUNT",
+        size=7,
+        bold=True,
+        color=NAVY,
+    )
 
     cursor = y - header_height
     for description, rate, amount in rows:
         cursor -= row_height
         page.text(MARGIN + 12, cursor + 7, description, size=8.2)
         page.text(MARGIN + 335, cursor + 7, rate, size=8.2, color=MUTED)
-        page.text(MARGIN + 420, cursor + 7, amount, size=8.2)
+        page.right_text(
+            MARGIN + width - 12,
+            cursor + 7,
+            amount,
+            size=8.2,
+        )
         page.line(MARGIN, cursor, MARGIN + width, cursor, color=LINE, line_width=0.6)
 
-    page.rectangle(MARGIN, y - total_height, width, 38, fill=PANEL)
+    page.line(
+        MARGIN,
+        y - total_height + 38,
+        MARGIN + width,
+        y - total_height + 38,
+        color=LINE,
+    )
     page.text(MARGIN + 12, y - total_height + 14, "GST INCLUSIVE", size=7, bold=True, color=MUTED)
     page.text(
         MARGIN + 100,
@@ -422,8 +500,8 @@ def _draw_tax_table(page: _Page, invoice: dict[str, Any], y: float) -> float:
         color=TEAL,
     )
     page.text(MARGIN + 315, y - total_height + 14, "TOTAL PAID", size=8, bold=True, color=NAVY)
-    page.text(
-        MARGIN + 420,
+    page.right_text(
+        MARGIN + width - 12,
         y - total_height + 12,
         _money(breakdown.get("total_booking_amount")),
         size=12,
@@ -440,7 +518,7 @@ def _draw_payment(page: _Page, invoice: dict[str, Any], y: float) -> float:
     width = A4_WIDTH - (2 * MARGIN)
     _section_title(page, y, "Payment confirmation")
     y -= 18
-    page.rectangle(MARGIN, y - 54, width, 54, fill=PANEL, stroke=LINE)
+    page.rectangle(MARGIN, y - 54, width, 54, fill=WHITE, stroke=LINE)
     items = [
         ("Status", _text(payment.get("status")).upper()),
         ("Razorpay order ID", payment.get("razorpay_order_id")),
@@ -454,46 +532,97 @@ def _draw_payment(page: _Page, invoice: dict[str, Any], y: float) -> float:
     return y - 68
 
 
-def _draw_footer(page: _Page, invoice: dict[str, Any]) -> None:
-    page.line(MARGIN, 48, A4_WIDTH - MARGIN, 48, color=LINE)
+def _draw_footer(
+    page: _Page,
+    invoice: dict[str, Any],
+    *,
+    page_number: int,
+    page_count: int,
+) -> None:
+    page.line(MARGIN, 50, A4_WIDTH - MARGIN, 50, color=LINE, line_width=0.7)
     page.text(
         MARGIN,
-        34,
+        36,
         "System-generated payment receipt. No physical signature is required.",
-        size=6.8,
+        size=6.4,
         color=MUTED,
     )
     page.text(
         MARGIN,
-        22,
+        24,
         "Digital signature, IRN and signed QR code are not presently available.",
-        size=6.8,
+        size=6.4,
         color=MUTED,
     )
-    page.text(
-        A4_WIDTH - MARGIN - 160,
-        28,
+    page.right_text(
+        A4_WIDTH - MARGIN,
+        36,
         f"Invoice {_text(invoice.get('invoice_number'))}",
-        size=6.8,
+        size=6.4,
+        color=MUTED,
+    )
+    page.right_text(
+        A4_WIDTH - MARGIN,
+        24,
+        f"Page {page_number} of {page_count}",
+        size=6.4,
         color=MUTED,
     )
 
 
-def _build_page(invoice: dict[str, Any]) -> _Page:
+def _new_page(invoice: dict[str, Any]) -> tuple[_Page, float]:
     page = _Page()
-    y = _draw_header(page, invoice)
+    return page, _draw_header(page, invoice)
+
+
+def _ensure_space(
+    pages: list[_Page],
+    invoice: dict[str, Any],
+    y: float,
+    required_height: float,
+) -> tuple[_Page, float]:
+    if y - required_height >= CONTENT_BOTTOM:
+        return pages[-1], y
+
+    page, y = _new_page(invoice)
+    pages.append(page)
+    return page, y
+
+
+def _build_pages(invoice: dict[str, Any]) -> list[_Page]:
+    page, y = _new_page(invoice)
+    pages = [page]
+
+    page, y = _ensure_space(pages, invoice, y, 78)
     y = _draw_meta(page, invoice, y)
+
+    party_height = _parties_required_height(invoice)
+    page, y = _ensure_space(pages, invoice, y, party_height)
     y = _draw_parties(page, invoice, y)
+
+    page, y = _ensure_space(pages, invoice, y, 140)
     y = _draw_journey(page, invoice, y)
+
+    page, y = _ensure_space(pages, invoice, y, 184)
     y = _draw_tax_table(page, invoice, y)
+
+    page, y = _ensure_space(pages, invoice, y, 90)
     _draw_payment(page, invoice, y)
-    _draw_footer(page, invoice)
-    return page
+
+    page_count = len(pages)
+    for index, rendered_page in enumerate(pages, start=1):
+        _draw_footer(
+            rendered_page,
+            invoice,
+            page_number=index,
+            page_count=page_count,
+        )
+    return pages
 
 
 def generate_invoice_pdf(invoice: dict[str, Any]) -> bytes:
     """Generate a dependency-free professional A4 invoice PDF."""
-    pages = [_build_page(invoice)]
+    pages = _build_pages(invoice)
     page_count = len(pages)
     regular_font_object = 3 + (page_count * 2)
     bold_font_object = regular_font_object + 1

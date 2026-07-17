@@ -113,6 +113,22 @@ class InvoicePDFTests(unittest.TestCase):
         self.assertIn(b"ACCOUNT EMAIL", pdf)
         self.assertIn(b"account@example.com", pdf)
 
+    def test_long_invoice_repeats_header_and_footer_across_pages(self) -> None:
+        invoice = deepcopy(sample_invoice())
+        invoice["supplier"]["registered_address"] = " ".join(
+            ["Long registered office address"] * 45
+        )
+
+        pdf = generate_invoice_pdf(invoice)
+
+        self.assertIn(b"/Count 2", pdf)
+        self.assertEqual(pdf.count(b"(GST INVOICE) Tj"), 2)
+        self.assertEqual(
+            pdf.count(b"(System-generated payment receipt."), 2
+        )
+        self.assertIn(b"(Page 1 of 2) Tj", pdf)
+        self.assertIn(b"(Page 2 of 2) Tj", pdf)
+
     def test_session_payment_is_eligible_for_seat_invoice(self) -> None:
         created_at = datetime(2026, 7, 14, 10, 30, tzinfo=timezone.utc)
         payment = BookingSessionPayment(
