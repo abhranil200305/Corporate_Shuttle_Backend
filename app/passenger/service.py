@@ -9977,10 +9977,30 @@ class PassengerService:
         return value
 
     def _build_qr_token(self, booking: TripBooking) -> tuple[str, dict[str, Any]]:
+        issued_at = utcnow()
+        expires_at = issued_at + timedelta(hours=12)
+        trip = getattr(booking, "scheduled_trip", None)
+        planned_end_at = (
+            None if trip is None else trip.planned_end_at
+        )
+        if planned_end_at is not None:
+            if (
+                planned_end_at.tzinfo is None
+                or planned_end_at.utcoffset() is None
+            ):
+                planned_end_at = planned_end_at.replace(
+                    tzinfo=timezone.utc
+                )
+            expires_at = max(
+                expires_at,
+                planned_end_at.astimezone(timezone.utc)
+                + timedelta(hours=12),
+            )
+
         payload = {
             "booking_id": booking.id,
-            "issued_at": int(utcnow().timestamp()),
-            "expires_at": int((utcnow() + timedelta(hours=12)).timestamp()),
+            "issued_at": int(issued_at.timestamp()),
+            "expires_at": int(expires_at.timestamp()),
         }
         payload_json = json.dumps(payload, separators=(",", ":"), sort_keys=True)
         payload_bytes = payload_json.encode("utf-8")

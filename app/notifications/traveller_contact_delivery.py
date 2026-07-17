@@ -29,6 +29,7 @@ from app.db.schema import (
     TravellerContactNotificationStatus,
     User,
 )
+from app.passenger.booking_qr import generate_booking_qr_png
 from app.passenger.invoice_pdf import generate_invoice_pdf
 from app.passenger.service import PassengerService
 
@@ -141,6 +142,24 @@ class SMTPEmailSender:
                 maintype, subtype = content_type.split("/", 1)
             else:
                 maintype, subtype = "application", "octet-stream"
+
+            if (
+                attachment.inline
+                and attachment.content_id
+                and html_body
+            ):
+                html_part = message.get_payload()[-1]
+                content_id = attachment.content_id.strip("<>")
+                html_part.add_related(
+                    attachment.content,
+                    maintype=maintype,
+                    subtype=subtype,
+                    cid=f"<{content_id}>",
+                    disposition="inline",
+                    filename=attachment.filename,
+                )
+                continue
+
             message.add_attachment(
                 attachment.content,
                 maintype=maintype,
@@ -375,11 +394,20 @@ class TravellerContactDeliveryService:
               </tr>
             """
 
-        invoice_block = ""
+        confirmation_assets_block = ""
         if notification.event_type == "traveller_seat_confirmed":
-            invoice_block = """
-                <div style="margin-top: 18px; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; color:#334155; font-size: 13px; line-height: 19px;">
-                  Your GST invoice/payment receipt for this seat is attached as a PDF.
+            confirmation_assets_block = """
+                <div style="margin-top: 18px; padding: 18px; border: 1px solid #cbd5e1; border-radius: 10px; color:#334155; font-size: 13px; line-height: 19px; text-align:center;">
+                  <div style="font-size:16px; font-weight:700; color:#0f172a; margin-bottom:10px;">
+                    Boarding QR
+                  </div>
+                  <img src="cid:traveller-booking-qr" alt="Boarding QR code" width="240" height="240" style="display:block; width:240px; height:240px; max-width:100%; margin:0 auto; background:#ffffff;" />
+                  <div style="margin-top:10px;">
+                    Show this QR to the driver while boarding. The PNG is also attached in case your email app blocks inline images.
+                  </div>
+                  <div style="margin-top:8px;">
+                    Your GST invoice/payment receipt for this seat is attached as a PDF.
+                  </div>
                 </div>
             """
 
@@ -444,7 +472,7 @@ class TravellerContactDeliveryService:
                 <div style="margin-top: 24px; padding: 14px 16px; background:#f8fafc; border-radius: 12px; color:#475569; font-size: 13px; line-height: 20px;">
                   {footer}
                 </div>
-                {invoice_block}
+                {confirmation_assets_block}
               </td>
             </tr>
 
@@ -460,12 +488,12 @@ class TravellerContactDeliveryService:
   </body>
 </html>"""
 
-    async def _build_invoice_attachment(
+    async def _build_confirmation_attachments(
         self,
         notification: TravellerContactNotification,
-    ) -> MailAttachmentSchema | None:
+    ) -> list[MailAttachmentSchema]:
         if notification.event_type != "traveller_seat_confirmed":
-            return None
+            return []
 
         result = await self.db.execute(
             select(TripBooking)
@@ -493,18 +521,27 @@ class TravellerContactDeliveryService:
                 "Traveller invoice booking could not be found."
             )
 
-        invoice = await PassengerService(
-            self.db
-        )._build_booking_invoice_payload(
+        passenger_service = PassengerService(self.db)
+        invoice = await passenger_service._build_booking_invoice_payload(
             booking=booking,
             passenger_user=booking.passenger,
             passenger_profile=booking.passenger.passenger_profile,
         )
-        return MailAttachmentSchema(
-            filename=f"{invoice['invoice_number']}.pdf",
-            content=generate_invoice_pdf(invoice),
-            content_type="application/pdf",
-        )
+        qr_token, _payload = passenger_service._build_qr_token(booking)
+        return [
+            MailAttachmentSchema(
+                filename=f"{invoice['invoice_number']}.pdf",
+                content=generate_invoice_pdf(invoice),
+                content_type="application/pdf",
+            ),
+            MailAttachmentSchema(
+                filename=f"boarding-qr-{booking.id}.png",
+                content=generate_booking_qr_png(qr_token),
+                content_type="image/png",
+                content_id="traveller-booking-qr",
+                inline=True,
+            ),
+        ]
 
     async def _process_email(
         self,
@@ -521,19 +558,21 @@ class TravellerContactDeliveryService:
             return
 
         try:
-            invoice_attachment = await self._build_invoice_attachment(
+            attachments = await self._build_confirmation_attachments(
                 notification
             )
+            body = notification.message
+            if attachments:
+                body += (
+                    "\n\nYour boarding QR image and GST invoice/payment "
+                    "receipt are attached."
+                )
             provider_message_id = await self.email_sender.send_email(
                 to_email=recipient,
                 subject=notification.title,
-                body=notification.message,
+                body=body,
                 html_body=self._build_traveller_email_html(notification),
-                attachments=(
-                    [invoice_attachment]
-                    if invoice_attachment is not None
-                    else None
-                ),
+                attachments=attachments or None,
             )
         except Exception as exc:
             await self._mark_failed(notification, exc)

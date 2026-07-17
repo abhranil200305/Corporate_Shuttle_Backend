@@ -141,6 +141,8 @@ class MailAttachmentSchema(BaseModel):
     filename: str
     content: bytes
     content_type: str = "application/octet-stream"
+    content_id: str | None = None
+    inline: bool = False
 
 
 class SendTemplatedMailRequest(BaseModel):
