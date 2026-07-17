@@ -10,17 +10,27 @@ from datetime import datetime, timedelta, timezone
 import html
 import json
 from email.message import EmailMessage
-from typing import Any
+from typing import Any, Sequence
 from uuid import uuid4
 
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
+from app.auth.schemas import MailAttachmentSchema
 from app.db.database import AsyncSessionLocal
 from app.db.schema import (
+    BookingSession,
+    Route,
+    RouteStop,
+    ScheduledTrip,
+    TripBooking,
     TravellerContactNotification,
     TravellerContactNotificationStatus,
+    User,
 )
+from app.passenger.invoice_pdf import generate_invoice_pdf
+from app.passenger.service import PassengerService
 
 logger = logging.getLogger(__name__)
 
@@ -101,6 +111,7 @@ class SMTPEmailSender:
         subject: str,
         body: str,
         html_body: str | None = None,
+        attachments: Sequence[MailAttachmentSchema] | None = None,
     ) -> str:
         config = self.load_config()
         if config is None:
@@ -123,6 +134,19 @@ class SMTPEmailSender:
         # Rich HTML version for normal email clients.
         if html_body:
             message.add_alternative(html_body, subtype="html")
+
+        for attachment in attachments or ():
+            content_type = attachment.content_type or "application/octet-stream"
+            if "/" in content_type:
+                maintype, subtype = content_type.split("/", 1)
+            else:
+                maintype, subtype = "application", "octet-stream"
+            message.add_attachment(
+                attachment.content,
+                maintype=maintype,
+                subtype=subtype,
+                filename=attachment.filename,
+            )
 
         provider_message_id = f"email:{uuid4().hex}"
 
@@ -351,6 +375,14 @@ class TravellerContactDeliveryService:
               </tr>
             """
 
+        invoice_block = ""
+        if notification.event_type == "traveller_seat_confirmed":
+            invoice_block = """
+                <div style="margin-top: 18px; padding: 12px 14px; border: 1px solid #cbd5e1; border-radius: 10px; color:#334155; font-size: 13px; line-height: 19px;">
+                  Your GST invoice/payment receipt for this seat is attached as a PDF.
+                </div>
+            """
+
         return f"""<!doctype html>
 <html>
   <body style="margin:0; padding:0; background:#f1f5f9; font-family: Arial, Helvetica, sans-serif;">
@@ -412,6 +444,7 @@ class TravellerContactDeliveryService:
                 <div style="margin-top: 24px; padding: 14px 16px; background:#f8fafc; border-radius: 12px; color:#475569; font-size: 13px; line-height: 20px;">
                   {footer}
                 </div>
+                {invoice_block}
               </td>
             </tr>
 
@@ -426,6 +459,52 @@ class TravellerContactDeliveryService:
     </table>
   </body>
 </html>"""
+
+    async def _build_invoice_attachment(
+        self,
+        notification: TravellerContactNotification,
+    ) -> MailAttachmentSchema | None:
+        if notification.event_type != "traveller_seat_confirmed":
+            return None
+
+        result = await self.db.execute(
+            select(TripBooking)
+            .where(TripBooking.id == notification.booking_id)
+            .options(
+                selectinload(TripBooking.passenger).selectinload(
+                    User.passenger_profile
+                ),
+                selectinload(TripBooking.payments),
+                selectinload(TripBooking.booking_session).selectinload(
+                    BookingSession.payments
+                ),
+                selectinload(TripBooking.pickup_stop),
+                selectinload(TripBooking.dropoff_stop),
+                selectinload(TripBooking.scheduled_trip)
+                .selectinload(ScheduledTrip.route)
+                .selectinload(Route.route_stops)
+                .selectinload(RouteStop.stop),
+            )
+            .limit(1)
+        )
+        booking = result.scalar_one_or_none()
+        if booking is None:
+            raise RuntimeError(
+                "Traveller invoice booking could not be found."
+            )
+
+        invoice = await PassengerService(
+            self.db
+        )._build_booking_invoice_payload(
+            booking=booking,
+            passenger_user=booking.passenger,
+            passenger_profile=booking.passenger.passenger_profile,
+        )
+        return MailAttachmentSchema(
+            filename=f"{invoice['invoice_number']}.pdf",
+            content=generate_invoice_pdf(invoice),
+            content_type="application/pdf",
+        )
 
     async def _process_email(
         self,
@@ -442,11 +521,19 @@ class TravellerContactDeliveryService:
             return
 
         try:
+            invoice_attachment = await self._build_invoice_attachment(
+                notification
+            )
             provider_message_id = await self.email_sender.send_email(
                 to_email=recipient,
                 subject=notification.title,
                 body=notification.message,
                 html_body=self._build_traveller_email_html(notification),
+                attachments=(
+                    [invoice_attachment]
+                    if invoice_attachment is not None
+                    else None
+                ),
             )
         except Exception as exc:
             await self._mark_failed(notification, exc)

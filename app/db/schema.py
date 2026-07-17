@@ -3828,6 +3828,11 @@ class TravellerContactNotification(UUIDPKMixin, TimestampMixin, Base):
             "delivery_attempt_count >= 0",
             name="ck_traveller_contact_notifications_attempt_nonnegative",
         ),
+        UniqueConstraint(
+            "booking_id",
+            "event_type",
+            name="uq_traveller_contact_notifications_booking_event",
+        ),
         Index(
             "ix_traveller_contact_notifications_retry",
             "status",

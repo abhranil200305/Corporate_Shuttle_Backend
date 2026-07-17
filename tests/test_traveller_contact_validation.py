@@ -1,12 +1,17 @@
 import unittest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
+from fastapi import HTTPException
 from pydantic import ValidationError
 
+from app.db.schema import UserRole
 from app.passenger.schemas import (
     BookingSessionGuestTravellerRequest,
     PassengerTravellerProfileCreateRequest,
     PassengerTravellerProfileUpdateRequest,
 )
+from app.passenger.service import PassengerService
 
 
 class TravellerContactValidationTests(unittest.TestCase):
@@ -100,6 +105,67 @@ class TravellerContactValidationTests(unittest.TestCase):
         )
 
         self.assertIsNone(payload.email)
+
+
+class PermanentTravellerServiceValidationTests(
+    unittest.IsolatedAsyncioTestCase
+):
+    async def test_service_revalidates_and_normalizes_permanent_profile(self) -> None:
+        result = MagicMock()
+        result.scalar_one_or_none.return_value = None
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=result)
+        db.commit = AsyncMock()
+        db.refresh = AsyncMock()
+        service = PassengerService(db)
+        user = SimpleNamespace(
+            id="passenger-1",
+            email="owner@example.com",
+            role=UserRole.PASSENGER,
+        )
+        # model_construct simulates any internal caller that bypasses the API's
+        # Pydantic request validation.
+        payload = PassengerTravellerProfileCreateRequest.model_construct(
+            full_name=" Saved Traveller ",
+            phone="+91 98765-43210",
+            email="Traveller@EXAMPLE.COM",
+            relationship_label="Guest",
+            is_self=False,
+        )
+
+        response = await service.create_traveller_profile(user, payload)
+
+        profile = db.add.call_args.args[0]
+        self.assertEqual(profile.phone, "+919876543210")
+        self.assertEqual(profile.email, "Traveller@example.com")
+        self.assertEqual(
+            response["profile"]["phone"],
+            "+919876543210",
+        )
+
+    async def test_service_rejects_invalid_permanent_profile_contact(self) -> None:
+        service = PassengerService(MagicMock())
+        user = SimpleNamespace(
+            id="passenger-1",
+            email="owner@example.com",
+            role=UserRole.PASSENGER,
+        )
+        payload = PassengerTravellerProfileCreateRequest.model_construct(
+            full_name="Saved Traveller",
+            phone="not-a-phone",
+            email="not-an-email",
+            relationship_label=None,
+            is_self=False,
+        )
+
+        with self.assertRaises(HTTPException) as raised:
+            await service.create_traveller_profile(user, payload)
+
+        self.assertEqual(raised.exception.status_code, 400)
+        self.assertEqual(
+            raised.exception.detail["error"],
+            "invalid_traveller_phone",
+        )
 
 
 if __name__ == "__main__":
