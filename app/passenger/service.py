@@ -4,10 +4,14 @@ import base64
 import hashlib
 import hmac
 import json
+import math
 import os
+import re
 import secrets
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from decimal import ROUND_HALF_UP, Decimal
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -5289,14 +5293,12 @@ class PassengerService:
     # discovery
     # ------------------------------------------------------------------
 
-    async def discover_route_trip_options(
-        self,
+    @staticmethod
+    def _validate_distinct_discovery_stops(
         *,
         from_stop_id: str,
         to_stop_id: str,
-        from_time: datetime | None = None,
-        to_time: datetime | None = None,
-    ) -> dict[str, Any]:
+    ) -> None:
         if from_stop_id == to_stop_id:
             raise HTTPException(
                 status_code=400,
@@ -5305,6 +5307,19 @@ class PassengerService:
                     "message": "From stop and to stop must be different.",
                 },
             )
+
+    async def discover_route_trip_options(
+        self,
+        *,
+        from_stop_id: str,
+        to_stop_id: str,
+        from_time: datetime | None = None,
+        to_time: datetime | None = None,
+    ) -> dict[str, Any]:
+        self._validate_distinct_discovery_stops(
+            from_stop_id=from_stop_id,
+            to_stop_id=to_stop_id,
+        )
 
         normalized_from_time = self._normalize_optional_datetime(from_time)
         normalized_to_time = self._normalize_optional_datetime(to_time)
@@ -5452,6 +5467,10 @@ class PassengerService:
         to_time: datetime | None = None,
     ) -> dict[str, Any]:
         self.ensure_passenger(current_user)
+        self._validate_distinct_discovery_stops(
+            from_stop_id=from_stop_id,
+            to_stop_id=to_stop_id,
+        )
 
         card, account, _assignment = (
             await self._ensure_active_passenger_rfid_card_account(current_user)
@@ -5725,6 +5744,191 @@ class PassengerService:
         return {
             "items": [self._serialize_stop_brief(stop) for stop in stops],
             "count": len(stops),
+        }
+
+    @staticmethod
+    def _normalize_stop_search_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKC", value).casefold()
+        normalized = re.sub(r"[^\w]+", " ", normalized, flags=re.UNICODE)
+        return " ".join(normalized.replace("_", " ").split())
+
+    @classmethod
+    def _stop_name_match_score(
+        cls,
+        *,
+        query: str,
+        stop_name: str,
+    ) -> float:
+        normalized_query = cls._normalize_stop_search_text(query)
+        normalized_name = cls._normalize_stop_search_text(stop_name)
+        compact_query = normalized_query.replace(" ", "")
+        compact_name = normalized_name.replace(" ", "")
+
+        if not compact_query or not compact_name:
+            return 0.0
+        if normalized_query == normalized_name:
+            return 1.0
+        if compact_query == compact_name:
+            return 0.99
+
+        score = SequenceMatcher(
+            None,
+            compact_query,
+            compact_name,
+        ).ratio()
+        if compact_query in compact_name:
+            score = max(score, 0.93)
+        elif compact_name in compact_query:
+            score = max(score, 0.88)
+        elif compact_name.startswith(compact_query):
+            score = max(score, 0.91)
+
+        query_tokens = normalized_query.split()
+        name_tokens = normalized_name.split()
+        if query_tokens and name_tokens:
+            token_scores = [
+                max(
+                    SequenceMatcher(None, query_token, name_token).ratio()
+                    for name_token in name_tokens
+                )
+                for query_token in query_tokens
+            ]
+            score = max(score, sum(token_scores) / len(token_scores))
+
+        return min(max(score, 0.0), 1.0)
+
+    @staticmethod
+    def _distance_km(
+        *,
+        from_lat: float,
+        from_lng: float,
+        to_lat: float,
+        to_lng: float,
+    ) -> float:
+        earth_radius_km = 6371.0088
+        from_lat_rad = math.radians(from_lat)
+        to_lat_rad = math.radians(to_lat)
+        lat_delta = math.radians(to_lat - from_lat)
+        lng_delta = math.radians(to_lng - from_lng)
+        haversine = (
+            math.sin(lat_delta / 2) ** 2
+            + math.cos(from_lat_rad)
+            * math.cos(to_lat_rad)
+            * math.sin(lng_delta / 2) ** 2
+        )
+        return 2 * earth_radius_km * math.asin(
+            min(1.0, math.sqrt(haversine))
+        )
+
+    async def search_stops(
+        self,
+        *,
+        query: str | None,
+        lat: float | None,
+        lng: float | None,
+        radius_km: float,
+        limit: int,
+        active_only: bool = True,
+    ) -> dict[str, Any]:
+        cleaned_query = self._clean_optional_text(query)
+        has_lat = lat is not None
+        has_lng = lng is not None
+
+        if has_lat != has_lng:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "incomplete_coordinates",
+                    "message": "lat and lng must be provided together.",
+                },
+            )
+        if cleaned_query is None and not has_lat:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "stop_search_input_required",
+                    "message": (
+                        "Provide a stop name query, coordinates, or both."
+                    ),
+                },
+            )
+
+        stmt = select(Stop)
+        if active_only:
+            stmt = stmt.where(Stop.is_active.is_(True))
+        result = await self.db.execute(stmt)
+        stops = list(result.scalars().all())
+
+        matches: list[dict[str, Any]] = []
+        for stop in stops:
+            name_match_score = None
+            if cleaned_query is not None:
+                name_match_score = self._stop_name_match_score(
+                    query=cleaned_query,
+                    stop_name=stop.name,
+                )
+                minimum_score = (
+                    0.72
+                    if len(
+                        self._normalize_stop_search_text(
+                            cleaned_query
+                        ).replace(" ", "")
+                    )
+                    <= 3
+                    else 0.52
+                )
+                if name_match_score < minimum_score:
+                    continue
+
+            distance_km = None
+            if lat is not None and lng is not None:
+                distance_km = self._distance_km(
+                    from_lat=lat,
+                    from_lng=lng,
+                    to_lat=float(stop.lat),
+                    to_lng=float(stop.lng),
+                )
+                if distance_km > radius_km:
+                    continue
+
+            matches.append(
+                {
+                    **self._serialize_stop_brief(stop),
+                    "name_match_score": (
+                        None
+                        if name_match_score is None
+                        else round(name_match_score, 4)
+                    ),
+                    "distance_km": (
+                        None
+                        if distance_km is None
+                        else Decimal(str(round(distance_km, 3)))
+                    ),
+                }
+            )
+
+        matches.sort(
+            key=lambda item: (
+                -float(item["name_match_score"] or 0)
+                if cleaned_query is not None
+                else 0,
+                float(item["distance_km"])
+                if item["distance_km"] is not None
+                else 0,
+                item["name"].casefold(),
+            )
+        )
+        return {
+            "query": cleaned_query,
+            "lat": None if lat is None else Decimal(str(lat)),
+            "lng": None if lng is None else Decimal(str(lng)),
+            "radius_km": (
+                None
+                if lat is None
+                else Decimal(str(radius_km))
+            ),
+            "items": matches[:limit],
+            "count": min(len(matches), limit),
         }
     
     async def list_routes(

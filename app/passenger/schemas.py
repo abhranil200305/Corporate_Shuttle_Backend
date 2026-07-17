@@ -197,6 +197,21 @@ class StopListResponse(BaseModel):
     items: list[StopBriefResponse]
     count: int
 
+
+class StopSearchResultResponse(StopBriefResponse):
+    name_match_score: float | None
+    distance_km: Decimal | None
+
+
+class StopSearchResponse(BaseModel):
+    query: str | None
+    lat: Decimal | None
+    lng: Decimal | None
+    radius_km: Decimal | None
+    items: list[StopSearchResultResponse]
+    count: int
+
+
 class RouteStopResponse(BaseModel):
     route_stop_id: str
     sequence_no: int

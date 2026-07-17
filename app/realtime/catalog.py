@@ -15,6 +15,7 @@ PASSENGER_ROUTE_CATALOG = RefreshInstruction(
     resources=("stops", "routes", "route_trip_options", "scheduled_trips"),
     endpoints=(
         "/passenger/stops",
+        "/passenger/stops/search",
         "/passenger/routes",
         "/passenger/route-trip-options",
         "/passenger/rfid/route-trip-options",
