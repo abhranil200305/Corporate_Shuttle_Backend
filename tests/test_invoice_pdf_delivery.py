@@ -1,6 +1,7 @@
 from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
+import re
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -128,6 +129,40 @@ class InvoicePDFTests(unittest.TestCase):
         )
         self.assertIn(b"(Page 1 of 2) Tj", pdf)
         self.assertIn(b"(Page 2 of 2) Tj", pdf)
+
+    def test_journey_details_share_baseline_and_route_seat_are_compact(
+        self,
+    ) -> None:
+        pdf_text = generate_invoice_pdf(sample_invoice()).decode("latin-1")
+
+        def text_position(value: str) -> tuple[float, float]:
+            escaped_value = (
+                value.replace("\\", "\\\\")
+                .replace("(", "\\(")
+                .replace(")", "\\)")
+            )
+            match = re.search(
+                r"1 0 0 1 ([0-9.]+) ([0-9.]+) Tm\n"
+                rf"\({re.escape(escaped_value)}\) Tj",
+                pdf_text,
+            )
+            self.assertIsNotNone(match, value)
+            return float(match.group(1)), float(match.group(2))
+
+        _service_x, service_y = text_position(
+            "Passenger transportation service | SAC 996411 | "
+            "Place of supply: West Bengal (19)"
+        )
+        _date_x, date_y = text_position(
+            "14 Jul 2026, 04:00 PM IST"
+        )
+        _route_x, route_y = text_position(
+            "Office Shuttle [OS-01]"
+        )
+        _seat_x, seat_y = text_position("Seat 4")
+
+        self.assertEqual(service_y, date_y)
+        self.assertLessEqual(route_y - seat_y, 18)
 
     def test_session_payment_is_eligible_for_seat_invoice(self) -> None:
         created_at = datetime(2026, 7, 14, 10, 30, tzinfo=timezone.utc)
