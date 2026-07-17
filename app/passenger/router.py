@@ -67,6 +67,7 @@ from app.passenger.schemas import (
     ScheduledTripListResponse,
     ScheduledTripResponse,
     StopListResponse,
+    StopSearchResponse,
     SupportTicketCreateResponse,
     SupportTicketListResponse,
     SupportTicketResponse,
@@ -451,6 +452,27 @@ async def list_stops(
     service: PassengerService = Depends(get_passenger_service),
 ) -> StopListResponse:
     return await service.list_stops(active_only=active_only)
+
+
+@router.get("/stops/search", response_model=StopSearchResponse)
+async def search_stops(
+    query: str | None = Query(default=None, max_length=120),
+    lat: float | None = Query(default=None, ge=-90, le=90),
+    lng: float | None = Query(default=None, ge=-180, le=180),
+    radius_km: float = Query(default=10, gt=0, le=100),
+    limit: int = Query(default=20, ge=1, le=100),
+    active_only: bool = Query(default=True),
+    service: PassengerService = Depends(get_passenger_service),
+) -> StopSearchResponse:
+    return await service.search_stops(
+        query=query,
+        lat=lat,
+        lng=lng,
+        radius_km=radius_km,
+        limit=limit,
+        active_only=active_only,
+    )
+
 
 @router.get("/routes", response_model=RouteListResponse)
 async def list_routes(
