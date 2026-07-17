@@ -418,15 +418,41 @@ def _draw_journey(page: _Page, invoice: dict[str, Any], y: float) -> float:
     page.text(MARGIN + 348, y - 22, "ROUTE / SEAT", size=6.5, bold=True, color=MUTED)
     route = f"{_text(trip.get('route_name'))} [{_text(trip.get('route_code'))}]"
     page.wrapped_text(MARGIN + 348, y - 38, route, 145, size=9, bold=True)
-    page.text(MARGIN + 348, y - 64, f"Seat {_text(trip.get('seat_number'))}", size=8.5)
+    page.text(
+        MARGIN + 348,
+        y - 54,
+        f"Seat {_text(trip.get('seat_number'))}",
+        size=8.2,
+    )
 
-    page.line(MARGIN + 14, y - 67, MARGIN + width - 14, y - 67, color=LINE)
+    detail_separator_y = y - 66
+    detail_baseline_y = y - 83
+    page.line(
+        MARGIN + 14,
+        detail_separator_y,
+        MARGIN + width - 14,
+        detail_separator_y,
+        color=LINE,
+    )
     service_line = (
         f"{_text(service.get('description'))}  |  SAC {_text(service.get('sac_code'))}  |  "
         f"Place of supply: {_text(place.get('name'))} ({_text(place.get('state_code'))})"
     )
-    page.wrapped_text(MARGIN + 14, y - 82, service_line, 315, size=7.6, color=MUTED)
-    page.text(MARGIN + 348, y - 91, _date(trip.get("planned_start_at")), size=7.2, color=MUTED)
+    page.wrapped_text(
+        MARGIN + 14,
+        detail_baseline_y,
+        service_line,
+        315,
+        size=7.4,
+        color=MUTED,
+    )
+    page.right_text(
+        MARGIN + width - 14,
+        detail_baseline_y,
+        _date(trip.get("planned_start_at")),
+        size=7.2,
+        color=MUTED,
+    )
     return y - height - 20
 
 
