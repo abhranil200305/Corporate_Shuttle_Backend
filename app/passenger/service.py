@@ -104,6 +104,9 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
 class PassengerService:
     def __init__(
         self,
@@ -3557,7 +3560,12 @@ class PassengerService:
         if value is None:
             return "TBA"
 
-        return value.strftime("%d %b %Y, %I:%M %p")
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+
+        return value.astimezone(IST).strftime(
+            "%d %b %Y, %I:%M %p IST"
+        )
 
     @staticmethod
     def _get_traveller_notification_channel(booking: TripBooking) -> str:

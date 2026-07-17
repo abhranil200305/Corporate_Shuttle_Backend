@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 import unittest
 from unittest.mock import AsyncMock, MagicMock
@@ -55,6 +56,22 @@ class TravellerNotificationQueueTests(unittest.IsolatedAsyncioTestCase):
             "uq_traveller_contact_notifications_booking_event DO NOTHING",
             statement,
         )
+
+
+class TravellerNotificationTimeTests(unittest.TestCase):
+    def test_utc_trip_time_is_rendered_in_ist(self) -> None:
+        rendered = PassengerService._format_sms_datetime(
+            datetime(2026, 7, 17, 6, 0, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(rendered, "17 Jul 2026, 11:30 AM IST")
+
+    def test_naive_database_time_is_treated_as_utc(self) -> None:
+        rendered = PassengerService._format_sms_datetime(
+            datetime(2026, 7, 17, 6, 0)
+        )
+
+        self.assertEqual(rendered, "17 Jul 2026, 11:30 AM IST")
 
 
 class TravellerInvoiceAttachmentTests(unittest.IsolatedAsyncioTestCase):
