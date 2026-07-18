@@ -1,6 +1,7 @@
 #app/driver/vehicle.py
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from pathlib import Path
 import shutil
 from datetime import datetime, timezone
@@ -309,7 +310,7 @@ async def register_vehicle(
     )
 
     # ---------------------------
-    # BLOCK NON-DRAFT VEHICLES
+    # BLOCK PENDING / VERIFIED VEHICLE
     # ---------------------------
     if existing_vehicle:
 
@@ -324,6 +325,51 @@ async def register_vehicle(
                     "or verified"
                 )
             )
+
+    # ---------------------------
+    # DUPLICATE REGISTRATION NUMBER CHECK
+    # ---------------------------
+    duplicate_result = await session.execute(
+        select(Vehicle).where(
+            Vehicle.registration_number == registration_number
+        )
+    )
+
+    duplicate_vehicle = (
+        duplicate_result.scalar_one_or_none()
+    )
+
+    if duplicate_vehicle:
+
+        # ✅ Allow same driver to re-register/update own draft/rejected vehicle
+        if (
+            existing_vehicle
+            and duplicate_vehicle.id == existing_vehicle.id
+            and existing_vehicle.verification_status in [
+                VehicleVerificationStatus.DRAFT,
+                VehicleVerificationStatus.REJECTED,
+            ]
+        ):
+            pass
+
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="This vehicle registration number is already registered"
+            )
+
+    # ---------------------------
+    # TRACK SAVED FILES FOR CLEANUP
+    # ---------------------------
+    saved_files: list[Path] = []
+
+    def cleanup_saved_files():
+        for path in saved_files:
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
 
     # ---------------------------
     # FILE SAVE HELPER
@@ -341,7 +387,7 @@ async def register_vehicle(
             ".jpeg",
             ".webp",
             ".avif"
-#           ".pdf"
+            # ".pdf"
         }
 
         extension = (
@@ -369,6 +415,8 @@ async def register_vehicle(
 
         with open(path, "wb") as f:
             shutil.copyfileobj(file.file, f)
+
+        saved_files.append(path)
 
         return str(path)
 
@@ -512,13 +560,24 @@ async def register_vehicle(
             VehicleVerificationStatus.DRAFT
         )
 
-        session.add(existing_vehicle)
+        try:
+            session.add(existing_vehicle)
 
-        await session.commit()
+            await session.commit()
 
-        await session.refresh(
-            existing_vehicle
-        )
+            await session.refresh(
+                existing_vehicle
+            )
+
+        except IntegrityError:
+            await session.rollback()
+
+            cleanup_saved_files()
+
+            raise HTTPException(
+                status_code=400,
+                detail="This vehicle registration number is already registered"
+            )
 
         await emit_admin_vehicle_refresh(
             request,
@@ -526,6 +585,7 @@ async def register_vehicle(
             vehicle_id=existing_vehicle.id,
             reason="driver_vehicle_registration_updated",
         )
+
         return existing_vehicle
 
     # ---------------------------
@@ -546,7 +606,6 @@ async def register_vehicle(
 
         seat_count=seat_count,
 
-        # ✅ RFID RESERVED SEATS
         default_rfid_reserved_seat_count=(
             default_rfid_reserved_seat_count
         ),
@@ -575,11 +634,22 @@ async def register_vehicle(
         ),
     )
 
-    session.add(vehicle)
+    try:
+        session.add(vehicle)
 
-    await session.commit()
+        await session.commit()
 
-    await session.refresh(vehicle)
+        await session.refresh(vehicle)
+
+    except IntegrityError:
+        await session.rollback()
+
+        cleanup_saved_files()
+
+        raise HTTPException(
+            status_code=400,
+            detail="This vehicle registration number is already registered"
+        )
 
     await emit_admin_vehicle_refresh(
         request,
@@ -587,6 +657,7 @@ async def register_vehicle(
         vehicle_id=vehicle.id,
         reason="driver_vehicle_registered",
     )
+
     return vehicle
 # ---------------------------
 # View Vehicle
