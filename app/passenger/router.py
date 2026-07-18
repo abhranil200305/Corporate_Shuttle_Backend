@@ -449,9 +449,21 @@ async def discover_rfid_route_trip_options(
 @router.get("/stops", response_model=StopListResponse)
 async def list_stops(
     active_only: bool = Query(default=True),
+    query: str | None = Query(default=None, max_length=120),
+    lat: float | None = Query(default=None, ge=-90, le=90),
+    lng: float | None = Query(default=None, ge=-180, le=180),
+    radius_km: float = Query(default=10, gt=0, le=100),
+    limit: int = Query(default=100, ge=1, le=100),
     service: PassengerService = Depends(get_passenger_service),
 ) -> StopListResponse:
-    return await service.list_stops(active_only=active_only)
+    return await service.list_stops(
+        active_only=active_only,
+        query=query,
+        lat=lat,
+        lng=lng,
+        radius_km=radius_km,
+        limit=limit,
+    )
 
 
 @router.get("/stops/search", response_model=StopSearchResponse)

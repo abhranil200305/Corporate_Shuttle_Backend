@@ -88,6 +88,83 @@ class StopSearchTests(unittest.IsolatedAsyncioTestCase):
             response["items"][1]["distance_km"],
         )
 
+    async def test_nearby_search_falls_back_to_closest_outside_radius(
+        self,
+    ) -> None:
+        response = await self.service.search_stops(
+            query=None,
+            lat=22.583,
+            lng=88.475,
+            radius_km=0.001,
+            limit=20,
+        )
+
+        self.assertEqual(response["count"], 3)
+        self.assertEqual(
+            [item["id"] for item in response["items"]],
+            ["stop-1", "stop-2", "stop-3"],
+        )
+        self.assertTrue(
+            all(
+                response["items"][index]["distance_km"]
+                <= response["items"][index + 1]["distance_km"]
+                for index in range(len(response["items"]) - 1)
+            )
+        )
+
+    async def test_text_search_falls_back_to_best_available_matches(
+        self,
+    ) -> None:
+        response = await self.service.search_stops(
+            query="zzzzzzzz",
+            lat=None,
+            lng=None,
+            radius_km=10,
+            limit=20,
+        )
+
+        self.assertEqual(response["count"], 3)
+        self.assertEqual(len(response["items"]), 3)
+        self.assertGreaterEqual(
+            response["items"][0]["name_match_score"],
+            response["items"][1]["name_match_score"],
+        )
+
+    async def test_combined_search_keeps_name_matching_and_is_closest_first(
+        self,
+    ) -> None:
+        response = await self.service.search_stops(
+            query="gate",
+            lat=22.583,
+            lng=88.475,
+            radius_km=0.001,
+            limit=20,
+        )
+
+        self.assertEqual(response["count"], 1)
+        self.assertEqual(response["items"][0]["id"], "stop-3")
+
+    async def test_stop_list_supports_nearby_fallback_and_closest_order(
+        self,
+    ) -> None:
+        response = await self.service.list_stops(
+            lat=22.583,
+            lng=88.475,
+            radius_km=0.001,
+        )
+
+        self.assertEqual(response["count"], 3)
+        self.assertEqual(
+            [item["id"] for item in response["items"]],
+            ["stop-1", "stop-2", "stop-3"],
+        )
+
+    async def test_stop_list_supports_fuzzy_name_search(self) -> None:
+        response = await self.service.list_stops(query="eko spase")
+
+        self.assertEqual(response["count"], 1)
+        self.assertEqual(response["items"][0]["id"], "stop-1")
+
     async def test_coordinates_must_be_provided_together(self) -> None:
         with self.assertRaises(HTTPException) as raised:
             await self.service.search_stops(

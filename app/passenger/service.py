@@ -5732,7 +5732,31 @@ class PassengerService:
             "count": len(base_items),
         }
 
-    async def list_stops(self, *, active_only: bool = True) -> dict[str, Any]:
+    async def list_stops(
+        self,
+        *,
+        active_only: bool = True,
+        query: str | None = None,
+        lat: float | None = None,
+        lng: float | None = None,
+        radius_km: float = 10,
+        limit: int = 100,
+    ) -> dict[str, Any]:
+        cleaned_query = self._clean_optional_text(query)
+        if cleaned_query is not None or lat is not None or lng is not None:
+            search_result = await self.search_stops(
+                query=cleaned_query,
+                lat=lat,
+                lng=lng,
+                radius_km=radius_km,
+                limit=limit,
+                active_only=active_only,
+            )
+            return {
+                "items": search_result["items"],
+                "count": search_result["count"],
+            }
+
         stmt = select(Stop).order_by(Stop.name.asc())
 
         if active_only:
@@ -5859,7 +5883,20 @@ class PassengerService:
         result = await self.db.execute(stmt)
         stops = list(result.scalars().all())
 
-        matches: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
+        minimum_name_score: float | None = None
+        if cleaned_query is not None:
+            minimum_name_score = (
+                0.72
+                if len(
+                    self._normalize_stop_search_text(
+                        cleaned_query
+                    ).replace(" ", "")
+                )
+                <= 3
+                else 0.52
+            )
+
         for stop in stops:
             name_match_score = None
             if cleaned_query is not None:
@@ -5867,18 +5904,6 @@ class PassengerService:
                     query=cleaned_query,
                     stop_name=stop.name,
                 )
-                minimum_score = (
-                    0.72
-                    if len(
-                        self._normalize_stop_search_text(
-                            cleaned_query
-                        ).replace(" ", "")
-                    )
-                    <= 3
-                    else 0.52
-                )
-                if name_match_score < minimum_score:
-                    continue
 
             distance_km = None
             if lat is not None and lng is not None:
@@ -5888,10 +5913,8 @@ class PassengerService:
                     to_lat=float(stop.lat),
                     to_lng=float(stop.lng),
                 )
-                if distance_km > radius_km:
-                    continue
 
-            matches.append(
+            candidates.append(
                 {
                     **self._serialize_stop_brief(stop),
                     "name_match_score": (
@@ -5907,14 +5930,42 @@ class PassengerService:
                 }
             )
 
+        matches = candidates
+        if minimum_name_score is not None:
+            name_matches = [
+                item
+                for item in matches
+                if float(item["name_match_score"] or 0)
+                >= minimum_name_score
+            ]
+            if name_matches:
+                matches = name_matches
+
+        if lat is not None:
+            nearby_matches = [
+                item
+                for item in matches
+                if (
+                    item["distance_km"] is not None
+                    and float(item["distance_km"]) <= radius_km
+                )
+            ]
+            if nearby_matches:
+                matches = nearby_matches
+
         matches.sort(
             key=lambda item: (
-                -float(item["name_match_score"] or 0)
-                if cleaned_query is not None
-                else 0,
                 float(item["distance_km"])
                 if item["distance_km"] is not None
                 else 0,
+                -float(item["name_match_score"] or 0)
+                if cleaned_query is not None
+                else 0,
+                item["name"].casefold(),
+            )
+            if lat is not None
+            else (
+                -float(item["name_match_score"] or 0),
                 item["name"].casefold(),
             )
         )
