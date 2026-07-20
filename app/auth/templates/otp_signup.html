@@ -1,16 +1,390 @@
 <!doctype html>
 <html lang="en">
-  <body style="font-family: Arial, sans-serif; color: #111;">
-    <p>Hello,</p>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OTP Verification</title>
+  <style>
+    /* Base Styles */
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
 
-    <p>Your signup OTP for <strong>{{app_name}}</strong> is:</p>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      background-color: #f4f6fa;
+      color: #111827;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
 
-    <h2 style="letter-spacing: 4px;">{{otp}}</h2>
+    .email-wrapper {
+      max-width: 580px;
+      margin: 40px auto;
+      background: #ffffff;
+      border-radius: 24px;
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.08);
+      border: 1px solid rgba(0, 0, 0, 0.04);
+    }
 
-    <p>This OTP will expire in {{expiry_minutes}} minutes.</p>
+    /* Header with Gradient */
+    .email-header {
+      background: linear-gradient(135deg, #0a0a0a 0%, #1a1a2e 50%, #16213e 100%);
+      padding: 40px 40px 30px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
 
-    <p>If you did not request this, you can ignore this email.</p>
+    .email-header::before {
+      content: '';
+      position: absolute;
+      top: -50%;
+      right: -30%;
+      width: 300px;
+      height: 300px;
+      background: radial-gradient(circle, rgba(96, 165, 250, 0.08), transparent 70%);
+      border-radius: 50%;
+    }
 
-    <p>Regards,<br>{{app_name}}</p>
-  </body>
+    .email-header::after {
+      content: '';
+      position: absolute;
+      bottom: -40%;
+      left: -20%;
+      width: 250px;
+      height: 250px;
+      background: radial-gradient(circle, rgba(139, 92, 246, 0.06), transparent 70%);
+      border-radius: 50%;
+    }
+
+    .header-icon {
+      display: inline-block;
+      width: 72px;
+      height: 72px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 50%;
+      padding: 16px;
+      margin-bottom: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(10px);
+      position: relative;
+      z-index: 1;
+    }
+
+    .header-icon svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    .email-title {
+      font-size: 26px;
+      font-weight: 700;
+      color: #ffffff;
+      letter-spacing: -0.5px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .email-subtitle {
+      font-size: 15px;
+      color: rgba(255, 255, 255, 0.6);
+      margin-top: 8px;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Body Content */
+    .email-body {
+      padding: 40px 40px 32px;
+      background: #ffffff;
+    }
+
+    .greeting {
+      font-size: 18px;
+      font-weight: 600;
+      color: #111827;
+      margin-bottom: 6px;
+    }
+
+    .greeting-sub {
+      font-size: 14px;
+      color: #6b7280;
+      margin-bottom: 24px;
+      line-height: 1.6;
+    }
+
+    /* OTP Box */
+    .otp-container {
+      background: linear-gradient(135deg, #f8fafc, #f1f5f9);
+      border-radius: 16px;
+      padding: 32px 24px;
+      text-align: center;
+      border: 1px solid #e2e8f0;
+      margin: 20px 0 24px;
+      position: relative;
+    }
+
+    .otp-label {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1.5px;
+      color: #6b7280;
+      margin-bottom: 12px;
+    }
+
+    .otp-code {
+      font-size: 42px;
+      font-weight: 800;
+      letter-spacing: 12px;
+      color: #0a0a0a;
+      font-family: 'Courier New', Courier, monospace;
+      background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      padding: 4px 0;
+    }
+
+    .otp-divider {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin: 8px 0 4px;
+    }
+
+    .otp-divider span {
+      width: 8px;
+      height: 8px;
+      background: #cbd5e1;
+      border-radius: 50%;
+      opacity: 0.4;
+    }
+
+    .otp-expiry {
+      font-size: 13px;
+      color: #6b7280;
+      margin-top: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+
+    .otp-expiry svg {
+      width: 16px;
+      height: 16px;
+      color: #6b7280;
+    }
+
+    .otp-expiry strong {
+      color: #0a0a0a;
+      font-weight: 600;
+    }
+
+    /* Info Section */
+    .info-section {
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-top: 20px;
+      border-left: 4px solid #0a0a0a;
+    }
+
+    .info-section p {
+      font-size: 14px;
+      color: #4b5563;
+      line-height: 1.7;
+      margin: 0;
+    }
+
+    .info-section strong {
+      color: #111827;
+    }
+
+    /* Footer */
+    .email-footer {
+      padding: 24px 40px 32px;
+      background: #fafbfc;
+      border-top: 1px solid #e5e7eb;
+      text-align: center;
+    }
+
+    .footer-text {
+      font-size: 13px;
+      color: #6b7280;
+      line-height: 1.8;
+      margin: 0;
+    }
+
+    .footer-text strong {
+      color: #111827;
+      font-weight: 600;
+    }
+
+    .footer-divider {
+      width: 40px;
+      height: 2px;
+      background: linear-gradient(90deg, #0a0a0a, #6b7280);
+      margin: 16px auto;
+      border-radius: 99px;
+      opacity: 0.2;
+    }
+
+    .social-links {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      margin-top: 12px;
+    }
+
+    .social-link {
+      color: #9ca3af;
+      text-decoration: none;
+      font-size: 13px;
+      transition: color 0.2s;
+    }
+
+    .social-link:hover {
+      color: #111827;
+    }
+
+    /* Responsive */
+    @media (max-width: 600px) {
+      .email-wrapper {
+        margin: 16px;
+        border-radius: 16px;
+      }
+
+      .email-header {
+        padding: 32px 20px 24px;
+      }
+
+      .email-title {
+        font-size: 22px;
+      }
+
+      .email-body {
+        padding: 28px 20px 24px;
+      }
+
+      .otp-code {
+        font-size: 32px;
+        letter-spacing: 8px;
+      }
+
+      .otp-container {
+        padding: 24px 16px;
+      }
+
+      .email-footer {
+        padding: 20px 20px 24px;
+      }
+    }
+
+    @media (max-width: 400px) {
+      .otp-code {
+        font-size: 26px;
+        letter-spacing: 6px;
+      }
+
+      .header-icon {
+        width: 56px;
+        height: 56px;
+        padding: 12px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="email-wrapper">
+
+    <!-- ===== HEADER ===== -->
+    <div class="email-header">
+      <!-- Icon -->
+      <div class="header-icon">
+        <!-- Shuttle/Truck Icon -->
+        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M5 18C5 18.5523 5.44772 19 6 19H7.5C8.05228 19 8.5 18.5523 8.5 18C8.5 17.4477 8.05228 17 7.5 17H6C5.44772 17 5 17.4477 5 18Z" fill="#60A5FA"/>
+          <path d="M15.5 18C15.5 18.5523 15.9477 19 16.5 19H18C18.5523 19 19 18.5523 19 18C19 17.4477 18.5523 17 18 17H16.5C15.9477 17 15.5 17.4477 15.5 18Z" fill="#60A5FA"/>
+          <path d="M2 6C2 5.44772 2.44772 5 3 5H21C21.5523 5 22 5.44772 22 6V15C22 15.5523 21.5523 16 21 16H3C2.44772 16 2 15.5523 2 15V6Z" fill="#8B5CF6" fillOpacity="0.3" stroke="#8B5CF6" strokeWidth="1.5"/>
+          <path d="M7 5V11M11 5V11M15 5V11M19 5V11" stroke="#8B5CF6" strokeWidth="1.5" strokeLinecap="round"/>
+          <path d="M3 13H21" stroke="#8B5CF6" strokeWidth="1.5" strokeLinecap="round"/>
+          <circle cx="12" cy="7" r="2" fill="#60A5FA" fillOpacity="0.4"/>
+          <circle cx="12" cy="7" r="1" fill="#60A5FA"/>
+        </svg>
+      </div>
+
+      <h1 class="email-title">{{app_name}}</h1>
+      <p class="email-subtitle">Secure Signup Verification</p>
+    </div>
+
+    <!-- ===== BODY ===== -->
+    <div class="email-body">
+
+      <p class="greeting">Hello, 👋</p>
+      <p class="greeting-sub">
+        Thank you for choosing <strong>{{app_name}}</strong>. To complete your signup, please use the One-Time Password (OTP) below.
+      </p>
+
+      <!-- OTP Container -->
+      <div class="otp-container">
+        <p class="otp-label">🔑 Your Verification Code</p>
+
+        <div class="otp-code">{{otp}}</div>
+
+        <div class="otp-divider">
+          <span></span>
+          <span></span>
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
+
+        <div class="otp-expiry">
+          <!-- Clock Icon -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"/>
+            <polyline points="12 6 12 12 16 14"/>
+          </svg>
+          <span>This OTP is valid for <strong>{{expiry_minutes}} minutes</strong></span>
+        </div>
+      </div>
+
+      <!-- Info Section -->
+      <div class="info-section">
+        <p>
+          🔒 <strong>Security Tip:</strong> Never share this OTP with anyone. 
+
+          If you didn't request this, please ignore this email or contact our support team.
+        </p>
+      </div>
+
+    </div>
+
+    <!-- ===== FOOTER ===== -->
+    <div class="email-footer">
+      <p class="footer-text">
+        <strong>{{app_name}}</strong> — Your trusted partner for seamless shuttle services.
+      </p>
+
+      <div class="footer-divider"></div>
+
+      <p class="footer-text" style="font-size: 12px; color: #9ca3af;">
+        © 2026 {{app_name}}. All rights reserved.
+      </p>
+    </div>
+
+  </div>
+
+</body>
 </html>
