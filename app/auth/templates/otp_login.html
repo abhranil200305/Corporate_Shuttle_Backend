@@ -143,13 +143,17 @@
       font-size: 40px;
       font-weight: 800;
       letter-spacing: 12px;
-      color: #0a0a0a;
       font-family: 'Courier New', Courier, monospace;
       background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
       padding: 4px 0;
+    }
+
+    /* Fallback for email clients that don't support gradient text */
+    .otp-code-fallback {
+      color: #0a0a0a;
     }
 
     .otp-divider {
@@ -212,27 +216,6 @@
     .info-icon {
       display: inline-block;
       margin-right: 6px;
-    }
-
-    /* Button (Optional) */
-    .action-button {
-      display: inline-block;
-      background: linear-gradient(135deg, #0a0a0a, #1a1a2e);
-      color: #ffffff;
-      text-decoration: none;
-      padding: 12px 32px;
-      border-radius: 12px;
-      font-weight: 600;
-      font-size: 14px;
-      margin: 8px 0 4px;
-      transition: all 0.2s;
-      border: none;
-      cursor: pointer;
-    }
-
-    .action-button:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.15);
     }
 
     /* Footer */
@@ -368,6 +351,7 @@
         </svg>
       </div>
 
+      <!-- EXACT SAME VARIABLE NAMES AS ORIGINAL -->
       <h1 class="email-title">{{app_name}}</h1>
       <p class="email-subtitle">🔐 Secure Login Verification</p>
     </div>
@@ -375,15 +359,16 @@
     <!-- ===== BODY ===== -->
     <div class="email-body">
 
-      <p class="greeting">Welcome Back! 👋</p>
+      <p class="greeting">Hello,</p>
       <p class="greeting-sub">
-        You're one step away from logging in to <strong>{{app_name}}</strong>. Please use the OTP below to verify your identity.
+        Your login OTP for <strong>{{app_name}}</strong> is:
       </p>
 
       <!-- OTP Container -->
       <div class="otp-container">
-        <p class="otp-label">🔑 Login Verification Code</p>
+        <p class="otp-label">🔑 Verification Code</p>
 
+        <!-- EXACT SAME VARIABLE NAME: {{otp}} -->
         <div class="otp-code">{{otp}}</div>
 
         <div class="otp-divider">
@@ -400,7 +385,8 @@
             <circle cx="12" cy="12" r="10"/>
             <polyline points="12 6 12 12 16 14"/>
           </svg>
-          <span>Valid for <strong>{{expiry_minutes}} minutes</strong></span>
+          <!-- EXACT SAME VARIABLE NAME: {{expiry_minutes}} -->
+          <span>This OTP will expire in <strong>{{expiry_minutes}} minutes</strong></span>
         </div>
       </div>
 
@@ -408,24 +394,18 @@
       <div class="info-section">
         <p>
           <span class="info-icon">🔒</span>
-          <strong>Stay Secure:</strong> Never share this OTP with anyone. 
-          This code is for your login session only.
+          <strong>Security Tip:</strong> If you did not request this, you can ignore this email.
         </p>
       </div>
-
-      <!-- Optional: Action Button -->
-      <!--
-      <div style="text-align: center; margin-top: 20px;">
-        <a href="{{login_link}}" class="action-button">Go to Login</a>
-      </div>
-      -->
 
     </div>
 
     <!-- ===== FOOTER ===== -->
     <div class="email-footer">
       <p class="footer-text">
-        <strong>{{app_name}}</strong> — Your trusted partner for seamless shuttle services.
+        <strong>Regards,</strong>
+
+        <strong>{{app_name}}</strong>
       </p>
 
       <div class="footer-divider"></div>
